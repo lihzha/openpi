@@ -25,3 +25,10 @@ def test_fast_tokenizer():
 
     act = tokenizer.extract_actions(tokens, 3, 2)
     assert act.shape == (3, 2)
+
+
+def test_cot_tokenize():
+    tok = _tokenizer.PaligemmaTokenizer(max_len=200)
+    prompt = "I love cat."
+    reasoning = "because cats are cute!"
+    _, _, _ = tok.tokenize_cot(prompt, reasoning)

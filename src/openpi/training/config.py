@@ -15,9 +15,11 @@ import tyro
 
 import openpi.models.model as _model
 import openpi.models.pi0 as pi0
+import openpi.models.pi0_cot as pi0_cot
 import openpi.models.pi0_fast as pi0_fast
 import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
+import openpi.policies.droid_cot_policy as droid_cot_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
 import openpi.shared.download as _download
@@ -135,6 +137,47 @@ class ModelTransformFactory(GroupFactory):
                         )
                     ],
                 )
+
+
+@dataclasses.dataclass(frozen=True)
+class CoTModelTransformFactory(GroupFactory):
+    """Creates model transforms for standard pi0 models."""
+
+    # If provided, will determine the default prompt that be used by the model.
+    default_prompt: str | None = None
+
+    def __call__(self, model_config: _model.BaseModelConfig) -> _transforms.Group:
+        match model_config.model_type:
+            case _model.ModelType.PI0CoT:
+                return _transforms.Group(
+                    inputs=[
+                        _transforms.InjectDefaultPrompt(self.default_prompt),
+                        _transforms.ResizeImages(224, 224),
+                        _transforms.TokenizePromptAndReasoning(
+                            _tokenizer.PaligemmaTokenizer(model_config.max_token_len)
+                        ),
+                    ],
+                )
+            case _model.ModelType.PI0_FAST:
+                raise NotImplementedError
+                # return _transforms.Group(
+                #     inputs=[
+                #         _transforms.InjectDefaultPrompt(self.default_prompt),
+                #         _transforms.ResizeImages(224, 224),
+                #         _transforms.TokenizeFASTInputs(
+                #             _tokenizer.FASTTokenizer(model_config.max_token_len),
+                #         ),
+                #     ],
+                #     outputs=[
+                #         _transforms.ExtractFASTActions(
+                #             _tokenizer.FASTTokenizer(model_config.max_token_len),
+                #             action_horizon=model_config.action_horizon,
+                #             action_dim=model_config.action_dim,
+                #         )
+                #     ],
+                # )
+            case _:
+                raise ValueError(f"Unsupported model type: {model_config.model_type}")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -381,6 +424,54 @@ class RLDSDroidDataConfig(DataConfigFactory):
 
 
 @dataclasses.dataclass(frozen=True)
+class DroidCoTDataConfig(DataConfigFactory):
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        repack_transform = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "observation/image": "image",
+                        "observation/state": "state",
+                        "actions": "actions",
+                        "language_actions": "language_actions",
+                        "prompt": "prompt",
+                    }
+                )
+            ]
+        )
+
+        data_transforms = _transforms.Group(
+            inputs=[
+                droid_cot_policy.DroidCoTInputs(action_dim=model_config.action_dim, model_type=model_config.model_type)
+            ],
+            outputs=[droid_cot_policy.DroidCoTOutputs()],
+        )
+
+        # if self.action_space == droid_rlds_dataset.DroidActionSpace.JOINT_POSITION:
+        #     # Data loader returns absolute joint position actions -- convert to delta actions for training.
+        #     delta_action_mask = _transforms.make_bool_mask(7, -1)
+        #     data_transforms = data_transforms.push(
+        #         inputs=[_transforms.DeltaActions(delta_action_mask)],
+        #         outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+        #     )
+
+        model_transforms = CoTModelTransformFactory()(model_config)
+
+        # assert self.rlds_data_dir is not None, "Need to set rlds data dir for RLDS data loader."
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            use_quantile_norm=model_config.model_type == ModelType.PI0_FAST,
+            # rlds_data_dir=self.rlds_data_dir,
+            # action_space=self.action_space,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
 class TrainConfig:
     # Name of the config. Must be unique. Will be used to reference this config.
     name: tyro.conf.Suppress[str]
@@ -515,6 +606,24 @@ _CONFIGS = [
                 prompt_from_task=True,
             ),
         ),
+    ),
+    TrainConfig(
+        name="pi0_droid_cot",
+        model=pi0_cot.Pi0CoTConfig(
+            action_horizon=10, max_token_len=100, paligemma_variant="dummy", action_expert_variant="dummy"
+        ),
+        data=DroidCoTDataConfig(
+            repo_id="posed_droid",
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+        ),
+        # weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),  # commented out for debugging
+        # Below you can define other hyperparameters like the learning rate, number of training steps, etc.
+        # Check the base TrainConfig class for a full list of available hyperparameters.
+        num_train_steps=30_000,
+        fsdp_devices=2,
+        batch_size=4,
     ),
     TrainConfig(
         name="pi0_fast_droid",

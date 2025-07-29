@@ -28,6 +28,7 @@ class ModelType(enum.Enum):
 
     PI0 = "pi0"
     PI0_FAST = "pi0_fast"
+    PI0CoT = "pi0_cot"
 
 
 # The model always expects these images
@@ -89,10 +90,13 @@ class Observation(Generic[ArrayT]):
     # Low-dimensional robot state.
     state: at.Float[ArrayT, "*b s"]
 
-    # Tokenized prompt.
+    # Tokenized prompt. Also contains reasoning tokens for CoT models.
     tokenized_prompt: at.Int[ArrayT, "*b l"] | None = None
-    # Tokenized prompt mask.
+    # Tokenized prompt mask. When using CoT, also contains masks for reasoning tokens.
     tokenized_prompt_mask: at.Bool[ArrayT, "*b l"] | None = None
+
+    # Optional reasoning tokens for CoT models.
+    tokenized_reasoning_mask: at.Bool[ArrayT, "*b l"] | None = None
 
     # pi0-fast model specific fields.
 
@@ -119,6 +123,7 @@ class Observation(Generic[ArrayT]):
             tokenized_prompt_mask=data.get("tokenized_prompt_mask"),
             token_ar_mask=data.get("token_ar_mask"),
             token_loss_mask=data.get("token_loss_mask"),
+            tokenized_reasoning_mask=data.get("tokenized_reasoning_mask"),
         )
 
     def to_dict(self) -> at.PyTree[ArrayT]:
@@ -198,6 +203,7 @@ def preprocess_observation(
         tokenized_prompt_mask=observation.tokenized_prompt_mask,
         token_ar_mask=observation.token_ar_mask,
         token_loss_mask=observation.token_loss_mask,
+        tokenized_reasoning_mask=observation.tokenized_reasoning_mask,
     )
 
 

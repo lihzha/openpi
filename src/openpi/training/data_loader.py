@@ -6,6 +6,9 @@ from typing import Protocol, SupportsIndex, TypeVar
 
 import jax
 import jax.numpy as jnp
+
+os.environ.pop("LEROBOT_HOME", None)  # Trick to ensure LEROBOT_HOME is not set.
+
 import lerobot.common.datasets.lerobot_dataset as lerobot_dataset
 import numpy as np
 import torch

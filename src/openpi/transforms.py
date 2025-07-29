@@ -253,6 +253,31 @@ class TokenizePrompt(DataTransformFn):
 
 
 @dataclasses.dataclass(frozen=True)
+class TokenizePromptAndReasoning(DataTransformFn):
+    tokenizer: _tokenizer.PaligemmaTokenizer
+
+    def __call__(self, data: DataDict) -> DataDict:
+        if (prompt := data.pop("prompt", None)) is None:
+            raise ValueError("Prompt is required")
+
+        if not isinstance(prompt, str):
+            prompt = prompt.item()
+
+        language_actions = data.pop("language_actions", None)  # if None, inference
+        if language_actions is not None and not isinstance(language_actions, str):
+            language_actions = language_actions.item()
+
+        tokens, pad_mask, reasoning_mask = self.tokenizer.tokenize_cot(prompt, language_actions)
+
+        return {
+            **data,
+            "tokenized_prompt": tokens,  # inaccurate name, but kept for compatibility. Should be `tokenized_text`
+            "tokenized_prompt_mask": pad_mask,  # inaccurate name, but kept for compatibility. Should be `tokenized_text_mask`
+            "tokenized_reasoning_mask": reasoning_mask,
+        }
+
+
+@dataclasses.dataclass(frozen=True)
 class TokenizeFASTInputs(DataTransformFn):
     tokenizer: _tokenizer.FASTTokenizer
 
