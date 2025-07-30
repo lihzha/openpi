@@ -181,6 +181,7 @@ class Pi0CoTConfig(_model.BaseModelConfig):
 
 class Pi0CoT(_model.BaseModel):
     EOS_ID = 1  # TODO: hard-coded for PaliGemma
+    lang_action_only: bool = True
 
     def __init__(self, config: Pi0CoTConfig, rngs: nnx.Rngs):
         super().__init__(config.action_dim, config.action_horizon, config.max_token_len)
@@ -210,6 +211,8 @@ class Pi0CoT(_model.BaseModel):
         self.action_time_mlp_in = nnx.Linear(2 * action_expert_config.width, action_expert_config.width, rngs=rngs)
         self.action_time_mlp_out = nnx.Linear(action_expert_config.width, action_expert_config.width, rngs=rngs)
         self.action_out_proj = nnx.Linear(action_expert_config.width, config.action_dim, rngs=rngs)
+
+        # self.lang_action_only = config.lang_action_only
 
     @at.typecheck
     def embed_prefix(
@@ -288,28 +291,32 @@ class Pi0CoT(_model.BaseModel):
         # TODO: assume reasoning is already tokenized for compute_loss. Need to tokenize reasoning on-the-fly for inference.
         observation = _model.preprocess_observation(preprocess_rng, observation, train=train)
 
-        batch_shape = actions.shape[:-2]
-        noise = jax.random.normal(noise_rng, actions.shape)
-        time = jax.random.beta(time_rng, 1.5, 1, batch_shape) * 0.999 + 0.001
-        time_expanded = time[..., None, None]
-        x_t = time_expanded * noise + (1 - time_expanded) * actions
-        u_t = noise - actions
-
-        # one big forward pass of prefix + suffix at once. Reasoning is identical to prompt except for ar_mask.
         prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
-        suffix_tokens, suffix_mask, suffix_ar_mask = self.embed_suffix(observation, x_t, time)
-        suffix_ar_mask = einops.repeat(suffix_ar_mask, "s -> b s", b=suffix_tokens.shape[0])
-        input_mask = jnp.concatenate([prefix_mask, suffix_mask], axis=1)
-        ar_mask = jnp.concatenate([prefix_ar_mask, suffix_ar_mask], axis=1)
+
+        if not self.lang_action_only:
+            batch_shape = actions.shape[:-2]
+            noise = jax.random.normal(noise_rng, actions.shape)
+            time = jax.random.beta(time_rng, 1.5, 1, batch_shape) * 0.999 + 0.001
+            time_expanded = time[..., None, None]
+            x_t = time_expanded * noise + (1 - time_expanded) * actions
+            u_t = noise - actions
+            suffix_tokens, suffix_mask, suffix_ar_mask = self.embed_suffix(observation, x_t, time)
+            suffix_ar_mask = einops.repeat(suffix_ar_mask, "s -> b s", b=suffix_tokens.shape[0])
+            # one big forward pass of prefix + suffix at once. Reasoning is identical to prompt except for ar_mask.
+            input_mask = jnp.concatenate([prefix_mask, suffix_mask], axis=1)
+            ar_mask = jnp.concatenate([prefix_ar_mask, suffix_ar_mask], axis=1)
+        else:
+            suffix_tokens = None
+            input_mask = prefix_mask
+            ar_mask = prefix_ar_mask
+
         attn_mask = make_attn_mask(input_mask, ar_mask)
         positions = jnp.cumsum(input_mask, axis=1) - 1
         (prefix_out, suffix_out), _ = self.PaliGemma.llm(
             [prefix_tokens, suffix_tokens], mask=attn_mask, positions=positions
         )
-        v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
 
         # TODO: should we jointly compute loss on the prompt?
-
         shift_labels = observation.tokenized_prompt[:, 1:]  # shape (B, max_len-1). TODO: contiguous?
         max_len = observation.tokenized_reasoning_mask.shape[1]
         shift_tokens = prefix_out[:, -max_len:-1, :]  # shape (B, max_len-1, D)
@@ -318,9 +325,13 @@ class Pi0CoT(_model.BaseModel):
         reasoning_and_pad_mask = jnp.logical_and(
             observation.tokenized_reasoning_mask[:, 1:], observation.tokenized_prompt_mask[:, 1:]
         )
-        ce_loss = cross_entropy_loss(shift_logits, shift_labels, mask=reasoning_and_pad_mask, axis=-1, train=True)
+        loss = cross_entropy_loss(shift_logits, shift_labels, mask=reasoning_and_pad_mask, axis=-1, train=True)
 
-        return jnp.mean(jnp.square(v_t - u_t)) + ce_loss
+        if not self.lang_action_only:
+            v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
+            loss += jnp.mean(jnp.square(v_t - u_t))
+
+        return loss
 
     @override
     def sample_actions(

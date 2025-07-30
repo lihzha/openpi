@@ -95,6 +95,11 @@ class DataConfig:
     # Action space for DROID dataset.
     action_space: droid_rlds_dataset.DroidActionSpace | None = None
 
+    # For DROID-cot
+    cot: bool = False
+    language_action_dir: str | None = None
+    shuffle_buffer_size: int = 250_000
+
 
 class GroupFactory(Protocol):
     def __call__(self, model_config: _model.BaseModelConfig) -> _transforms.Group:
@@ -424,7 +429,7 @@ class RLDSDroidDataConfig(DataConfigFactory):
 
 
 @dataclasses.dataclass(frozen=True)
-class DroidCoTDataConfig(DataConfigFactory):
+class DroidCoTTestDataConfig(DataConfigFactory):
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
         repack_transform = _transforms.Group(
@@ -443,9 +448,11 @@ class DroidCoTDataConfig(DataConfigFactory):
 
         data_transforms = _transforms.Group(
             inputs=[
-                droid_cot_policy.DroidCoTInputs(action_dim=model_config.action_dim, model_type=model_config.model_type)
+                droid_cot_policy.DroidCoTTestInputs(
+                    action_dim=model_config.action_dim, model_type=model_config.model_type
+                )
             ],
-            outputs=[droid_cot_policy.DroidCoTOutputs()],
+            outputs=[droid_cot_policy.DroidCoTTestOutputs()],
         )
 
         # if self.action_space == droid_rlds_dataset.DroidActionSpace.JOINT_POSITION:
@@ -468,6 +475,70 @@ class DroidCoTDataConfig(DataConfigFactory):
             use_quantile_norm=model_config.model_type == ModelType.PI0_FAST,
             # rlds_data_dir=self.rlds_data_dir,
             # action_space=self.action_space,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class RLDSDroidCoTDataConfig(DataConfigFactory):
+    """
+    Config for training on DROID, using RLDS data format (for efficient training on larger datasets).
+    """
+
+    rlds_data_dir: str | None = None
+    action_space: droid_rlds_dataset.DroidActionSpace | None = None
+    cot: bool = True
+    language_action_dir: str = "/n/fs/robot-data/vlm-syn/posed_droid"
+    shuffle_buffer_size: int = 250_000
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        repack_transform = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        # lihan: always name base image as "exterior_image_1_left", though it should come from the camera which language action is annotated.
+                        "observation/exterior_image_1_left": "observation/image",
+                        # "observation/wrist_image_left": "observation/wrist_image",
+                        "observation/cartesian_position": "observation/cartesian_position",
+                        "observation/gripper_position": "observation/gripper_position",
+                        "actions": "actions",
+                        "prompt": "prompt",
+                        "language_actions": "language_actions",
+                    }
+                )
+            ]
+        )
+
+        data_transforms = _transforms.Group(
+            inputs=[
+                droid_cot_policy.DroidCoTInputs(action_dim=model_config.action_dim, model_type=model_config.model_type)
+            ],
+            outputs=[droid_cot_policy.DroidCoTOutputs()],
+        )
+
+        assert self.action_space == droid_rlds_dataset.DroidActionSpace.CARTESIAN_POSITION
+        # Data loader returns absolute joint position actions -- convert to delta actions for training.
+        delta_action_mask = _transforms.make_bool_mask(6, -1)
+        data_transforms = data_transforms.push(
+            inputs=[_transforms.DeltaActions(delta_action_mask)],
+            outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+        )
+
+        model_transforms = CoTModelTransformFactory()(model_config)
+
+        assert self.rlds_data_dir is not None, "Need to set rlds data dir for RLDS data loader."
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            use_quantile_norm=model_config.model_type == ModelType.PI0_FAST,
+            rlds_data_dir=self.rlds_data_dir,
+            action_space=self.action_space,
+            cot=self.cot,
+            language_action_dir=self.language_action_dir,
+            shuffle_buffer_size=self.shuffle_buffer_size,
         )
 
 
@@ -561,6 +632,59 @@ class TrainConfig:
 
 # Use `get_config` if you need to get a config by name in your code.
 _CONFIGS = [
+    TrainConfig(
+        name="pi0_droid_cot_test",
+        model=pi0_cot.Pi0CoTConfig(
+            action_horizon=10, max_token_len=100, paligemma_variant="dummy", action_expert_variant="dummy"
+        ),
+        data=DroidCoTTestDataConfig(
+            repo_id="posed_droid",
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+        ),
+        # weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),  # commented out for debugging
+        # Below you can define other hyperparameters like the learning rate, number of training steps, etc.
+        # Check the base TrainConfig class for a full list of available hyperparameters.
+        num_train_steps=30_000,
+        fsdp_devices=2,
+        batch_size=4,
+    ),
+    TrainConfig(
+        name="pi0_droid_cot",
+        model=pi0_cot.Pi0CoTConfig(
+            action_horizon=10,
+            max_token_len=100,
+            # paligemma_variant="dummy",
+            # action_expert_variant="dummy",
+        ),
+        data=RLDSDroidCoTDataConfig(
+            repo_id="droid",
+            # Set this to the path to your DROID RLDS dataset (the parent directory of the `droid` directory).
+            rlds_data_dir="/n/fs/vla-mi/datasets/OXE/",
+            action_space=droid_rlds_dataset.DroidActionSpace.CARTESIAN_POSITION,
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+            shuffle_buffer_size=20_000,
+        ),
+        num_train_steps=100_000,
+        fsdp_devices=2,
+        batch_size=32,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
+        # lr_schedule=_optimizer.CosineDecaySchedule(
+        #     warmup_steps=1_000,
+        #     peak_lr=5e-5,
+        #     decay_steps=1_000_000,
+        #     decay_lr=5e-5,
+        # ),
+        # num_train_steps=100_000,  # 100k steps should be sufficient, takes ~2 days on 8x H100s
+        # batch_size=256,
+        # log_interval=100,
+        # save_interval=5000,
+        # keep_period=20_000,
+        # num_workers=0,  # Important: RLDS DataLoader requires num_workers=0, handles multi-processing internally
+    ),
     #
     # Inference Aloha configs.
     #
@@ -606,24 +730,6 @@ _CONFIGS = [
                 prompt_from_task=True,
             ),
         ),
-    ),
-    TrainConfig(
-        name="pi0_droid_cot",
-        model=pi0_cot.Pi0CoTConfig(
-            action_horizon=10, max_token_len=100, paligemma_variant="dummy", action_expert_variant="dummy"
-        ),
-        data=DroidCoTDataConfig(
-            repo_id="posed_droid",
-            base_config=DataConfig(
-                prompt_from_task=True,
-            ),
-        ),
-        # weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),  # commented out for debugging
-        # Below you can define other hyperparameters like the learning rate, number of training steps, etc.
-        # Check the base TrainConfig class for a full list of available hyperparameters.
-        num_train_steps=30_000,
-        fsdp_devices=2,
-        batch_size=4,
     ),
     TrainConfig(
         name="pi0_fast_droid",

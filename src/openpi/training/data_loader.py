@@ -15,6 +15,7 @@ import torch
 
 import openpi.models.model as _model
 import openpi.training.config as _config
+from openpi.training.droid_rlds_dataset import DroidCoTRldsDataset
 from openpi.training.droid_rlds_dataset import DroidRldsDataset
 import openpi.transforms as _transforms
 
@@ -161,12 +162,23 @@ def create_rlds_dataset(
     shuffle: bool = False,
 ) -> Dataset:
     # At the moment, we only support DROID for RLDS datasets.
+    if data_config.cot:
+        return DroidCoTRldsDataset(
+            data_dir=data_config.rlds_data_dir,
+            language_action_dir=data_config.language_action_dir,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            action_chunk_size=action_horizon,
+            action_space=data_config.action_space,
+            shuffle_buffer_size=data_config.shuffle_buffer_size,
+        )
     return DroidRldsDataset(
         data_dir=data_config.rlds_data_dir,
         batch_size=batch_size,
         shuffle=shuffle,
         action_chunk_size=action_horizon,
         action_space=data_config.action_space,
+        shuffle_buffer_size=data_config.shuffle_buffer_size,
     )
 
 
@@ -444,7 +456,7 @@ class RLDSDataLoader:
 
     def __init__(
         self,
-        dataset: DroidRldsDataset,
+        dataset: DroidRldsDataset | DroidCoTRldsDataset,
         *,
         sharding: jax.sharding.Sharding | None = None,
         num_batches: int | None = None,

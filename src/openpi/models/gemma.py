@@ -368,9 +368,9 @@ class Module(nn.Module):
         return self.embedder.encode(tokens).astype(self.embed_dtype)
 
     @at.typecheck
-    def decode(self, embedded: at.Float[at.Array, "b _t _d"]) -> at.Int[at.Array, "b _t _v"]:
+    def decode(self, embedded: at.Float[at.Array, "b _t _d"]) -> at.Float[at.Array, "b _t _v"]:
         """Decode embedded tokens back to token ids."""
-        return self.embedder.decode(embedded).astype(jnp.int32)
+        return self.embedder.decode(embedded)
 
     @at.typecheck
     def __call__(
