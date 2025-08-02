@@ -39,7 +39,6 @@ class PaligemmaTokenizer:
 
     def tokenize_cot(self, prompt: str, reasoning: str | None = None) -> tuple[np.ndarray, np.ndarray]:
         cleaned_prompt = prompt.strip().replace("_", " ").replace("\n", " ")
-        clean_reason = reasoning.strip().replace("_", " ").replace("\n", " ")
         # eos_id = self._tokenizer.eos_id()
         pad_id = self._tokenizer.pad_id()
 
@@ -48,6 +47,7 @@ class PaligemmaTokenizer:
 
         reasoning_start = len(tokens)
         if reasoning is not None:
+            clean_reason = reasoning.strip().replace("_", " ").replace("\n", " ")
             tokens += self._tokenizer.encode(clean_reason, add_bos=False, add_eos=True)
         reasoning_end = len(tokens)
 
@@ -74,8 +74,7 @@ class PaligemmaTokenizer:
 
     def decode(self, tokens: np.ndarray) -> str:
         """Decode tokens back to a string."""
-        if isinstance(tokens, np.ndarray):
-            tokens = tokens.tolist()
+        tokens = tokens.tolist()
         return self._tokenizer.decode(tokens)
 
 

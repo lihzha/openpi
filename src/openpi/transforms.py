@@ -228,7 +228,7 @@ class AbsoluteActions(DataTransformFn):
         if "actions" not in data or self.mask is None:
             return data
 
-        state, actions = data["state"], data["actions"]
+        state, actions = np.asarray(data["state"]), np.asarray(data["actions"])
         mask = np.asarray(self.mask)
         dims = mask.shape[-1]
         actions[..., :dims] += np.expand_dims(np.where(mask, state[..., :dims], 0), axis=-2)
@@ -275,6 +275,16 @@ class TokenizePromptAndReasoning(DataTransformFn):
             "tokenized_prompt_mask": pad_mask,  # inaccurate name, but kept for compatibility. Should be `tokenized_text_mask`
             "tokenized_reasoning_mask": reasoning_mask,
         }
+
+
+@dataclasses.dataclass(frozen=True)
+class DetokenizeReasoning(DataTransformFn):
+    tokenizer: _tokenizer.PaligemmaTokenizer
+
+    def __call__(self, data: DataDict) -> DataDict:
+        breakpoint()
+        text = self.tokenizer.decode(data["reasoning_logits"].squeeze()[: data["final_length"]].astype(np.int32))
+        return {**data, "reasoning": text}
 
 
 @dataclasses.dataclass(frozen=True)

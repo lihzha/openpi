@@ -50,11 +50,19 @@ import json
 import os
 from pathlib import Path
 
+import psutil
+
 METADATA_PATH = "/n/fs/robot-data/vlm-syn/droid"
 IMAGE_LIST = [
     "exterior_image_1_left",
     "exterior_image_2_left",
 ]
+
+
+def print_memory_usage(label):
+    process = psutil.Process(os.getpid())
+    mem = process.memory_info().rss / (1024**2)  # in MB
+    print(f"[{label}] Memory usage: {mem:.2f} MB")
 
 
 class DroidActionSpace(Enum):
@@ -240,6 +248,8 @@ class DroidCoTRldsDataset:
         builder = tfds.builder("droid", data_dir=data_dir)
         dataset = dl.DLataset.from_rlds(builder, split="train", shuffle=shuffle, num_parallel_reads=num_parallel_reads)
 
+        print_memory_usage("Before table building")
+
         # 1. build episode_id table
         lang_action_files = os.listdir(language_action_dir)
         valid_eids = [f.split("_language_action.json")[0] for f in lang_action_files if "_language_action.json" in f]
@@ -253,21 +263,10 @@ class DroidCoTRldsDataset:
             default_value=tf.constant(value=False, dtype=values.dtype),  # must match
         )
 
+        print_memory_usage("After building eid_table")
+
         # 2. build language action table
-        # episodes, lang_json_raw = [], []
-        # for file in Path(language_action_dir).glob("*_language_action.json"):
-        #     eid = file.stem.replace("_language_action", "")
-        #     episodes.append(eid)
-        #     lang_json_raw.append(file.read_bytes())  # raw bytes (or serialize npy)
-        # keys = tf.constant(episodes, dtype=tf.string)
-        # values = tf.constant(lang_json_raw, dtype=tf.string)
-        # lang_table = tf.lookup.StaticHashTable(
-        #     tf.lookup.KeyValueTensorInitializer(keys, values), default_value=tf.constant(b"", dtype=tf.string)
-        # )  # other options other than a lookup table: 1. use tf.numpy_function in restructure - runs under the Python GIL → one element at a time,
-        # # no vectorisation, no TPU support. 2. use tf.io.read_file -> per-element disk I/O, not as fast
-
         episodes, lang_serialized = [], []
-
         for f in Path(language_action_dir).glob("*_language_action.json"):
             eid = f.stem.replace("_language_action", "")
             with f.open("r") as fp:
@@ -276,17 +275,18 @@ class DroidCoTRldsDataset:
             t = tf.constant(lst, dtype=tf.string)  # shape (T,)
             lang_serialized.append(tf.io.serialize_tensor(t).numpy())
             episodes.append(eid)
-
         keys = tf.constant(episodes, dtype=tf.string)
         values = tf.constant(lang_serialized, dtype=tf.string)
         lang_table = tf.lookup.StaticHashTable(
             tf.lookup.KeyValueTensorInitializer(keys, values),
             default_value=tf.constant(b"", dtype=tf.string),
-        )
+        )  # other options other than a lookup table: 1. use tf.numpy_function in restructure - runs under the Python GIL → one element at a time,
+        # no vectorisation, no TPU support. 2. use tf.io.read_file -> per-element disk I/O, not as fast
+
+        print_memory_usage("After building lang_table")
 
         # 3. build episode path table
-        episode_id_to_path_path = f"{METADATA_PATH}/episode_id_to_path.json"
-        with open(episode_id_to_path_path) as f:
+        with open(f"{METADATA_PATH}/episode_id_to_path.json") as f:
             episode_id_to_path = json.load(f)
         episode_path_to_id = {v: k for k, v in episode_id_to_path.items()}
         keys = tf.constant(list(episode_path_to_id.keys()), dtype=tf.string)
@@ -297,12 +297,12 @@ class DroidCoTRldsDataset:
             default_value=default_value,
         )
 
+        print_memory_usage("After building ep_table")
+
         # 4. build the camera idx table
-        cam2base_extrinsics_path = f"{METADATA_PATH}/cam2base_extrinsics.json"
-        with open(cam2base_extrinsics_path) as f:
+        with open(f"{METADATA_PATH}/cam2base_extrinsics.json") as f:
             cam2base_extrinsics = json.load(f)
-        camera_serials_path = f"{METADATA_PATH}/camera_serials.json"
-        with open(camera_serials_path) as f:
+        with open(f"{METADATA_PATH}/camera_serials.json") as f:
             camera_serials = json.load(f)
         eid_to_cam_dict = {}
         for eid in cam2base_extrinsics:
@@ -330,6 +330,59 @@ class DroidCoTRldsDataset:
             tf.lookup.KeyValueTensorInitializer(keys, values),
             default_value=-1,  # -1 ⇒ “use a fallback camera”
         )
+
+        print_memory_usage("After building cam_table")
+
+        # 5. build language instruction
+        with open(f"{METADATA_PATH}/droid_language_annotations.json") as f:
+            language_annotations = json.load(f)
+        keys = tf.constant(list(language_annotations.keys()), dtype=tf.string)
+        values_1 = tf.constant(
+            [v["language_instruction1"] for v in list(language_annotations.values())], dtype=tf.string
+        )
+        instr_table_1 = tf.lookup.StaticHashTable(
+            tf.lookup.KeyValueTensorInitializer(keys, values_1),
+            default_value="",  # "" ⇒ “use a fallback instruction”
+        )
+        values_2 = tf.constant(
+            [v["language_instruction2"] for v in list(language_annotations.values())], dtype=tf.string
+        )
+        instr_table_2 = tf.lookup.StaticHashTable(
+            tf.lookup.KeyValueTensorInitializer(keys, values_2),
+            default_value="",  # "" ⇒ “use a fallback instruction”
+        )
+        values_3 = tf.constant(
+            [v["language_instruction3"] for v in list(language_annotations.values())], dtype=tf.string
+        )
+        instr_table_3 = tf.lookup.StaticHashTable(
+            tf.lookup.KeyValueTensorInitializer(keys, values_3),
+            default_value="",  # "" ⇒ “use a fallback instruction”
+        )
+        fallback_instructions = tf.constant(
+            [
+                "Do something useful.",
+                "Complete the task.",
+                "Perform the task.",
+                "Carry out the objective.",
+                "Execute the current task.",
+                "Accomplish the goal.",
+                "Proceed with the task.",
+                "Handle the task at hand.",
+                "Continue the operation.",
+                "Fulfill the task.",
+                "Take meaningful steps.",
+                "Demonstrate useful behavior.",
+                "Act in a useful manner.",
+                "Engage in productive actions.",
+                "Make useful moves.",
+                "Undertake useful actions.",
+                "Behave purposefully.",
+                "Start the activity.",
+            ],
+            dtype=tf.string,
+        )
+
+        print_memory_usage("After building instr_table")
 
         def _id_ok(traj):
             file_path = traj["traj_metadata"]["episode_metadata"]["file_path"][0]
@@ -369,6 +422,25 @@ class DroidCoTRldsDataset:
             episode_id = ep_table.lookup(episode_path)
             lang_bytes = lang_table.lookup(episode_id)
             lang_tensor = tf.io.parse_tensor(lang_bytes, tf.string)
+            instruction_1 = instr_table_1.lookup(episode_id)
+            instruction_2 = instr_table_2.lookup(episode_id)
+            instruction_3 = instr_table_3.lookup(episode_id)
+            # Check which instruction is non-empty, and form a non-empty list of instructions.
+            # If all instrcutions are empty, raise an error. Then sample one instruction from the list.
+            instructions = tf.stack([instruction_1, instruction_2, instruction_3])
+            mask = tf.strings.length(instructions) > 0
+            non_empty = tf.boolean_mask(instructions, mask)
+            num_valid = tf.shape(non_empty)[0]
+
+            fallback_index = tf.random.uniform((), minval=0, maxval=tf.shape(fallback_instructions)[0], dtype=tf.int32)
+            fallback_instruction = fallback_instructions[fallback_index]
+            instruction = tf.cond(
+                num_valid > 0,
+                lambda: tf.random.shuffle(non_empty)[0],
+                lambda: fallback_instruction,
+            )
+
+            instruction_vec = tf.fill([tf.shape(actions)[0]], instruction)
 
             cam_idx = cam_table.lookup(episode_path)
             cam_images = [
@@ -388,10 +460,6 @@ class DroidCoTRldsDataset:
             #     lambda: traj["observation"]["exterior_image_2_left"],
             # )
             # wrist_img = traj["observation"]["wrist_image_left"]
-            # # Randomly sample one of the three language instructions
-            instruction = tf.random.shuffle(
-                [traj["language_instruction"], traj["language_instruction_2"], traj["language_instruction_3"]]
-            )[0]
 
             traj_len = tf.shape(actions)[0]
             episode_id_vec = tf.fill([traj_len], episode_id)
@@ -404,7 +472,7 @@ class DroidCoTRldsDataset:
                     "cartesian_position": traj["observation"]["cartesian_position"],
                     "gripper_position": traj["observation"]["gripper_position"],
                 },
-                "prompt": instruction,
+                "prompt": instruction_vec,
                 "language_actions": lang_tensor,
                 "episode_id": episode_id_vec,
             }
@@ -470,16 +538,6 @@ class DroidCoTRldsDataset:
 
         dataset = dataset.filter(filter_idle)
 
-        # def decode_lang_actions(traj):
-        #     """Splits episode into action chunks."""
-        #     traj["language_actions"] = json.loads(traj["language_actions"].numpy().decode())
-        #     return traj
-
-        # dataset = dataset.traj_map(decode_lang_actions, num_parallel_calls)
-
-        # for sample in dataset.take(1):
-        #     breakpoint()
-
         # Flatten: map from trajectory dataset to dataset of individual action chunks
         dataset = dataset.flatten(num_parallel_calls=num_parallel_calls)
 
@@ -516,6 +574,8 @@ class DroidCoTRldsDataset:
 
 
 if __name__ == "__main__":
+    import numpy as np
+
     ds = DroidCoTRldsDataset(
         data_dir="/n/fs/vla-mi/datasets/OXE/",
         language_action_dir="/n/fs/robot-data/vlm-syn/posed_droid",
@@ -523,5 +583,24 @@ if __name__ == "__main__":
         shuffle_buffer_size=200,
     )
     ds = iter(ds)
-    for batch in ds:
-        breakpoint()
+    all_eids = []
+    for f in Path("/n/fs/robot-data/vlm-syn/posed_droid").glob("*_language_action.json"):
+        eid = f.stem.replace("_language_action", "")
+        all_eids.append(eid)
+
+    with open(f"{METADATA_PATH}/droid_language_annotations.json") as f:
+        language_annotations = json.load(f)
+        all_lang_eids = list(language_annotations.keys())
+    total_empty = 0
+    for i, batch in enumerate(ds):
+        if np.any(batch["prompt"] == b"Do something useful."):
+            # count the number of "Do something useful." prompts
+            total_empty += np.sum(batch["prompt"] == b"Do something useful.")
+            propotion = total_empty / (i + 1) / 32
+            print(f"Iter {i}, Total empty prompts: {total_empty}, Propotion: {propotion:.2f}")
+        for raw_eid in batch["episode_id"]:
+            eid = raw_eid.decode()
+            assert eid in all_eids, f"Episode ID {eid} not found in the list of valid episode IDs."
+            # assert eid in all_lang_eids, f"Episode ID {eid} not found in the language annotations."
+            if eid not in all_lang_eids:
+                print(f"Episode ID {eid} not found in the language annotations.")

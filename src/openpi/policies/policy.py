@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+import enum
 import logging
 import pathlib
 import time
@@ -18,6 +19,13 @@ from openpi.shared import array_typing as at
 from openpi.shared import nnx_utils
 
 BasePolicy: TypeAlias = _base_policy.BasePolicy
+
+
+class PolicyType(enum.Enum):
+    """Supported policy types."""
+
+    Policy = "policy"
+    CoTPolicy = "cot_policy"
 
 
 class Policy(BasePolicy):
@@ -90,3 +98,55 @@ class PolicyRecorder(_base_policy.BasePolicy):
 
         np.save(output_path, np.asarray(data))
         return results
+
+
+class CoTPolicy(Policy):
+    """A policy that uses Chain of Thought (CoT) reasoning."""
+
+    def __init__(
+        self,
+        model: _model.BaseModel,
+        *,
+        rng: at.KeyArrayLike | None = None,
+        transforms: Sequence[_transforms.DataTransformFn] = (),
+        output_transforms: Sequence[_transforms.DataTransformFn] = (),
+        sample_kwargs: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ):
+        super().__init__(
+            model=model,
+            rng=rng,
+            transforms=transforms,
+            output_transforms=output_transforms,
+            sample_kwargs=sample_kwargs,
+            metadata=metadata,
+        )
+        self._sample_reasoning = nnx_utils.module_jit(model.sample_reasoning)
+
+    @override
+    def infer_reasoning(self, obs: dict) -> dict:  # type: ignore[misc]
+        # Make a copy since transformations may modify the inputs in place.
+        inputs = jax.tree.map(lambda x: x, obs)
+        inputs = self._input_transform(inputs)
+        # Make a batch and convert to jax.Array.
+        inputs = jax.tree.map(lambda x: jnp.asarray(x)[np.newaxis, ...], inputs)
+
+        start_time = time.monotonic()
+        self._rng, sample_rng = jax.random.split(self._rng)
+        print(self._sample_kwargs)
+        logits, t = self._sample_reasoning(_model.Observation.from_dict(inputs))
+        outputs = {
+            "state": inputs["state"],
+            "actions": jnp.zeros_like(inputs["state"]),
+            "reasoning_logits": logits,
+            "final_length": t,
+        }
+        # Unbatch and convert to np.ndarray.        # Unbatch and convert to np.ndarray.
+        # outputs = jax.tree.map(lambda x: np.asarray(x[0, ...]), outputs)
+        model_time = time.monotonic() - start_time
+
+        outputs = self._output_transform(outputs)
+        outputs["policy_timing"] = {
+            "infer_ms": model_time * 1000,
+        }
+        return outputs

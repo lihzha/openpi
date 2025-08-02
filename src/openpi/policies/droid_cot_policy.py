@@ -11,8 +11,8 @@ def make_droid_example() -> dict:
     """Creates a random input example for the Droid policy."""
     return {
         "observation/exterior_image_1_left": np.random.randint(256, size=(224, 224, 3), dtype=np.uint8),
-        "observation/wrist_image_left": np.random.randint(256, size=(224, 224, 3), dtype=np.uint8),
-        "observation/joint_position": np.random.rand(7),
+        # "observation/wrist_image_left": np.random.randint(256, size=(224, 224, 3), dtype=np.uint8),
+        "observation/cartesian_position": np.random.rand(6),
         "observation/gripper_position": np.random.rand(1),
         "prompt": "do something",
     }
@@ -137,4 +137,7 @@ class DroidCoTInputs(transforms.DataTransformFn):
 class DroidCoTOutputs(transforms.DataTransformFn):
     def __call__(self, data: dict) -> dict:
         # Only return the first 8 dims.
-        return {"actions": np.asarray(data["actions"][:, :7])}
+        actions = data.get("actions")
+        if actions is not None:
+            actions = np.asarray(actions[:, :7])
+        return {"actions": actions, "reasoning": data.get("reasoning")}

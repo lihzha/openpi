@@ -342,7 +342,7 @@ class Pi0CoT(_model.BaseModel):
         num_steps: int | at.Int[at.Array, ""] = 10,
     ) -> _model.Actions:
         # first fill KV cache with a forward pass of the prefix
-        prefix_tokens, prefix_mask, kv_cache = self.sample_reasoning(observation)
+        prefix_tokens, prefix_mask, kv_cache = self._sample_reasoning_tokens(observation)
 
         # note that we use the convention more common in diffusion literature, where t=1 is noise and t=0 is the target
         # distribution. yes, this is the opposite of the pi0 paper, and I'm sorry.
@@ -388,56 +388,133 @@ class Pi0CoT(_model.BaseModel):
         x_0, _ = jax.lax.while_loop(cond, step, (noise, 1.0))
         return x_0
 
-    def sample_reasoning(
-        self,
-        observation: _model.Observation,
-    ) -> _model.Actions:
-        p_tokens, p_mask, p_ar_mask = self.embed_prefix(observation)
-        p_attn = make_attn_mask(p_mask, p_ar_mask)
-        pos = jnp.cumsum(p_mask, axis=1) - 1
-        (h, _), kv = self.PaliGemma.llm([p_tokens, None], mask=p_attn, positions=pos)
-        curr_h = h[:, -1:, :]  # (B, 1, D) last hidden
-        curr_id = self.PaliGemma.llm(curr_h, method="decode")  # first generated id
+    # TODO: assert bs=1, i.e. assuming only used for inference.
+    def _sample_reasoning_tokens(self, observation: _model.Observation) -> _model.Actions:
+        # ───────────────── 1. Prefix pass ─────────────────
+        p_tokens, p_mask0, p_ar_mask0 = self.embed_prefix(observation)  # (B,Tp,D) + (B,Tp)
+        b, tp, d = *p_tokens.shape[:2], p_tokens.shape[-1]
+        gen_len = observation.tokenized_prompt.shape[1]  # generation length
+        max_len = gen_len + tp  # generation budget
 
-        # create buffers to store sampled reasoning tokens.
-        batch, hidden_dim = curr_h.shape[0], curr_h.shape[-1]
-        max_len = observation.tokenized_prompt.shape[1]  # TODO: generation max len might be different to model max len.
+        # Full-length (static-shape) buffers
+        p_mask = jnp.zeros((b, max_len), dtype=bool).at[:, :tp].set(p_mask0)
+        p_ar_mask = jnp.zeros((b, max_len), dtype=bool).at[:, :tp].set(p_ar_mask0)
 
-        # hidden-state buffer
-        h_buf = jnp.zeros((batch, max_len, hidden_dim), dtype=curr_h.dtype)
-        h_buf = h_buf.at[:, : h.shape[1], :].set(h)  # store prefix h
-        idx = p_tokens.shape[1]  # next free slot
+        # prefix attention & positions
+        pref_attn = make_attn_mask(p_mask[:, :tp], p_ar_mask[:, :tp])  # (B,Tp,Tp)
+        pos_pref = jnp.cumsum(p_mask[:, :tp], axis=1) - 1
 
+        (hs, _), kv0 = self.PaliGemma.llm([p_tokens, None], mask=pref_attn, positions=pos_pref)
+        curr_h = hs[:, -1:, :]  # (B,1,D)
+        curr_id = jnp.argmax(self.PaliGemma.llm(curr_h, method="decode"), axis=-1, keepdims=True)  # (B,1,1)
+
+        # ───────────────── 2. Static KV cache ─────────────
+        nl, _, _, k, h = kv0[0].shape  # num_kv_heads, head_dim
+        k_cache = jnp.zeros((nl, b, max_len, k, h), dtype=kv0[0].dtype).at[:, :, :tp].set(kv0[0])
+        v_cache = jnp.zeros_like(k_cache).at[:, :, :tp].set(kv0[1])
+
+        # ───────────────── 3. Output buffers ──────────────
+        h_buf = jnp.zeros((b, gen_len, d), dtype=hs.dtype).at[:, 0].set(curr_h.squeeze(1))
+        id_buf = jnp.zeros((b, gen_len, 1), dtype=jnp.int32).at[:, 0].set(curr_id.squeeze(1))
+
+        t0 = 0
+
+        # ───────────────── 4. Body / Cond ────────────────
         def step(carry):
-            curr_h, _, p_mask, p_ar_mask, kv, h_buf, i = carry
+            (
+                curr_h,  # (B,1,D)
+                curr_id,  # (B,1)
+                k_cache,
+                v_cache,  # (B,H,MAX,T,D_h) – static MAX
+                p_mask,
+                p_ar_mask,  # (B,MAX)         – static MAX
+                h_buf,
+                id_buf,  # (B,MAX,D) / (B,MAX)
+                _t,  # scalar  (how many tokens we have generated so far)
+            ) = carry
 
-            # write id into buffer
-            h_buf = h_buf.at[:, i, :].set(curr_h.squeeze(1))
-            i = i + 1
+            # -------------------------------------------------------
+            # 1. figure out absolute position of the *next* token
+            # -------------------------------------------------------
+            t_abs = _t + tp  # tp is the (static) prefix length
+            jax.debug.print("t:{t}", t=_t)
+            # -------------------------------------------------------
+            # 2. mark the new position as visible
+            # -------------------------------------------------------
+            p_mask = p_mask.at[:, t_abs].set(True)
+            p_ar_mask = p_ar_mask.at[:, t_abs].set(True)
 
-            # extend masks
-            p_mask = jnp.concatenate([p_mask, jnp.ones((batch, 1), dtype=jnp.bool_)], axis=1)
-            p_ar_mask = jnp.concatenate([p_ar_mask, jnp.ones((batch, 1), dtype=jnp.bool_)], axis=1)
-            attn_mask = make_attn_mask(p_mask, p_ar_mask)
-            pos = jnp.cumsum(p_mask, axis=1) - 1
+            # -------------------------------------------------------
+            # 3. full-length (static) helpers
+            # -------------------------------------------------------
+            B, MAX = p_mask.shape
+            pos = jnp.array([[t_abs]]).repeat(B, axis=0)  # (B,MAX)
+            row_core = make_attn_mask(p_mask, p_ar_mask)[:, -1:, :]
+            row_core4 = row_core[:, :, None, :]
 
-            # get next hidden & next id
-            (h_next, _), kv = self.PaliGemma.llm([curr_h, None], mask=attn_mask, positions=pos, kv_cache=kv)
-            next_id = self.PaliGemma.llm(h_next[:, -1:, :], method="decode")
+            # we only need the row that queries the token at `t_abs`
+            attn_row = jax.lax.dynamic_update_slice(
+                jnp.zeros((B, 1, 1, MAX + 1), dtype=bool),  # STATIC big tensor
+                row_core4,  # STATIC window
+                (0, 0, 0, 0),  # start indices can vary
+            )
+            attn_row = attn_row.squeeze(1)
 
-            return (h_next[:, -1:, :], next_id, p_mask, p_ar_mask, kv, h_buf, i)
+            # -------------------------------------------------------
+            # 4. run one-token decode
+            # -------------------------------------------------------
+            (next_h, _), kv_new = self.PaliGemma.llm(
+                [curr_h, None],
+                positions=pos,  # (B,1)
+                mask=attn_row,  # (B,1,MAX)
+                kv_cache=(k_cache, v_cache),
+            )
+
+            next_id = jnp.argmax(
+                self.PaliGemma.llm(next_h, method="decode"),
+                axis=-1,
+                keepdims=True,
+            )  # (B,1)
+
+            jax.debug.print("next_id:{next_id}", next_id=next_id)
+
+            # -------------------------------------------------------
+            # 5. scatter the freshly computed KV pair back into the *static* cache
+            # -------------------------------------------------------
+            k_cache = k_cache.at[:, :, t_abs].set(kv_new[0][:, :, -1])
+            v_cache = v_cache.at[:, :, t_abs].set(kv_new[1][:, :, -1])
+
+            _t += 1
+
+            # store hidden state / id for inspection or later use
+            h_buf = h_buf.at[:, _t].set(next_h.squeeze(1))
+            id_buf = id_buf.at[:, _t].set(next_id.squeeze(1))
+
+            # -------------------------------------------------------
+            # 6. advance pointer and return identical-shape carry
+            # -------------------------------------------------------
+            return (next_h, next_id, k_cache, v_cache, p_mask, p_ar_mask, h_buf, id_buf, _t)
 
         def cond(carry):
-            _, curr_id, _, _, _, _, i = carry
-            # stop if EOS or we hit MAX_LEN-1 (leave final slot unused)
-            return jnp.logical_and(curr_id.squeeze(-1) != self.EOS_ID, i < max_len - 1)
+            _, curr_id, _, _, _, _, _, _, t = carry
+            not_eos = curr_id.squeeze() != self.EOS_ID
+            space = t < gen_len - 1
+            return jnp.logical_and(not_eos, space)
 
-        carry = (curr_h, curr_id, p_mask, p_ar_mask, kv, h_buf, idx)
-        _, _, p_mask, p_ar_mask, kv_cache, final_buf, final_len = jax.lax.while_loop(cond, step, carry)
+        # ───────────────── 5. While-loop ─────────────────
+        carry = (curr_h, curr_id, k_cache, v_cache, p_mask, p_ar_mask, h_buf, id_buf, t0)
+        curr_h, curr_id, k_cache, v_cache, p_mask, p_ar_mask, h_buf, id_buf, t = jax.lax.while_loop(cond, step, carry)
 
-        out_hidden = final_buf[:, :final_len]  # (batch, L_actual, D)
-        # texts = self.tokenizer.decode_batch(out_ids)  # TODO: tokenizer separately defined outside the model
-        prefix_mask = make_attn_mask(p_mask, p_ar_mask)
-        prefix_tokens = jnp.concatenate([p_tokens, out_hidden], axis=1)
+        # ───────────────── 6. Pack outputs ───────────────
+        # final_len = t
+        # final_mask = make_attn_mask(p_mask[:, : final_len + tp], p_ar_mask[:, : final_len + tp])
+        # final_tokens = jnp.concatenate([p_tokens, h_buf[:, :final_len]], axis=1)
+        # out_ids = id_buf[:, :final_len, 0]
 
-        return prefix_mask, prefix_tokens, kv_cache
+        return p_mask, p_ar_mask, h_buf, id_buf, t
+
+    @override
+    def sample_reasoning(self, observation: _model.Observation):
+        _, _, _, logits, t = self._sample_reasoning_tokens(observation)
+        # return self.PaliGemma.llm(reasoning_tokens, method="decode")  # logits
+        return logits, t

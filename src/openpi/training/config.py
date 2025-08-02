@@ -162,25 +162,10 @@ class CoTModelTransformFactory(GroupFactory):
                             _tokenizer.PaligemmaTokenizer(model_config.max_token_len)
                         ),
                     ],
+                    outputs=[
+                        _transforms.DetokenizeReasoning(_tokenizer.PaligemmaTokenizer(model_config.max_token_len))
+                    ],
                 )
-            case _model.ModelType.PI0_FAST:
-                raise NotImplementedError
-                # return _transforms.Group(
-                #     inputs=[
-                #         _transforms.InjectDefaultPrompt(self.default_prompt),
-                #         _transforms.ResizeImages(224, 224),
-                #         _transforms.TokenizeFASTInputs(
-                #             _tokenizer.FASTTokenizer(model_config.max_token_len),
-                #         ),
-                #     ],
-                #     outputs=[
-                #         _transforms.ExtractFASTActions(
-                #             _tokenizer.FASTTokenizer(model_config.max_token_len),
-                #             action_horizon=model_config.action_horizon,
-                #             action_dim=model_config.action_dim,
-                #         )
-                #     ],
-                # )
             case _:
                 raise ValueError(f"Unsupported model type: {model_config.model_type}")
 
@@ -669,9 +654,9 @@ _CONFIGS = [
             shuffle_buffer_size=20_000,
         ),
         num_train_steps=100_000,
-        fsdp_devices=2,
-        batch_size=32,
-        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
+        fsdp_devices=4,
+        batch_size=4,
+        weight_loader=weight_loaders.PaliGemmaWeightLoader(),
         # lr_schedule=_optimizer.CosineDecaySchedule(
         #     warmup_steps=1_000,
         #     peak_lr=5e-5,
