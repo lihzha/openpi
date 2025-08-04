@@ -247,8 +247,8 @@ class DroidCoTRldsDataset:
         # Configure Tensorflow with *no GPU devices* (to prevent clobber with PyTorch / JAX)
         tf.config.set_visible_devices([], "GPU")
 
-        builder = tfds.builder("droid", data_dir=data_dir, try_gcs=True)
-        # builder = tfds.load("droid", data_dir="gs://gresearch/robotics", split="train")
+        # builder = tfds.builder("droid", data_dir=data_dir, try_gcs=True)
+        builder = tfds.builder("droid", data_dir="gs://gresearch/robotics", split="train", try_gcs=True)
 
         dataset = dl.DLataset.from_rlds(builder, split="train", shuffle=shuffle, num_parallel_reads=num_parallel_reads)
 
