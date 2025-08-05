@@ -1,6 +1,7 @@
 import dataclasses
 import functools
 import logging
+import os
 import platform
 from typing import Any
 
@@ -195,6 +196,7 @@ def train_step(
 def main(config: _config.TrainConfig):
     jax.distributed.initialize()
     data_dir = save_dir = config.data.rlds_data_dir
+    os.environ["OPENAI_DATA_HOME"] = f"{data_dir}/cache"
     prevent_cross_region(data_dir, save_dir)
 
     init_logging()
