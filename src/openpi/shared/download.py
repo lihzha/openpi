@@ -93,6 +93,11 @@ def maybe_download(
         else:
             return epath.Path(cache_path) if remote_cache else pathlib.Path(cache_path)
 
+    if _is_gcs(cache_path):
+        logger.info("Copying %s → %s (GCS fast-path)", url, cache_path)
+        _download_fsspec(url, cache_path, **kwargs)  # final path!
+        return epath.Path(cache_path)
+
     # ── 4. Acquire lock (local FS only) ────────────────────────────────────────
     # GCS locking is best-effort with atomic object creation; we skip `filelock`.
     lock = filelock.FileLock(lock_path) if not remote_cache else None
