@@ -9,9 +9,16 @@ import jax.numpy as jnp
 
 os.environ.pop("LEROBOT_HOME", None)  # Trick to ensure LEROBOT_HOME is not set.
 
-import lerobot.common.datasets.lerobot_dataset as lerobot_dataset
+try:
+    import lerobot.common.datasets.lerobot_dataset as lerobot_dataset
+except:
+    pass
 import numpy as np
-import torch
+
+try:
+    import torch
+except:
+    pass
 
 import openpi.models.model as _model
 import openpi.training.config as _config
