@@ -33,6 +33,19 @@ ModelType: TypeAlias = _model.ModelType
 Filter: TypeAlias = nnx.filterlib.Filter
 
 
+def _to_path(base: str | pathlib.Path, *extra: str) -> pathlib.Path | epath.Path:
+    """
+    Join `base` with any `extra` segments, returning:
+      • `pathlib.Path` for normal file-system paths
+      • `epath.Path`   for `gs://` URIs
+    """
+    base = str(base)  # in case the attr is already a Path object
+    if base.startswith("gs://"):
+        # epath.Path already mimics pathlib semantics (`/`, `.joinpath`, etc.)
+        return epath.Path(base).joinpath(*extra)  # no `.resolve()` on GCS
+    return (pathlib.Path(base).joinpath(*extra)).resolve()
+
+
 @dataclasses.dataclass(frozen=True)
 class AssetsConfig:
     """Determines the location of assets (e.g., norm stats) that will be used to set up the data pipeline.
@@ -594,16 +607,16 @@ class TrainConfig:
     fsdp_devices: int = 1
 
     @property
-    def assets_dirs(self) -> pathlib.Path:
-        """Get the assets directory for this config."""
-        return (pathlib.Path(self.assets_base_dir) / self.name).resolve()
+    def assets_dirs(self) -> pathlib.Path | epath.Path:
+        """Assets directory (works for local paths and gs://…)."""
+        return _to_path(self.assets_base_dir, self.name)
 
     @property
-    def checkpoint_dir(self) -> pathlib.Path:
-        """Get the checkpoint directory for this config."""
+    def checkpoint_dir(self) -> pathlib.Path | epath.Path:
+        """Checkpoint directory (local or Cloud Storage)."""
         if not self.exp_name:
             raise ValueError("--exp_name must be set")
-        return (pathlib.Path(self.checkpoint_base_dir) / self.name / self.exp_name).resolve()
+        return _to_path(self.checkpoint_base_dir, self.name, self.exp_name)
 
     @property
     def trainable_filter(self) -> nnx.filterlib.Filter:

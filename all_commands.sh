@@ -8,9 +8,9 @@ source ~/.zshrc &&
 # export SSL_CERT_FILE=/home/irom-lab/openpi/.venv/lib/python3.11/site-packages/certifi/cacert.pem
 # export GRPC_DEFAULT_SSL_ROOTS_FILE_PATH=/home/irom-lab/openpi/.venv/lib/python3.11/site-packages/certifi/cacert.pem
 # export CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
-# export OPENAI_DATA_HOME="gs://pi0-cot/cache"
+# export OPENPI_DATA_HOME="gs://pi0-cot/cache"
 uv run --group rlds scripts/compute_norm_stats.py --config-name pi0_droid_cot --max-frames 100_000 &&
-
+XLA_PYTHON_CLIENT_MEM_FRACTION=0.95 uv run --group rlds scripts/train.py pi0_droid_cot_v4 --exp-name=test_tpu_v4 --overwrite
 
 
 
