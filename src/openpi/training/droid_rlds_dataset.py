@@ -47,6 +47,7 @@ from __future__ import annotations
 from enum import Enum
 from enum import auto
 import json
+import logging
 import os
 from pathlib import Path
 
@@ -241,6 +242,7 @@ class DroidCoTRldsDataset:
         import tensorflow_datasets as tfds
 
         assert action_space == DroidActionSpace.CARTESIAN_POSITION, "CoT only supports EEF actions for now"
+        logging.info("Before set visible devices")
 
         tf.config.set_visible_devices([], "TPU")
 
@@ -255,8 +257,8 @@ class DroidCoTRldsDataset:
         # ---------------------------------------------------------------------
         # 1. TF-DS builder + base dataset
         # ---------------------------------------------------------------------
-        print(data_dir)
-        print_memory_usage("Before dataset creation")
+        logging.info("Before dataset creation")
+
         builder = tfds.builder("droid", data_dir=data_dir)
         dataset = dl.DLataset.from_rlds(
             builder,
