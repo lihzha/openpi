@@ -634,7 +634,7 @@ _CONFIGS = [
             shuffle_buffer_size=20_000,
             assets=AssetsConfig(
                 assets_dir="gs://pi0-cot/assets",
-                asset_id="droid",
+                asset_id="pi0_droid_cot_v4",
             ),
         ),
         num_train_steps=100_000,
@@ -661,7 +661,7 @@ _CONFIGS = [
             shuffle_buffer_size=20_000,
             assets=AssetsConfig(
                 assets_dir="gs://droid-cot/assets",
-                asset_id="droid",
+                asset_id="pi0_droid_cot",
             ),
         ),
         num_train_steps=100_000,
