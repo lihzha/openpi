@@ -242,7 +242,6 @@ class DroidCoTRldsDataset:
         import tensorflow_datasets as tfds
 
         assert action_space == DroidActionSpace.CARTESIAN_POSITION, "CoT only supports EEF actions for now"
-        logging.info("Before set visible devices")
 
         tf.config.set_visible_devices([], "TPU")
 
@@ -257,19 +256,13 @@ class DroidCoTRldsDataset:
         # ---------------------------------------------------------------------
         # 1. TF-DS builder + base dataset
         # ---------------------------------------------------------------------
-        logging.info("Before dataset creation")
-
         builder = tfds.builder("droid", data_dir=data_dir)
-        logging.info("After builder creation")
         dataset = dl.DLataset.from_rlds(
             builder,
             split="train",
             shuffle=shuffle,
             num_parallel_reads=num_parallel_reads,
         )
-
-        print_memory_usage("Before table building")
-        logging.info(language_action_dir)
 
         # ---------------------------------------------------------------------
         # 2. Episode-ID table  (valid_eids → True)
@@ -280,7 +273,6 @@ class DroidCoTRldsDataset:
             for fname in lang_action_files
             if fname.endswith("_language_action.json")
         ]
-        logging.info(valid_eids)
         keys = tf.constant(valid_eids, dtype=tf.string)
         values = tf.ones(len(valid_eids), dtype=tf.bool)
         eid_table = tf.lookup.StaticHashTable(
@@ -299,6 +291,7 @@ class DroidCoTRldsDataset:
             eid = os.path.basename(path).split("_language_action.json")[0]
             with tf.io.gfile.GFile(path, "r") as fp:
                 lst = json.load(fp)  # list[str] (len == # steps)
+                logging.info(f"Loaded '{lst[0]}' for episode {eid}")
             lst.append("stop")
             t = tf.constant(lst, dtype=tf.string)
             lang_serialized.append(tf.io.serialize_tensor(t).numpy())
