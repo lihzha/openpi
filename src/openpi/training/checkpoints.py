@@ -20,6 +20,8 @@ import openpi.training.utils as training_utils
 def initialize_checkpoint_dir(
     checkpoint_dir: epath.Path | str, *, keep_period: int | None, overwrite: bool, resume: bool
 ) -> tuple[ocp.CheckpointManager, bool]:
+    logging.info(f"Checkpoint_dir:{checkpoint_dir}")
+
     checkpoint_dir = epath.Path(checkpoint_dir).resolve()
     logging.info(f"Checkpoint_dir:{checkpoint_dir}")
     resuming = False
