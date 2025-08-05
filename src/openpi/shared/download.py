@@ -219,7 +219,8 @@ def _copy_dir_gcs(src: str, dst: str) -> None:
         for fname in files:
             s = tf.io.gfile.join(root, fname)
             d = tf.io.gfile.join(dst, rel_root, fname)
-            tf.io.gfile.makedirs(tf.io.gfile.dirname(d))
+            dst_dir = os.path.dirname(str(d))
+            tf.io.gfile.makedirs(dst_dir)
             tf.io.gfile.copy(s, d, overwrite=True)
 
 
