@@ -248,7 +248,7 @@ class DroidCoTRldsDataset:
 
         # ⇨ point all data + metadata directories to the GCS bucket
         BUCKET_ROOT = "gs://droid-cot"  # change once, used everywhere
-        data_dir = f"{BUCKET_ROOT}/droid/1.0.1"  # TF-DS shards live here
+        data_dir = f"{BUCKET_ROOT}"  # TF-DS shards live here
         language_action_dir = f"{BUCKET_ROOT}/lang_annotations/posed_droid"
         METADATA_PATH = f"{BUCKET_ROOT}/lang_annotations/metadata"
 
