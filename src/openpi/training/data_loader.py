@@ -422,7 +422,7 @@ class TorchDataLoader:
         )
 
     @property
-    def torch_loader(self) -> torch.utils.data.DataLoader:
+    def torch_loader(self):
         return self._data_loader
 
     def __iter__(self):
