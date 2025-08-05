@@ -13,6 +13,7 @@ import jax.experimental
 import jax.numpy as jnp
 import numpy as np
 import optax
+from rail_tpu_utils import prevent_cross_region
 import tqdm_loggable.auto as tqdm
 import wandb
 
@@ -193,6 +194,8 @@ def train_step(
 
 def main(config: _config.TrainConfig):
     jax.distributed.initialize()
+    prevent_cross_region("gs://pi0-cot", "gs://pi0-cot")
+
     init_logging()
     logging.info(f"Running on: {platform.node()}")
 

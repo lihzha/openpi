@@ -646,7 +646,7 @@ _CONFIGS = [
         data=RLDSDroidCoTDataConfig(
             repo_id="droid",
             # Set this to the path to your DROID RLDS dataset (the parent directory of the `droid` directory).
-            rlds_data_dir="/n/fs/vla-mi/datasets/OXE/",
+            rlds_data_dir=None,
             action_space=droid_rlds_dataset.DroidActionSpace.CARTESIAN_POSITION,
             base_config=DataConfig(
                 prompt_from_task=True,
@@ -657,6 +657,8 @@ _CONFIGS = [
         fsdp_devices=8,
         batch_size=64,
         weight_loader=weight_loaders.PaliGemmaWeightLoader(),
+        assets_base_dir="gs://pi0-cot/assets",
+        checkpoint_base_dir="gs://pi0-cot/checkpoints",
         # lr_schedule=_optimizer.CosineDecaySchedule(
         #     warmup_steps=1_000,
         #     peak_lr=5e-5,
