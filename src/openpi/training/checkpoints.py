@@ -21,6 +21,7 @@ def initialize_checkpoint_dir(
     checkpoint_dir: epath.Path | str, *, keep_period: int | None, overwrite: bool, resume: bool
 ) -> tuple[ocp.CheckpointManager, bool]:
     checkpoint_dir = epath.Path(checkpoint_dir).resolve()
+    logging.info(f"Checkpoint_dir:{checkpoint_dir}")
     resuming = False
     if checkpoint_dir.exists():
         if overwrite:

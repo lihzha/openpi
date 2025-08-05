@@ -74,6 +74,9 @@ def maybe_download(
             raise FileNotFoundError(f"File not found at {url}")
         return p.resolve()
 
+    if parsed.scheme == "gs" and parsed.netloc in ("pi0-cot", "droid-cot"):
+        return url
+
     # ── 2. Build cache path ────────────────────────────────────────────────────
     cache_dir = get_cache_dir()  # could be local or gs://
     remote_cache = _is_gcs(cache_dir)
