@@ -25,7 +25,7 @@ def get_cache_dir() -> pathlib.Path:
     if cache_dir is None:
         raise ValueError(f"Environment variable {_OPENPI_DATA_HOME} must be set to an absolute path.")
     cache_dir.mkdir(parents=True, exist_ok=True)
-    _set_folder_permission(cache_dir)
+    # _set_folder_permission(cache_dir)
     return cache_dir
 
 
