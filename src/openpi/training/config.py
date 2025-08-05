@@ -633,8 +633,8 @@ _CONFIGS = [
             ),
             shuffle_buffer_size=20_000,
             assets=AssetsConfig(
-                assets_dir="gs://pi0-cot/assets",
-                asset_id="pi0_droid_cot_v4",
+                assets_dir="gs://pi0-cot/assets/pi0_droid_cot_v4",
+                asset_id="droid",
             ),
         ),
         num_train_steps=100_000,
