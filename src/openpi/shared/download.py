@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 def get_cache_dir() -> pathlib.Path:
     cache_dir = os.getenv(_OPENPI_DATA_HOME, None)
-    if cache_dir is None or not cache_dir.is_absolute():
+    if cache_dir is None:
         raise ValueError(f"Environment variable {_OPENPI_DATA_HOME} must be set to an absolute path.")
     cache_dir.mkdir(parents=True, exist_ok=True)
     _set_folder_permission(cache_dir)
