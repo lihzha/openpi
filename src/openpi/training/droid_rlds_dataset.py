@@ -58,8 +58,6 @@ IMAGE_LIST = [
     "exterior_image_2_left",
 ]
 
-os.environ["CURL_CA_BUNDLE"] = "/etc/pki/tls/certs/ca-bundle.crt"  # Ensure the CA bundle is set for SSL verification
-
 
 def print_memory_usage(label):
     process = psutil.Process(os.getpid())
