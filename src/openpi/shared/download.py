@@ -1,4 +1,3 @@
-import concurrent.futures
 import datetime
 import logging
 import os
@@ -9,10 +8,11 @@ import stat
 import time
 import urllib.parse
 
+from etils import epath  # optional, but handy
 import filelock
 import fsspec
 import fsspec.generic
-import tqdm_loggable.auto as tqdm
+import tensorflow as tf  # new
 
 # Environment variable to control cache directory path, ~/.cache/openpi will be used by default.
 _OPENPI_DATA_HOME = "OPENPI_DATA_HOME"
@@ -29,93 +29,213 @@ def get_cache_dir() -> pathlib.Path:
     return cache_dir
 
 
-def maybe_download(url: str, *, force_download: bool = False, **kwargs) -> pathlib.Path:
-    """Download a file or directory from a remote filesystem to the local cache, and return the local path.
+# Helper ────────────────────────────────────────────────────────────────────────
+def _is_gcs(path: str | pathlib.Path) -> bool:
+    return str(path).startswith("gs://")
 
-    If the local file already exists, it will be returned directly.
 
-    It is safe to call this function concurrently from multiple processes.
-    See `get_cache_dir` for more details on the cache directory.
+def _join(*parts: str) -> str:
+    """`os.path.join` that works for both local FS and GCS."""
+    if _is_gcs(parts[0]):
+        return tf.io.gfile.join(*parts)
+    return str(pathlib.Path(parts[0], *parts[1:]))
 
-    Args:
-        url: URL to the file to download.
-        force_download: If True, the file will be downloaded even if it already exists in the cache.
-        **kwargs: Additional arguments to pass to fsspec.
 
-    Returns:
-        Local path to the downloaded file or directory. That path is guaranteed to exist and is absolute.
+# Main API ──────────────────────────────────────────────────────────────────────
+def maybe_download(
+    url: str,
+    *,
+    force_download: bool = False,
+    **kwargs,
+) -> pathlib.Path | epath.Path:
     """
-    # Don't use fsspec to parse the url to avoid unnecessary connection to the remote filesystem.
+    Download a file/dir to the cache (local or `gs://`) and return its absolute path.
+    """
     parsed = urllib.parse.urlparse(url)
 
-    # Short circuit if this is a local path.
+    # ── 1. Short-circuit for local *input* URLs ────────────────────────────────
     if parsed.scheme == "":
-        path = pathlib.Path(url)
-        if not path.exists():
+        p = pathlib.Path(url)
+        if not p.exists():
             raise FileNotFoundError(f"File not found at {url}")
-        return path.resolve()
+        return p.resolve()
 
-    cache_dir = get_cache_dir()
+    # ── 2. Build cache path ────────────────────────────────────────────────────
+    cache_dir = get_cache_dir()  # could be local or gs://
+    remote_cache = _is_gcs(cache_dir)
 
-    local_path = cache_dir / parsed.netloc / parsed.path.strip("/")
-    local_path = local_path.resolve()
+    cache_path = _join(cache_dir, parsed.netloc, parsed.path.lstrip("/"))
+    scratch_path = f"{cache_path}.partial"
+    lock_path = f"{cache_path}.lock"
 
-    # Check if the cache should be invalidated.
+    # ── 3. Cache-validation check ─────────────────────────────────────────────
+    def _exists(p: str) -> bool:
+        return tf.io.gfile.exists(p) if remote_cache else pathlib.Path(p).exists()
+
     invalidate_cache = False
-    if local_path.exists():
-        if force_download or _should_invalidate_cache(cache_dir, local_path):
+    if _exists(cache_path):
+        if force_download or (not remote_cache and _should_invalidate_cache(cache_dir, cache_path)):
             invalidate_cache = True
         else:
-            return local_path
+            return epath.Path(cache_path) if remote_cache else pathlib.Path(cache_path)
+
+    # ── 4. Acquire lock (local FS only) ────────────────────────────────────────
+    # GCS locking is best-effort with atomic object creation; we skip `filelock`.
+    lock = filelock.FileLock(lock_path) if not remote_cache else None
 
     try:
-        lock_path = local_path.with_suffix(".lock")
-        with filelock.FileLock(lock_path):
-            # Ensure consistent permissions for the lock file.
-            _ensure_permissions(lock_path)
-            # First, remove the existing cache if it is expired.
-            if invalidate_cache:
-                logger.info(f"Removing expired cached entry: {local_path}")
-                if local_path.is_dir():
-                    shutil.rmtree(local_path)
+        if lock:
+            lock.acquire()
+
+        # Remove expired cache entry
+        if invalidate_cache and _exists(cache_path):
+            logger.info("Removing expired cached entry: %s", cache_path)
+            if remote_cache:
+                if tf.io.gfile.isdir(cache_path):
+                    tf.io.gfile.rmtree(cache_path)
                 else:
-                    local_path.unlink()
+                    tf.io.gfile.remove(cache_path)
+            else:
+                p = pathlib.Path(cache_path)
+                shutil.rmtree(p) if p.is_dir() else p.unlink()
 
-            # Download the data to a local cache.
-            logger.info(f"Downloading {url} to {local_path}")
-            scratch_path = local_path.with_suffix(".partial")
-            _download_fsspec(url, scratch_path, **kwargs)
+        # ── 5. Download via fsspec to a scratch location ──────────────────────
+        logger.info("Downloading %s to %s", url, cache_path)
+        _download_fsspec(url, scratch_path, **kwargs)
 
-            shutil.move(scratch_path, local_path)
-            _ensure_permissions(local_path)
+        # ── 6. Atomic rename to final location ────────────────────────────────
+        if remote_cache:
+            tf.io.gfile.rename(scratch_path, cache_path, overwrite=True)
+        else:
+            shutil.move(scratch_path, cache_path)
+            _ensure_permissions(cache_path)
 
     except PermissionError as e:
-        msg = (
-            f"Local file permission error was encountered while downloading {url}. "
-            f"Please try again after removing the cached data using: `rm -rf {local_path}*`"
-        )
+        msg = f"Permission error while downloading {url}. Try removing the cache entry: rm -rf {cache_path}*"
         raise PermissionError(msg) from e
 
-    return local_path
+    finally:
+        if lock and lock.is_locked:
+            lock.release()
+
+    return epath.Path(cache_path) if remote_cache else pathlib.Path(cache_path)
 
 
-def _download_fsspec(url: str, local_path: pathlib.Path, **kwargs) -> None:
-    """Download a file from a remote filesystem to the local cache, and return the local path."""
-    fs, _ = fsspec.core.url_to_fs(url, **kwargs)
-    info = fs.info(url)
-    # Folders are represented by 0-byte objects with a trailing forward slash.
-    if is_dir := (info["type"] == "directory" or (info["size"] == 0 and info["name"].endswith("/"))):
-        total_size = fs.du(url)
-    else:
-        total_size = info["size"]
-    with tqdm.tqdm(total=total_size, unit="iB", unit_scale=True, unit_divisor=1024) as pbar:
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        future = executor.submit(fs.get, url, local_path, recursive=is_dir)
-        while not future.done():
-            current_size = sum(f.stat().st_size for f in [*local_path.rglob("*"), local_path] if f.is_file())
-            pbar.update(current_size - pbar.n)
-            time.sleep(1)
-        pbar.update(total_size - pbar.n)
+# def maybe_download(url: str, *, force_download: bool = False, **kwargs) -> pathlib.Path:
+#     """Download a file or directory from a remote filesystem to the local cache, and return the local path.
+
+#     If the local file already exists, it will be returned directly.
+
+#     It is safe to call this function concurrently from multiple processes.
+#     See `get_cache_dir` for more details on the cache directory.
+
+#     Args:
+#         url: URL to the file to download.
+#         force_download: If True, the file will be downloaded even if it already exists in the cache.
+#         **kwargs: Additional arguments to pass to fsspec.
+
+#     Returns:
+#         Local path to the downloaded file or directory. That path is guaranteed to exist and is absolute.
+#     """
+#     # Don't use fsspec to parse the url to avoid unnecessary connection to the remote filesystem.
+#     parsed = urllib.parse.urlparse(url)
+
+#     # Short circuit if this is a local path.
+#     if parsed.scheme == "":
+#         path = pathlib.Path(url)
+#         if not path.exists():
+#             raise FileNotFoundError(f"File not found at {url}")
+#         return path.resolve()
+
+#     cache_dir = get_cache_dir()
+
+#     local_path = cache_dir / parsed.netloc / parsed.path.strip("/")
+#     local_path = local_path.resolve()
+
+#     # Check if the cache should be invalidated.
+#     invalidate_cache = False
+#     if local_path.exists():
+#         if force_download or _should_invalidate_cache(cache_dir, local_path):
+#             invalidate_cache = True
+#         else:
+#             return local_path
+
+#     try:
+#         lock_path = local_path.with_suffix(".lock")
+#         with filelock.FileLock(lock_path):
+#             # Ensure consistent permissions for the lock file.
+#             _ensure_permissions(lock_path)
+#             # First, remove the existing cache if it is expired.
+#             if invalidate_cache:
+#                 logger.info(f"Removing expired cached entry: {local_path}")
+#                 if local_path.is_dir():
+#                     shutil.rmtree(local_path)
+#                 else:
+#                     local_path.unlink()
+
+#             # Download the data to a local cache.
+#             logger.info(f"Downloading {url} to {local_path}")
+#             scratch_path = local_path.with_suffix(".partial")
+#             _download_fsspec(url, scratch_path, **kwargs)
+
+#             shutil.move(scratch_path, local_path)
+#             _ensure_permissions(local_path)
+
+#     except PermissionError as e:
+#         msg = (
+#             f"Local file permission error was encountered while downloading {url}. "
+#             f"Please try again after removing the cached data using: `rm -rf {local_path}*`"
+#         )
+#         raise PermissionError(msg) from e
+
+#     return local_path
+
+
+def _copy_dir_gcs(src: str, dst: str) -> None:
+    """Recursively copy gs://src → gs://dst (preserves tree)."""
+    for root, _, files in tf.io.gfile.walk(src):
+        rel_root = root[len(src) :].lstrip("/")
+        for fname in files:
+            s = tf.io.gfile.join(root, fname)
+            d = tf.io.gfile.join(dst, rel_root, fname)
+            tf.io.gfile.makedirs(tf.io.gfile.dirname(d))
+            tf.io.gfile.copy(s, d, overwrite=True)
+
+
+def _download_fsspec(url: str, local_path: pathlib.Path | str, **kwargs) -> None:
+    # ── Fast-path: src & dst are both gs:// ───────────────────────────────────
+    if _is_gcs(url) and _is_gcs(local_path):
+        fs, _ = fsspec.core.url_to_fs(url, **kwargs)
+        info = fs.info(url)
+        if info["type"] == "directory":
+            _copy_dir_gcs(url, str(local_path))
+        else:
+            tf.io.gfile.makedirs(tf.io.gfile.dirname(str(local_path)))
+            tf.io.gfile.copy(url, str(local_path), overwrite=True)
+        return
+    raise NotImplementedError(
+        "Downloading from remote filesystem to local cache is only supported for gs:// URLs. "
+        "Please use a local file path or a gs:// URL."
+    )
+
+
+# def _download_fsspec(url: str, local_path: pathlib.Path, **kwargs) -> None:
+#     """Download a file from a remote filesystem to the local cache, and return the local path."""
+#     fs, _ = fsspec.core.url_to_fs(url, **kwargs)
+#     info = fs.info(url)
+#     # Folders are represented by 0-byte objects with a trailing forward slash.
+#     if is_dir := (info["type"] == "directory" or (info["size"] == 0 and info["name"].endswith("/"))):
+#         total_size = fs.du(url)
+#     else:
+#         total_size = info["size"]
+#     with tqdm.tqdm(total=total_size, unit="iB", unit_scale=True, unit_divisor=1024) as pbar:
+#         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+#         future = executor.submit(fs.get, url, local_path, recursive=is_dir)
+#         while not future.done():
+#             current_size = sum(f.stat().st_size for f in [*local_path.rglob("*"), local_path] if f.is_file())
+#             pbar.update(current_size - pbar.n)
+#             time.sleep(1)
+#         pbar.update(total_size - pbar.n)
 
 
 def _set_permission(path: pathlib.Path, target_permission: int):
