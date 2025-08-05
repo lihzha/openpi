@@ -91,10 +91,12 @@ def maybe_download(
         if force_download or (not remote_cache and _should_invalidate_cache(cache_dir, cache_path)):
             invalidate_cache = True
         else:
+            print(f"Cache hit: {cache_path}")
             return epath.Path(cache_path) if remote_cache else pathlib.Path(cache_path)
 
     if _is_gcs(cache_path):
         logger.info("Copying %s → %s (GCS fast-path)", url, cache_path)
+        print(f"****Downloading {url} to {cache_path}****")
         _download_fsspec(url, cache_path, **kwargs)  # final path!
         return epath.Path(cache_path)
 
