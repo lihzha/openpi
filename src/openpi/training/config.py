@@ -654,8 +654,8 @@ _CONFIGS = [
             shuffle_buffer_size=20_000,
         ),
         num_train_steps=100_000,
-        fsdp_devices=1,
-        batch_size=8,
+        fsdp_devices=8,
+        batch_size=64,
         weight_loader=weight_loaders.PaliGemmaWeightLoader(),
         # lr_schedule=_optimizer.CosineDecaySchedule(
         #     warmup_steps=1_000,

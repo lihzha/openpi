@@ -152,5 +152,4 @@ class CoTPolicy(Policy):
         outputs["policy_timing"] = {
             "infer_ms": model_time * 1000,
         }
-        breakpoint()
         return outputs
