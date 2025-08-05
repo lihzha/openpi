@@ -255,7 +255,7 @@ class DroidCoTRldsDataset:
         # ---------------------------------------------------------------------
         # 1. TF-DS builder + base dataset
         # ---------------------------------------------------------------------
-        builder = tfds.builder("droid", data_dir=data_dir, try_gcs=False)
+        builder = tfds.builder("droid", data_dir=data_dir)
         dataset = dl.DLataset.from_rlds(
             builder,
             split="train",
