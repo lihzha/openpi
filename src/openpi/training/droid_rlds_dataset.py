@@ -285,13 +285,11 @@ class DroidCoTRldsDataset:
         # ---------------------------------------------------------------------
         # 3. Language-action table (episode_id → serialized tensor)
         # ---------------------------------------------------------------------
-        logging.info(tf.io.gfile.glob(f"{language_action_dir}/*_language_action.json")[:5])
         episodes, lang_serialized = [], []
         for path in tf.io.gfile.glob(f"{language_action_dir}/*_language_action.json"):
             eid = os.path.basename(path).split("_language_action.json")[0]
             with tf.io.gfile.GFile(path, "r") as fp:
                 lst = json.load(fp)  # list[str] (len == # steps)
-                logging.info(f"Loaded '{lst[0]}' for episode {eid}")
             lst.append("stop")
             t = tf.constant(lst, dtype=tf.string)
             lang_serialized.append(tf.io.serialize_tensor(t).numpy())
