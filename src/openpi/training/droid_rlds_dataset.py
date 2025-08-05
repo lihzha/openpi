@@ -63,7 +63,7 @@ IMAGE_LIST = [
 def print_memory_usage(label):
     process = psutil.Process(os.getpid())
     mem = process.memory_info().rss / (1024**2)  # in MB
-    print(f"[{label}] Memory usage: {mem:.2f} MB")
+    logging.info(f"[{label}] Memory usage: {mem:.2f} MB")
 
 
 class DroidActionSpace(Enum):
@@ -260,6 +260,7 @@ class DroidCoTRldsDataset:
         logging.info("Before dataset creation")
 
         builder = tfds.builder("droid", data_dir=data_dir)
+        logging.info("After builder creation")
         dataset = dl.DLataset.from_rlds(
             builder,
             split="train",
