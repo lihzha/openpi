@@ -269,6 +269,7 @@ class DroidCoTRldsDataset:
         )
 
         print_memory_usage("Before table building")
+        logging.info(language_action_dir)
 
         # ---------------------------------------------------------------------
         # 2. Episode-ID table  (valid_eids → True)
@@ -279,6 +280,7 @@ class DroidCoTRldsDataset:
             for fname in lang_action_files
             if fname.endswith("_language_action.json")
         ]
+        logging.info(valid_eids)
         keys = tf.constant(valid_eids, dtype=tf.string)
         values = tf.ones(len(valid_eids), dtype=tf.bool)
         eid_table = tf.lookup.StaticHashTable(
@@ -291,6 +293,7 @@ class DroidCoTRldsDataset:
         # ---------------------------------------------------------------------
         # 3. Language-action table (episode_id → serialized tensor)
         # ---------------------------------------------------------------------
+        logging.info(tf.io.gfile.glob(f"{language_action_dir}/*_language_action.json")[:5])
         episodes, lang_serialized = [], []
         for path in tf.io.gfile.glob(f"{language_action_dir}/*_language_action.json"):
             eid = os.path.basename(path).split("_language_action.json")[0]
