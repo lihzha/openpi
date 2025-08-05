@@ -1,5 +1,4 @@
 import json
-import pathlib
 
 import numpy as np
 import numpydantic
@@ -132,16 +131,37 @@ def deserialize_json(data: str) -> dict[str, NormStats]:
     return _NormStatsDict(**json.loads(data)).norm_stats
 
 
-def save(directory: pathlib.Path | str, norm_stats: dict[str, NormStats]) -> None:
-    """Save the normalization stats to a directory."""
-    path = pathlib.Path(directory) / "norm_stats.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(serialize_json(norm_stats))
+# def save(directory: pathlib.Path | str, norm_stats: dict[str, NormStats]) -> None:
+#     """Save the normalization stats to a directory."""
+#     path = pathlib.Path(directory) / "norm_stats.json"
+#     path.parent.mkdir(parents=True, exist_ok=True)
+#     path.write_text(serialize_json(norm_stats))
 
 
-def load(directory: pathlib.Path | str) -> dict[str, NormStats]:
-    """Load the normalization stats from a directory."""
-    path = pathlib.Path(directory) / "norm_stats.json"
-    if not path.exists():
+def save(directory: str, norm_stats: dict[str, NormStats]) -> None:
+    import tensorflow as tf
+
+    """Save the normalization stats to a directory (supports gs:// or local)."""
+    path = tf.io.gfile.join(directory, "norm_stats.json")
+    tf.io.gfile.makedirs(tf.io.gfile.dirname(path))
+    with tf.io.gfile.GFile(path, "w") as f:
+        f.write(serialize_json(norm_stats))
+
+
+def load(directory: str) -> dict[str, NormStats]:
+    import tensorflow as tf
+
+    """Load the normalization stats from a directory (supports gs:// and local)."""
+    path = tf.io.gfile.join(directory, "norm_stats.json")
+    if not tf.io.gfile.exists(path):
         raise FileNotFoundError(f"Norm stats file not found at: {path}")
-    return deserialize_json(path.read_text())
+    with tf.io.gfile.GFile(path, "r") as f:
+        return deserialize_json(f.read())
+
+
+# def load(directory: pathlib.Path | str) -> dict[str, NormStats]:
+#     """Load the normalization stats from a directory."""
+#     path = pathlib.Path(directory) / "norm_stats.json"
+#     if not path.exists():
+#         raise FileNotFoundError(f"Norm stats file not found at: {path}")
+#     return deserialize_json(path.read_text())

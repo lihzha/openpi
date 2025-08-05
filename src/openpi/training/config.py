@@ -618,35 +618,15 @@ class TrainConfig:
 # Use `get_config` if you need to get a config by name in your code.
 _CONFIGS = [
     TrainConfig(
-        name="pi0_droid_cot_test",
-        model=pi0_cot.Pi0CoTConfig(
-            action_horizon=10, max_token_len=100, paligemma_variant="dummy", action_expert_variant="dummy"
-        ),
-        data=DroidCoTTestDataConfig(
-            repo_id="posed_droid",
-            base_config=DataConfig(
-                prompt_from_task=True,
-            ),
-        ),
-        # weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),  # commented out for debugging
-        # Below you can define other hyperparameters like the learning rate, number of training steps, etc.
-        # Check the base TrainConfig class for a full list of available hyperparameters.
-        num_train_steps=30_000,
-        fsdp_devices=2,
-        batch_size=4,
-    ),
-    TrainConfig(
-        name="pi0_droid_cot",
+        name="pi0_droid_cot_v4",
         model=pi0_cot.Pi0CoTConfig(
             action_horizon=10,
             max_token_len=100,
-            # paligemma_variant="dummy",
-            # action_expert_variant="dummy",
         ),
         data=RLDSDroidCoTDataConfig(
             repo_id="droid",
-            # Set this to the path to your DROID RLDS dataset (the parent directory of the `droid` directory).
-            rlds_data_dir=None,
+            rlds_data_dir="gs://pi0-cot",
+            language_action_dir="gs://pi0-cot/lang_annotations",
             action_space=droid_rlds_dataset.DroidActionSpace.CARTESIAN_POSITION,
             base_config=DataConfig(
                 prompt_from_task=True,
@@ -659,6 +639,29 @@ _CONFIGS = [
         weight_loader=weight_loaders.PaliGemmaWeightLoader(),
         assets_base_dir="gs://pi0-cot/assets",
         checkpoint_base_dir="gs://pi0-cot/checkpoints",
+    ),
+    TrainConfig(
+        name="pi0_droid_cot_v6",
+        model=pi0_cot.Pi0CoTConfig(
+            action_horizon=10,
+            max_token_len=100,
+        ),
+        data=RLDSDroidCoTDataConfig(
+            repo_id="droid",
+            rlds_data_dir="gs://droid-cot",
+            language_action_dir="gs://droid-cot/lang_annotations/posed_droid",
+            action_space=droid_rlds_dataset.DroidActionSpace.CARTESIAN_POSITION,
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+            shuffle_buffer_size=20_000,
+        ),
+        num_train_steps=100_000,
+        fsdp_devices=8,
+        batch_size=64,
+        weight_loader=weight_loaders.PaliGemmaWeightLoader(),
+        assets_base_dir="gs://droid-cot/assets",
+        checkpoint_base_dir="gs://droid-cot/checkpoints",
         # lr_schedule=_optimizer.CosineDecaySchedule(
         #     warmup_steps=1_000,
         #     peak_lr=5e-5,

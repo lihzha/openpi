@@ -246,17 +246,11 @@ class DroidCoTRldsDataset:
 
         # ⇨ point all data + metadata directories to the GCS bucket
 
-        ### IMPORTANT: for V6
-        # BUCKET_ROOT = "gs://droid-cot"  # change once, used everywhere
-        # data_dir = f"{BUCKET_ROOT}"  # TF-DS shards live here
-        # language_action_dir = f"{BUCKET_ROOT}/lang_annotations/posed_droid"
-        # METADATA_PATH = f"{BUCKET_ROOT}/lang_annotations/metadata"
-
-        ## IMPORTANT: for V4
-        BUCKET_ROOT = "gs://pi0-cot"  # change once, used everywhere
-        data_dir = f"{BUCKET_ROOT}"  # TF-DS shards live here
-        language_action_dir = f"{BUCKET_ROOT}/lang_annotations"
-        METADATA_PATH = f"{BUCKET_ROOT}/metadata"
+        if "pi0-cot" in data_dir:  # for v4
+            METADATA_PATH = language_action_dir.replace("lang_annotations", "metadata")
+        else:  # for v6
+            assert "droid-cot" in data_dir
+            METADATA_PATH = language_action_dir.replace("posed_droid", "metadata")
 
         # ---------------------------------------------------------------------
         # 1. TF-DS builder + base dataset

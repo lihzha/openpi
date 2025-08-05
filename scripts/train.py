@@ -194,7 +194,8 @@ def train_step(
 
 def main(config: _config.TrainConfig):
     jax.distributed.initialize()
-    prevent_cross_region("gs://pi0-cot", "gs://pi0-cot")
+    data_dir = save_dir = config.data.rlds_data_dir
+    prevent_cross_region(data_dir, save_dir)
 
     init_logging()
     logging.info(f"Running on: {platform.node()}")
