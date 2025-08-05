@@ -660,8 +660,8 @@ _CONFIGS = [
             ),
             shuffle_buffer_size=20_000,
             assets=AssetsConfig(
-                assets_dir="gs://droid-cot/assets",
-                asset_id="pi0_droid_cot",
+                assets_dir="gs://droid-cot/assets/pi0_droid_cot_v6",
+                asset_id="droid",
             ),
         ),
         num_train_steps=100_000,

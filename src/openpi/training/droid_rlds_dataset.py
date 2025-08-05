@@ -242,7 +242,7 @@ class DroidCoTRldsDataset:
 
         assert action_space == DroidActionSpace.CARTESIAN_POSITION, "CoT only supports EEF actions for now"
 
-        tf.config.set_visible_devices([], "GPU")
+        tf.config.set_visible_devices([], "TPU")
 
         # ⇨ point all data + metadata directories to the GCS bucket
 
