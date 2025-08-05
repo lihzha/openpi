@@ -255,6 +255,8 @@ class DroidCoTRldsDataset:
         # ---------------------------------------------------------------------
         # 1. TF-DS builder + base dataset
         # ---------------------------------------------------------------------
+        print(data_dir)
+        print_memory_usage("Before dataset creation")
         builder = tfds.builder("droid", data_dir=data_dir)
         dataset = dl.DLataset.from_rlds(
             builder,
