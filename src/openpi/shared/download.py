@@ -20,12 +20,26 @@ _OPENPI_DATA_HOME = "OPENPI_DATA_HOME"
 logger = logging.getLogger(__name__)
 
 
-def get_cache_dir() -> pathlib.Path:
-    cache_dir = os.getenv(_OPENPI_DATA_HOME, None)
-    if cache_dir is None:
-        raise ValueError(f"Environment variable {_OPENPI_DATA_HOME} must be set to an absolute path.")
+def get_cache_dir() -> pathlib.Path | epath.Path:
+    """Return the cache directory, creating it if necessary.
+
+    Environment variable `_OPENPI_DATA_HOME` must be set to either
+    a local POSIX path **or** a `gs://` URI.
+    """
+    cache_dir_str = os.getenv(_OPENPI_DATA_HOME)
+    if cache_dir_str is None:
+        raise ValueError(f"Environment variable {_OPENPI_DATA_HOME} must be set.")
+
+    # gs:// --> Cloud Storage
+    if cache_dir_str.startswith("gs://"):
+        cache_dir = epath.Path(cache_dir_str)
+        tf.io.gfile.makedirs(str(cache_dir))  # no-op if it already exists
+        return cache_dir  # behaves like pathlib.Path
+
+    # Local filesystem
+    cache_dir = pathlib.Path(cache_dir_str)
     cache_dir.mkdir(parents=True, exist_ok=True)
-    # _set_folder_permission(cache_dir)
+    # _set_folder_permission(cache_dir)           # keep if still relevant
     return cache_dir
 
 
