@@ -15,6 +15,7 @@ dependencies = [
     "fsspec[gcs]>=2024.6.0",
     "imageio>=2.36.1",
     "jax[tpu]==0.5.3 ; python_version < '3.13'",
+    "jaxtyping==0.2.36",
     "ml_collections==1.0.0",
     "numpy>=1.22.4,<2.0.0",
     "numpydantic>=1.6.6",
