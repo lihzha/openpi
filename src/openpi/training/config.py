@@ -632,6 +632,10 @@ _CONFIGS = [
                 prompt_from_task=True,
             ),
             shuffle_buffer_size=20_000,
+            assets=AssetsConfig(
+                assets_dir="gs://pi0-cot/assets",
+                asset_id="droid",
+            ),
         ),
         num_train_steps=100_000,
         fsdp_devices=8,
@@ -655,6 +659,10 @@ _CONFIGS = [
                 prompt_from_task=True,
             ),
             shuffle_buffer_size=20_000,
+            assets=AssetsConfig(
+                assets_dir="gs://droid-cot/assets",
+                asset_id="droid",
+            ),
         ),
         num_train_steps=100_000,
         fsdp_devices=8,

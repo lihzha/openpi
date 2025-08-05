@@ -5,7 +5,6 @@ will compute the mean and standard deviation of the data in the dataset and save
 to the config assets directory.
 """
 
-print("Running file")
 import numpy as np
 from rail_tpu_utils import prevent_cross_region
 import tqdm
