@@ -224,7 +224,8 @@ def _download_fsspec(url: str, local_path: pathlib.Path | str, **kwargs) -> None
         if info["type"] == "directory":
             _copy_dir_gcs(url, str(local_path))
         else:
-            tf.io.gfile.makedirs(tf.io.gfile.dirname(str(local_path)))
+            dst_dir = os.path.dirname(str(local_path))
+            tf.io.gfile.makedirs(dst_dir)
             tf.io.gfile.copy(url, str(local_path), overwrite=True)
         return
     raise NotImplementedError(

@@ -5,8 +5,6 @@ will compute the mean and standard deviation of the data in the dataset and save
 to the config assets directory.
 """
 
-import os
-
 import numpy as np
 from rail_tpu_utils import prevent_cross_region
 import tqdm
@@ -91,8 +89,6 @@ def main(config_name: str, max_frames: int | None = None):
     config = _config.get_config(config_name)
 
     data_dir = save_dir = config.data.rlds_data_dir
-    os.environ["OPENAI_DATA_HOME"] = f"{data_dir}/cache"
-    print(f"Set OPENAI_DATA_HOME to {os.environ['OPENAI_DATA_HOME']}")
     prevent_cross_region(data_dir, save_dir)
 
     data_config = config.data.create(config.assets_dirs, config.model)
