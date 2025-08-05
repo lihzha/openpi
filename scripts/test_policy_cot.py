@@ -72,7 +72,6 @@ def main(args: Args) -> None:
     ds = iter(ds)
     for _, batch in enumerate(ds):
         curr_obs = batch["observation"]
-        breakpoint()
         data = {
             "observation/exterior_image_1_left": image_tools.resize_with_pad(curr_obs["image"].squeeze(0), 224, 224),
             # "observation/wrist_image_left": image_tools.resize_with_pad(curr_obs["wrist_image"], 224, 224),
@@ -82,18 +81,6 @@ def main(args: Args) -> None:
         }
         outputs = policy.infer_reasoning(data)
         breakpoint()
-
-    # image = np.zeros((224, 224, 3), dtype=np.uint8)  # Placeholder for the image.
-    # cartesian_position = np.random.rand(6)  # Random cartesian position.
-    # gripper_position = np.random.rand(1)  # Random gripper position.
-    # data = {
-    #     "observation/exterior_image_1_left": image,
-    #     # "observation/wrist_image_left": image_tools.resize_with_pad(curr_obs["wrist_image"], 224, 224),
-    #     "observation/cartesian_position": cartesian_position,
-    #     "observation/gripper_position": gripper_position,
-    #     "prompt": "do something useful.",
-    # }
-    # outputs = policy.infer_reasoning(data)
 
 
 if __name__ == "__main__":

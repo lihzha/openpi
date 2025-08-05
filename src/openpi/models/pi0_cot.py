@@ -406,7 +406,7 @@ class Pi0CoT(_model.BaseModel):
 
         (hs, _), kv0 = self.PaliGemma.llm([p_tokens, None], mask=pref_attn, positions=pos_pref)
         curr_h = hs[:, -1:, :]  # (B,1,D)
-        curr_id = jnp.argmax(self.PaliGemma.llm(curr_h, method="decode"), axis=-1, keepdims=True)  # (B,1,1)
+        curr_id = jnp.argmax(self.PaliGemma.llm(curr_h, method="decode"), axis=-1)  # (B,1)
 
         # ───────────────── 2. Static KV cache ─────────────
         nl, _, _, k, h = kv0[0].shape  # num_kv_heads, head_dim
@@ -415,54 +415,28 @@ class Pi0CoT(_model.BaseModel):
 
         # ───────────────── 3. Output buffers ──────────────
         h_buf = jnp.zeros((b, gen_len, d), dtype=hs.dtype).at[:, 0].set(curr_h.squeeze(1))
-        id_buf = jnp.zeros((b, gen_len, 1), dtype=jnp.int32).at[:, 0].set(curr_id.squeeze(1))
+        id_buf = jnp.zeros((b, gen_len, 1), dtype=jnp.int32).at[:, 0].set(curr_id)
 
         t0 = 0
 
         # ───────────────── 4. Body / Cond ────────────────
         def step(carry):
-            (
-                curr_h,  # (B,1,D)
-                curr_id,  # (B,1)
-                k_cache,
-                v_cache,  # (B,H,MAX,T,D_h) – static MAX
-                p_mask,
-                p_ar_mask,  # (B,MAX)         – static MAX
-                h_buf,
-                id_buf,  # (B,MAX,D) / (B,MAX)
-                _t,  # scalar  (how many tokens we have generated so far)
-            ) = carry
+            (curr_h, curr_id, k_cache, v_cache, p_mask, p_ar_mask, h_buf, id_buf, _t) = carry
 
-            # -------------------------------------------------------
-            # 1. figure out absolute position of the *next* token
-            # -------------------------------------------------------
             t_abs = _t + tp  # tp is the (static) prefix length
             jax.debug.print("t:{t}", t=_t)
-            # -------------------------------------------------------
-            # 2. mark the new position as visible
-            # -------------------------------------------------------
+
             p_mask = p_mask.at[:, t_abs].set(True)
             p_ar_mask = p_ar_mask.at[:, t_abs].set(True)
 
-            # -------------------------------------------------------
-            # 3. full-length (static) helpers
-            # -------------------------------------------------------
-            B, MAX = p_mask.shape
-            pos = jnp.array([[t_abs]]).repeat(B, axis=0)  # (B,MAX)
-            row_core = make_attn_mask(p_mask, p_ar_mask)[:, -1:, :]
-            row_core4 = row_core[:, :, None, :]
-
-            # we only need the row that queries the token at `t_abs`
+            attn_row = make_attn_mask(p_mask, p_ar_mask)[:, -1:, :]  # (B,1,MAX)
             attn_row = jax.lax.dynamic_update_slice(
-                jnp.zeros((B, 1, 1, MAX + 1), dtype=bool),  # STATIC big tensor
-                row_core4,  # STATIC window
-                (0, 0, 0, 0),  # start indices can vary
+                jnp.zeros((p_mask.shape[0], 1, p_mask.shape[1] + 1), dtype=bool),  # STATIC big tensor
+                attn_row,  # STATIC window
+                (0, 0, 0),  # start indices can vary
             )
-            attn_row = attn_row.squeeze(1)
+            pos = jnp.full((p_mask.shape[0], 1), t_abs, dtype=jnp.int32)
 
-            # -------------------------------------------------------
-            # 4. run one-token decode
-            # -------------------------------------------------------
             (next_h, _), kv_new = self.PaliGemma.llm(
                 [curr_h, None],
                 positions=pos,  # (B,1)
@@ -470,36 +444,22 @@ class Pi0CoT(_model.BaseModel):
                 kv_cache=(k_cache, v_cache),
             )
 
-            next_id = jnp.argmax(
-                self.PaliGemma.llm(next_h, method="decode"),
-                axis=-1,
-                keepdims=True,
-            )  # (B,1)
-
+            next_id = jnp.argmax(self.PaliGemma.llm(next_h, method="decode"), axis=-1)
             jax.debug.print("next_id:{next_id}", next_id=next_id)
 
-            # -------------------------------------------------------
-            # 5. scatter the freshly computed KV pair back into the *static* cache
-            # -------------------------------------------------------
             k_cache = k_cache.at[:, :, t_abs].set(kv_new[0][:, :, -1])
             v_cache = v_cache.at[:, :, t_abs].set(kv_new[1][:, :, -1])
 
             _t += 1
-
-            # store hidden state / id for inspection or later use
             h_buf = h_buf.at[:, _t].set(next_h.squeeze(1))
-            id_buf = id_buf.at[:, _t].set(next_id.squeeze(1))
+            id_buf = id_buf.at[:, _t].set(next_id)
 
-            # -------------------------------------------------------
-            # 6. advance pointer and return identical-shape carry
-            # -------------------------------------------------------
             return (next_h, next_id, k_cache, v_cache, p_mask, p_ar_mask, h_buf, id_buf, _t)
 
         def cond(carry):
             _, curr_id, _, _, _, _, _, _, t = carry
-            not_eos = curr_id.squeeze() != self.EOS_ID
-            space = t < gen_len - 1
-            return jnp.logical_and(not_eos, space)
+            unfinished = jnp.any(curr_id != self.EOS_ID)
+            return jnp.logical_and(unfinished, t < gen_len - 1)
 
         # ───────────────── 5. While-loop ─────────────────
         carry = (curr_h, curr_id, k_cache, v_cache, p_mask, p_ar_mask, h_buf, id_buf, t0)
@@ -511,10 +471,10 @@ class Pi0CoT(_model.BaseModel):
         # final_tokens = jnp.concatenate([p_tokens, h_buf[:, :final_len]], axis=1)
         # out_ids = id_buf[:, :final_len, 0]
 
-        return p_mask, p_ar_mask, h_buf, id_buf, t
+        return p_mask, p_ar_mask, h_buf, id_buf, t, k_cache, v_cache
 
     @override
     def sample_reasoning(self, observation: _model.Observation):
-        _, _, _, logits, t = self._sample_reasoning_tokens(observation)
+        p_mask, p_ar_mask, h_buf, logits, t, k_cache, v_cache = self._sample_reasoning_tokens(observation)
         # return self.PaliGemma.llm(reasoning_tokens, method="decode")  # logits
-        return logits, t
+        return logits, t, k_cache, p_mask, p_ar_mask

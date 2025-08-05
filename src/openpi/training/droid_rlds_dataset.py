@@ -244,58 +244,77 @@ class DroidCoTRldsDataset:
 
         assert action_space == DroidActionSpace.CARTESIAN_POSITION, "CoT only supports EEF actions for now"
 
-        # Configure Tensorflow with *no GPU devices* (to prevent clobber with PyTorch / JAX)
         tf.config.set_visible_devices([], "GPU")
 
-        # builder = tfds.builder("droid", data_dir=data_dir, try_gcs=True)
-        builder = tfds.builder("droid", data_dir="gs://gresearch/robotics", split="train", try_gcs=True)
+        # ⇨ point all data + metadata directories to the GCS bucket
+        BUCKET_ROOT = "gs://droid-cot"  # change once, used everywhere
+        data_dir = f"{BUCKET_ROOT}/droid/1.0.1"  # TF-DS shards live here
+        language_action_dir = f"{BUCKET_ROOT}/lang_annotations/posed_droid"
+        METADATA_PATH = f"{BUCKET_ROOT}/lang_annotations/metadata"
 
-        dataset = dl.DLataset.from_rlds(builder, split="train", shuffle=shuffle, num_parallel_reads=num_parallel_reads)
+        # ---------------------------------------------------------------------
+        # 1. TF-DS builder + base dataset
+        # ---------------------------------------------------------------------
+        builder = tfds.builder("droid", data_dir=data_dir, try_gcs=False)
+        dataset = dl.DLataset.from_rlds(
+            builder,
+            split="train",
+            shuffle=shuffle,
+            num_parallel_reads=num_parallel_reads,
+        )
 
         print_memory_usage("Before table building")
 
-        # 1. build episode_id table
-        lang_action_files = os.listdir(language_action_dir)
-        valid_eids = [f.split("_language_action.json")[0] for f in lang_action_files if "_language_action.json" in f]
+        # ---------------------------------------------------------------------
+        # 2. Episode-ID table  (valid_eids → True)
+        # ---------------------------------------------------------------------
+        lang_action_files = tf.io.gfile.listdir(language_action_dir)
+        valid_eids = [
+            fname.split("_language_action.json")[0]
+            for fname in lang_action_files
+            if fname.endswith("_language_action.json")
+        ]
         keys = tf.constant(valid_eids, dtype=tf.string)
-        values = tf.ones(  # all 1/True → “keep”
-            shape=(len(valid_eids),),
-            dtype=tf.bool,  # or tf.int32 / tf.int64
-        )
+        values = tf.ones(len(valid_eids), dtype=tf.bool)
         eid_table = tf.lookup.StaticHashTable(
             tf.lookup.KeyValueTensorInitializer(keys, values),
-            default_value=tf.constant(value=False, dtype=values.dtype),  # must match
+            default_value=tf.constant(False, dtype=tf.bool),
         )
 
         print_memory_usage("After building eid_table")
 
-        # 2. build language action table
+        # ---------------------------------------------------------------------
+        # 3. Language-action table (episode_id → serialized tensor)
+        # ---------------------------------------------------------------------
         episodes, lang_serialized = [], []
-        for f in Path(language_action_dir).glob("*_language_action.json"):
-            eid = f.stem.replace("_language_action", "")
-            with f.open("r") as fp:
-                lst = json.load(fp)  # list of str (len == #steps)
-                lst.append("stop")
-            t = tf.constant(lst, dtype=tf.string)  # shape (T,)
+        for path in tf.io.gfile.glob(f"{language_action_dir}/*_language_action.json"):
+            eid = os.path.basename(path).split("_language_action.json")[0]
+            with tf.io.gfile.GFile(path, "r") as fp:
+                lst = json.load(fp)  # list[str] (len == # steps)
+            lst.append("stop")
+            t = tf.constant(lst, dtype=tf.string)
             lang_serialized.append(tf.io.serialize_tensor(t).numpy())
             episodes.append(eid)
+
         keys = tf.constant(episodes, dtype=tf.string)
         values = tf.constant(lang_serialized, dtype=tf.string)
         lang_table = tf.lookup.StaticHashTable(
             tf.lookup.KeyValueTensorInitializer(keys, values),
             default_value=tf.constant(b"", dtype=tf.string),
-        )  # other options other than a lookup table: 1. use tf.numpy_function in restructure - runs under the Python GIL → one element at a time,
-        # no vectorisation, no TPU support. 2. use tf.io.read_file -> per-element disk I/O, not as fast
+        )
 
         print_memory_usage("After building lang_table")
 
-        # 3. build episode path table
-        with open(f"{METADATA_PATH}/episode_id_to_path.json") as f:
-            episode_id_to_path = json.load(f)
+        # ---------------------------------------------------------------------
+        # 4. Episode-path ↔ Episode-ID table
+        # ---------------------------------------------------------------------
+        with tf.io.gfile.GFile(f"{METADATA_PATH}/episode_id_to_path.json", "r") as fp:
+            episode_id_to_path = json.load(fp)
         episode_path_to_id = {v: k for k, v in episode_id_to_path.items()}
+
         keys = tf.constant(list(episode_path_to_id.keys()), dtype=tf.string)
         values = tf.constant(list(episode_path_to_id.values()), dtype=tf.string)
-        default_value = tf.constant(value="", dtype=tf.string)
+        default_value = tf.constant("", dtype=tf.string)
         ep_table = tf.lookup.StaticHashTable(
             tf.lookup.KeyValueTensorInitializer(keys, values),
             default_value=default_value,
@@ -303,64 +322,64 @@ class DroidCoTRldsDataset:
 
         print_memory_usage("After building ep_table")
 
-        # 4. build the camera idx table
-        with open(f"{METADATA_PATH}/cam2base_extrinsics.json") as f:
-            cam2base_extrinsics = json.load(f)
-        with open(f"{METADATA_PATH}/camera_serials.json") as f:
-            camera_serials = json.load(f)
+        # ---------------------------------------------------------------------
+        # 5. Camera-index table  (episode_id → ext-cam idx)
+        # ---------------------------------------------------------------------
+        with tf.io.gfile.GFile(f"{METADATA_PATH}/cam2base_extrinsics.json", "r") as fp:
+            cam2base_extrinsics = json.load(fp)
+        with tf.io.gfile.GFile(f"{METADATA_PATH}/camera_serials.json", "r") as fp:
+            camera_serials = json.load(fp)
+
         eid_to_cam_dict = {}
-        for eid in cam2base_extrinsics:
-            extr = cam2base_extrinsics[eid]
+        for eid, extr in cam2base_extrinsics.items():
             cams = camera_serials[eid]
-            for k in extr:
-                if k.isdigit():
-                    camera_serial = k
-                    break
-            camera_serials_to_name = {v: k for k, v in cams.items()}
-            if camera_serial not in camera_serials_to_name:
+            camera_serial = next(k for k in extr if k.isdigit())
+            serial_to_name = {v: k for k, v in cams.items()}
+            if camera_serial not in serial_to_name:
                 continue
-            calib_camera_name = camera_serials_to_name[camera_serial]
+
+            calib_camera_name = serial_to_name[camera_serial]
             if calib_camera_name == "ext1_cam_serial":
                 calib_image_name = "exterior_image_1_left"
             elif calib_camera_name == "ext2_cam_serial":
                 calib_image_name = "exterior_image_2_left"
             else:
                 raise ValueError(f"Unknown camera name: {calib_camera_name}")
+
             calib_image_idx = IMAGE_LIST.index(calib_image_name)
             eid_to_cam_dict[eid] = calib_image_idx
+
         keys = tf.constant(list(eid_to_cam_dict.keys()), dtype=tf.string)
         values = tf.constant(list(eid_to_cam_dict.values()), dtype=tf.int32)
         cam_table = tf.lookup.StaticHashTable(
             tf.lookup.KeyValueTensorInitializer(keys, values),
-            default_value=-1,  # -1 ⇒ “use a fallback camera”
+            default_value=-1,  # -1 ⇒ fallback camera
         )
 
         print_memory_usage("After building cam_table")
 
-        # 5. build language instruction
-        with open(f"{METADATA_PATH}/droid_language_annotations.json") as f:
-            language_annotations = json.load(f)
+        # ---------------------------------------------------------------------
+        # 6. Language-instruction tables (3 per episode_id)
+        # ---------------------------------------------------------------------
+        with tf.io.gfile.GFile(f"{METADATA_PATH}/droid_language_annotations.json", "r") as fp:
+            language_annotations = json.load(fp)
+
         keys = tf.constant(list(language_annotations.keys()), dtype=tf.string)
-        values_1 = tf.constant(
-            [v["language_instruction1"] for v in list(language_annotations.values())], dtype=tf.string
-        )
+        values_1 = tf.constant([v["language_instruction1"] for v in language_annotations.values()], dtype=tf.string)
+        values_2 = tf.constant([v["language_instruction2"] for v in language_annotations.values()], dtype=tf.string)
+        values_3 = tf.constant([v["language_instruction3"] for v in language_annotations.values()], dtype=tf.string)
+
         instr_table_1 = tf.lookup.StaticHashTable(
             tf.lookup.KeyValueTensorInitializer(keys, values_1),
-            default_value="",  # "" ⇒ “use a fallback instruction”
-        )
-        values_2 = tf.constant(
-            [v["language_instruction2"] for v in list(language_annotations.values())], dtype=tf.string
+            default_value="",
         )
         instr_table_2 = tf.lookup.StaticHashTable(
             tf.lookup.KeyValueTensorInitializer(keys, values_2),
-            default_value="",  # "" ⇒ “use a fallback instruction”
-        )
-        values_3 = tf.constant(
-            [v["language_instruction3"] for v in list(language_annotations.values())], dtype=tf.string
+            default_value="",
         )
         instr_table_3 = tf.lookup.StaticHashTable(
             tf.lookup.KeyValueTensorInitializer(keys, values_3),
-            default_value="",  # "" ⇒ “use a fallback instruction”
+            default_value="",
         )
         fallback_instructions = tf.constant(
             [

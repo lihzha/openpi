@@ -134,12 +134,15 @@ class CoTPolicy(Policy):
         start_time = time.monotonic()
         self._rng, sample_rng = jax.random.split(self._rng)
         print(self._sample_kwargs)
-        logits, t = self._sample_reasoning(_model.Observation.from_dict(inputs))
+        logits, t, k_cache, p_mask, p_ar_mask = self._sample_reasoning(_model.Observation.from_dict(inputs))
         outputs = {
             "state": inputs["state"],
-            "actions": jnp.zeros_like(inputs["state"]),
+            "actions": jnp.zeros((1, 1, 7)),
             "reasoning_logits": logits,
             "final_length": t,
+            "k_cache": k_cache,
+            "p_mask": p_mask,
+            "p_ar_mask": p_ar_mask,
         }
         # Unbatch and convert to np.ndarray.        # Unbatch and convert to np.ndarray.
         # outputs = jax.tree.map(lambda x: np.asarray(x[0, ...]), outputs)
@@ -149,4 +152,5 @@ class CoTPolicy(Policy):
         outputs["policy_timing"] = {
             "infer_ms": model_time * 1000,
         }
+        breakpoint()
         return outputs

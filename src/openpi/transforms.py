@@ -228,7 +228,7 @@ class AbsoluteActions(DataTransformFn):
         if "actions" not in data or self.mask is None:
             return data
 
-        state, actions = np.asarray(data["state"]), np.asarray(data["actions"])
+        state, actions = np.array(data["state"]), np.array(data["actions"])
         mask = np.asarray(self.mask)
         dims = mask.shape[-1]
         actions[..., :dims] += np.expand_dims(np.where(mask, state[..., :dims], 0), axis=-2)
@@ -282,7 +282,6 @@ class DetokenizeReasoning(DataTransformFn):
     tokenizer: _tokenizer.PaligemmaTokenizer
 
     def __call__(self, data: DataDict) -> DataDict:
-        breakpoint()
         text = self.tokenizer.decode(data["reasoning_logits"].squeeze()[: data["final_length"]].astype(np.int32))
         return {**data, "reasoning": text}
 
