@@ -7,6 +7,7 @@ from typing import Protocol, SupportsIndex, TypeVar
 import jax
 import jax.numpy as jnp
 import jax.tree_util as jtu
+import 
 
 os.environ.pop("LEROBOT_HOME", None)  # Trick to ensure LEROBOT_HOME is not set.
 
@@ -488,6 +489,7 @@ class RLDSDataLoader:
         # ------------------------------------------------------------------
         # 1. Auto-shard the underlying dataset if we have >1 JAX process
         # ------------------------------------------------------------------
+        dataset = dataset.dataset
         if jax.process_count() > 1:
             # - TFDS / RLDS datasets usually expose `.shard`
             if hasattr(dataset, "shard"):
@@ -495,12 +497,8 @@ class RLDSDataLoader:
                     num_shards=jax.process_count(),
                     index=jax.process_index(),
                 )
-            # - tf.data.Dataset loaded via TFDS helper
-            elif tfds and isinstance(dataset, tf.data.Dataset):
-                split = tfds.split_for_jax_process("train", drop_remainder=True)
-                dataset = tfds.load("dummy", split=split)  # example, adapt as needed
-            # - Pure Python iterable → fall back to striding
             else:
+                raise NotImplementedError
                 dataset = _StrideDatasetWrapper(dataset, jax.process_count(), jax.process_index())
 
         self._dataset = dataset
@@ -520,17 +518,18 @@ class RLDSDataLoader:
     # 3. Iterator that yields global `jax.Array`s
     # ----------------------------------------------------------------------
     def __iter__(self):
-        seen = 0
+        num_items = 0
         while True:
-            for batch in self._dataset:
-                if self._num_batches is not None and seen >= self._num_batches:
+            data_iter = self._dataset.as_numpy_iterator()
+            while True:
+                if self._num_batches is not None and num_items >= self._num_batches:
                     return
-                seen += 1
-                # Each host supplies *its* local slice; JAX stitches them together
-                yield jtu.tree_map(
-                    lambda x: jax.make_array_from_process_local_data(self._sharding, x),
-                    batch,
-                )
+                try:
+                    batch = next(data_iter)
+                except StopIteration:
+                    break  # We've exhausted the dataset. Create a new iterator and start over.
+                num_items += 1
+                yield jax.tree.map(lambda x: jax.make_array_from_process_local_data(self._sharding, x), batch)
 
 
 # class RLDSDataLoader:
