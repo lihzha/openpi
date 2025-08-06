@@ -228,7 +228,9 @@ def main(config: _config.TrainConfig):
         shuffle=True,
     )
     data_iter = iter(data_loader)
+    logging.info("Before getting batch")
     batch = next(data_iter)
+    logging.info("After getting batch")
     logging.info(f"Initialized data loader:\n{training_utils.array_tree_to_info(batch)}")
 
     # Log images from first batch to sanity check.
