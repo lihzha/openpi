@@ -6,6 +6,7 @@ from typing import Protocol, SupportsIndex, TypeVar
 
 import jax
 import jax.numpy as jnp
+import jax.tree_util as jtu
 
 os.environ.pop("LEROBOT_HOME", None)  # Trick to ensure LEROBOT_HOME is not set.
 
@@ -455,10 +456,26 @@ def _worker_init_fn(worker_id: int) -> None:
     os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
 
 
+class _StrideDatasetWrapper:
+    """Fallback for datasets that don't implement `.shard()`."""
+
+    def __init__(self, base_ds, num_shards: int, idx: int):
+        self._base = base_ds
+        self._num_shards = num_shards
+        self._idx = idx
+
+    def __iter__(self):
+        # round-robin: keep only examples destined for this process
+        return (example for i, example in enumerate(self._base) if i % self._num_shards == self._idx)
+
+
 class RLDSDataLoader:
     """Shallow wrapper around the DROID data loader to make it compatible with openpi.
 
-    All batching already happens in the DROID dataset, so we don't need to do anything here.
+    Each host process gets its own shard of the data when running on multi-host TPU
+    pods.  Batches are then placed on the local devices via `jax.make_array_from_
+    process_local_data`, yielding a global `jax.Array` partitioned on the leading
+    batch dimension.
     """
 
     def __init__(
@@ -468,35 +485,96 @@ class RLDSDataLoader:
         sharding: jax.sharding.Sharding | None = None,
         num_batches: int | None = None,
     ):
+        # ------------------------------------------------------------------
+        # 1. Auto-shard the underlying dataset if we have >1 JAX process
+        # ------------------------------------------------------------------
+        if jax.process_count() > 1:
+            # - TFDS / RLDS datasets usually expose `.shard`
+            if hasattr(dataset, "shard"):
+                dataset = dataset.shard(
+                    num_shards=jax.process_count(),
+                    index=jax.process_index(),
+                )
+            # - tf.data.Dataset loaded via TFDS helper
+            elif tfds and isinstance(dataset, tf.data.Dataset):
+                split = tfds.split_for_jax_process("train", drop_remainder=True)
+                dataset = tfds.load("dummy", split=split)  # example, adapt as needed
+            # - Pure Python iterable → fall back to striding
+            else:
+                dataset = _StrideDatasetWrapper(dataset, jax.process_count(), jax.process_index())
+
         self._dataset = dataset
         self._num_batches = num_batches
 
-        if jax.process_count() > 1:
-            raise NotImplementedError("Data loading with multiple processes is not supported.")
-
+        # ------------------------------------------------------------------
+        # 2. Default to data-parallel sharding along the leading "B" dim
+        # ------------------------------------------------------------------
         if sharding is None:
-            # Use data parallel sharding by default.
             sharding = jax.sharding.NamedSharding(
                 jax.sharding.Mesh(jax.devices(), ("B",)),
                 jax.sharding.PartitionSpec("B"),
             )
-
         self._sharding = sharding
-        self._num_batches = num_batches
 
+    # ----------------------------------------------------------------------
+    # 3. Iterator that yields global `jax.Array`s
+    # ----------------------------------------------------------------------
     def __iter__(self):
-        num_items = 0
+        seen = 0
         while True:
-            data_iter = iter(self._dataset)
-            while True:
-                if self._num_batches is not None and num_items >= self._num_batches:
+            for batch in self._dataset:
+                if self._num_batches is not None and seen >= self._num_batches:
                     return
-                try:
-                    batch = next(data_iter)
-                except StopIteration:
-                    break  # We've exhausted the dataset. Create a new iterator and start over.
-                num_items += 1
-                yield jax.tree.map(lambda x: jax.make_array_from_process_local_data(self._sharding, x), batch)
+                seen += 1
+                # Each host supplies *its* local slice; JAX stitches them together
+                yield jtu.tree_map(
+                    lambda x: jax.make_array_from_process_local_data(self._sharding, x),
+                    batch,
+                )
+
+
+# class RLDSDataLoader:
+#     """Shallow wrapper around the DROID data loader to make it compatible with openpi.
+
+#     All batching already happens in the DROID dataset, so we don't need to do anything here.
+#     """
+
+#     def __init__(
+#         self,
+#         dataset: DroidRldsDataset | DroidCoTRldsDataset,
+#         *,
+#         sharding: jax.sharding.Sharding | None = None,
+#         num_batches: int | None = None,
+#     ):
+#         self._dataset = dataset
+#         self._num_batches = num_batches
+
+#         if jax.process_count() > 1:
+#             raise NotImplementedError("Data loading with multiple processes is not supported.")
+
+#         if sharding is None:
+#             # Use data parallel sharding by default.
+#             sharding = jax.sharding.NamedSharding(
+#                 jax.sharding.Mesh(jax.devices(), ("B",)),
+#                 jax.sharding.PartitionSpec("B"),
+#             )
+
+#         self._sharding = sharding
+#         self._num_batches = num_batches
+
+#     def __iter__(self):
+#         num_items = 0
+#         while True:
+#             data_iter = iter(self._dataset)
+#             while True:
+#                 if self._num_batches is not None and num_items >= self._num_batches:
+#                     return
+#                 try:
+#                     batch = next(data_iter)
+#                 except StopIteration:
+#                     break  # We've exhausted the dataset. Create a new iterator and start over.
+#                 num_items += 1
+#                 yield jax.tree.map(lambda x: jax.make_array_from_process_local_data(self._sharding, x), batch)
 
 
 class DataLoaderImpl(DataLoader):
