@@ -286,7 +286,7 @@ class DroidCoTRldsDataset:
         # 3. Language-action table (episode_id → serialized tensor)
         # ---------------------------------------------------------------------
         episodes, lang_serialized = [], []
-        for path in tf.io.gfile.glob(f"{language_action_dir}/*_language_action.json"):
+        for cnt, path in enumerate(tf.io.gfile.glob(f"{language_action_dir}/*_language_action.json")):
             eid = os.path.basename(path).split("_language_action.json")[0]
             with tf.io.gfile.GFile(path, "r") as fp:
                 lst = json.load(fp)  # list[str] (len == # steps)
@@ -294,6 +294,9 @@ class DroidCoTRldsDataset:
             t = tf.constant(lst, dtype=tf.string)
             lang_serialized.append(tf.io.serialize_tensor(t).numpy())
             episodes.append(eid)
+            cnt += 1
+            if cnt >= 300:
+                break
 
         keys = tf.constant(episodes, dtype=tf.string)
         values = tf.constant(lang_serialized, dtype=tf.string)
