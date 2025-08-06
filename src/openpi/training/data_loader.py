@@ -6,8 +6,6 @@ from typing import Protocol, SupportsIndex, TypeVar
 
 import jax
 import jax.numpy as jnp
-import jax.tree_util as jtu
-import 
 
 os.environ.pop("LEROBOT_HOME", None)  # Trick to ensure LEROBOT_HOME is not set.
 
