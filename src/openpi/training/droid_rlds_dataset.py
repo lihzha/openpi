@@ -594,6 +594,7 @@ class DroidCoTRldsDataset:
         self.shuffle = shuffle
 
     def __iter__(self):
+        logging.info("Drawing sample...")
         yield from self.dataset.as_numpy_iterator()
 
     def __len__(self):
