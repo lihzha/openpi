@@ -51,6 +51,7 @@ import logging
 import os
 from pathlib import Path
 
+import jax
 import psutil
 
 METADATA_PATH = "/n/fs/robot-data/vlm-syn/droid"
@@ -263,6 +264,8 @@ class DroidCoTRldsDataset:
             shuffle=shuffle,
             num_parallel_reads=num_parallel_reads,
         )
+
+        dataset = dataset.shard(jax.process_count(), jax.process_index())
 
         # ---------------------------------------------------------------------
         # 2. Episode-ID table  (valid_eids → True)
