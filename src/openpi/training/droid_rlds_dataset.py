@@ -300,9 +300,10 @@ class DroidCoTRldsDataset:
 
         keys = tf.constant(episodes, dtype=tf.string)
         values = tf.constant(lang_serialized, dtype=tf.string)
+        default_lang_value = tf.constant(b"", dtype=tf.string)
         lang_table = tf.lookup.StaticHashTable(
             tf.lookup.KeyValueTensorInitializer(keys, values),
-            default_value=tf.constant(b"", dtype=tf.string),
+            default_value=default_lang_value,
         )
 
         print_memory_usage("After building lang_table")
@@ -316,10 +317,10 @@ class DroidCoTRldsDataset:
 
         keys = tf.constant(list(episode_path_to_id.keys()), dtype=tf.string)
         values = tf.constant(list(episode_path_to_id.values()), dtype=tf.string)
-        default_value = tf.constant("", dtype=tf.string)
+        default_ep_value = tf.constant("", dtype=tf.string)
         ep_table = tf.lookup.StaticHashTable(
             tf.lookup.KeyValueTensorInitializer(keys, values),
-            default_value=default_value,
+            default_value=default_ep_value,
         )
 
         print_memory_usage("After building ep_table")
@@ -414,7 +415,10 @@ class DroidCoTRldsDataset:
             after_prefix = tf.strings.split(file_path, "r2d2-data-full/")[1]
             episode_path = tf.strings.split(after_prefix, "/trajectory")[0]
             episode_id = ep_table.lookup(episode_path)
-            if tf.equal(episode_id, default_value):
+            if tf.equal(episode_id, default_ep_value):
+                return tf.constant(value=False, dtype=tf.bool)
+            lang = lang_table.lookup(episode_path)
+            if tf.equal(lang, default_lang_value):
                 return tf.constant(value=False, dtype=tf.bool)
             return eid_table.lookup(episode_id)
 
