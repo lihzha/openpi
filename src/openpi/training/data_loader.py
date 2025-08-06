@@ -455,56 +455,26 @@ def _worker_init_fn(worker_id: int) -> None:
     os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
 
 
-class _StrideDatasetWrapper:
-    """Fallback for datasets that don't implement `.shard()`."""
-
-    def __init__(self, base_ds, num_shards: int, idx: int):
-        self._base = base_ds
-        self._num_shards = num_shards
-        self._idx = idx
-
-    def __iter__(self):
-        # round-robin: keep only examples destined for this process
-        return (example for i, example in enumerate(self._base) if i % self._num_shards == self._idx)
-
-
 class RLDSDataLoader:
-    """Shallow wrapper around the DROID data loader to make it compatible with openpi.
+    """Iterates an IterableTransformedDataset and returns sharded jax.Arrays.
 
-    Each host process gets its own shard of the data when running on multi-host TPU
-    pods.  Batches are then placed on the local devices via `jax.make_array_from_
-    process_local_data`, yielding a global `jax.Array` partitioned on the leading
-    batch dimension.
+    If you run on multiple JAX processes (e.g. multi-host TPU), each process
+    automatically receives its 1/`process_count` share of every batch.
     """
 
     def __init__(
         self,
-        dataset: DroidRldsDataset | DroidCoTRldsDataset,
+        dataset: IterableTransformedDataset,
         *,
         sharding: jax.sharding.Sharding | None = None,
         num_batches: int | None = None,
+        auto_shard: bool = True,  # turn off if your dataset is already host-sharded
     ):
-        # ------------------------------------------------------------------
-        # 1. Auto-shard the underlying dataset if we have >1 JAX process
-        # ------------------------------------------------------------------
-        dataset = dataset.dataset
-        if jax.process_count() > 1:
-            # - TFDS / RLDS datasets usually expose `.shard`
-            if hasattr(dataset, "shard"):
-                dataset = dataset.shard(
-                    num_shards=jax.process_count(),
-                    index=jax.process_index(),
-                )
-            else:
-                raise NotImplementedError
-                dataset = _StrideDatasetWrapper(dataset, jax.process_count(), jax.process_index())
-
         self._dataset = dataset
         self._num_batches = num_batches
+        self._auto_shard = auto_shard
 
-        # ------------------------------------------------------------------
-        # 2. Default to data-parallel sharding along the leading "B" dim
-        # ------------------------------------------------------------------
+        # Default to data-parallel sharding across local devices.
         if sharding is None:
             sharding = jax.sharding.NamedSharding(
                 jax.sharding.Mesh(jax.devices(), ("B",)),
@@ -512,22 +482,41 @@ class RLDSDataLoader:
             )
         self._sharding = sharding
 
-    # ----------------------------------------------------------------------
-    # 3. Iterator that yields global `jax.Array`s
-    # ----------------------------------------------------------------------
+        # Multi-process information
+        self._n_proc = jax.process_count()
+        self._proc_idx = jax.process_index()
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Helper: split a full batch so that each host keeps only its own rows
+    # ──────────────────────────────────────────────────────────────────────────
+    def _local_slice(self, batch):
+        if not self._auto_shard or self._n_proc == 1:
+            return batch
+
+        def _slice(x):
+            if x.shape[0] % self._n_proc != 0:
+                raise ValueError(f"Batch size {x.shape[0]} not divisible by #processes {self._n_proc}")
+            per_host = x.shape[0] // self._n_proc
+            start = self._proc_idx * per_host
+            end = (self._proc_idx + 1) * per_host
+            return x[start:end]
+
+        return jax.tree.map(_slice, batch)
+
+    # ──────────────────────────────────────────────────────────────────────────
     def __iter__(self):
-        num_items = 0
+        seen = 0
         while True:
-            data_iter = self._dataset.as_numpy_iterator()
-            while True:
-                if self._num_batches is not None and num_items >= self._num_batches:
+            for batch in self._dataset:
+                if self._num_batches is not None and seen >= self._num_batches:
                     return
-                try:
-                    batch = next(data_iter)
-                except StopIteration:
-                    break  # We've exhausted the dataset. Create a new iterator and start over.
-                num_items += 1
-                yield jax.tree.map(lambda x: jax.make_array_from_process_local_data(self._sharding, x), batch)
+                seen += 1
+                batch = self._local_slice(batch)  # host slicing
+                # Turn local NumPy → jax.Array on all local devices
+                yield jax.tree.map(
+                    lambda x: jax.make_array_from_process_local_data(self._sharding, x),
+                    batch,
+                )
 
 
 # class RLDSDataLoader:
