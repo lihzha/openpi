@@ -590,7 +590,7 @@ class DroidCoTRldsDataset:
         # Shuffle, batch
         dataset = dataset.batch(batch_size)
         # Note =>> Seems to reduce memory usage without affecting speed?
-        dataset = dataset.with_ram_budget(1)
+        # dataset = dataset.with_ram_budget(1)
 
         self.dataset = dataset
         self.batch_size = batch_size
