@@ -295,7 +295,8 @@ class DroidCoTRldsDataset:
             shuffle=shuffle,
             num_parallel_reads=num_parallel_reads,
         )
-
+        
+        # dataset = dataset.with_ram_budget(1)
         dataset = dataset.shard(jax.process_count(), jax.process_index())
 
         # Enable non-deterministic mapping and other tf.data optimizations for throughput
@@ -628,7 +629,6 @@ class DroidCoTRldsDataset:
         # Overlap input pipeline with consumers; lets TF fill a small buffer per host.
         dataset = dataset.prefetch(2)
         # Note =>> Seems to reduce memory usage without affecting speed?
-        dataset = dataset.with_ram_budget(1)
 
         self.dataset = dataset
         self.batch_size = batch_size

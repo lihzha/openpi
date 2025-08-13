@@ -197,13 +197,17 @@ def main(config: _config.TrainConfig):
     data_dir = save_dir = config.data.rlds_data_dir
     prevent_cross_region(data_dir, save_dir)
 
+    assert jax.device_count() % config.fsdp_devices == 0
+    # Prefer intra-host FSDP:
+    assert jax.local_device_count() % config.fsdp_devices == 0  # holds for 1,2,4 on v4 2x2x2
+
     init_logging()
     logging.info(f"Running on: {platform.node()}")
 
-    if config.batch_size % jax.device_count() != 0:
-        raise ValueError(
-            f"Batch size {config.batch_size} must be divisible by the number of devices {jax.device_count()}."
-        )
+    # if config.batch_size % jax.device_count() != 0:
+    #     raise ValueError(
+    #         f"Batch size {config.batch_size} must be divisible by the number of devices {jax.device_count()}."
+    #     )
 
     jax.config.update("jax_compilation_cache_dir", str(epath.Path("~/.cache/jax").expanduser()))
 

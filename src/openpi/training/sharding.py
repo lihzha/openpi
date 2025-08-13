@@ -2,25 +2,77 @@ import contextlib
 import logging
 
 import jax
+from jax.experimental import mesh_utils
 import numpy as np
 
-BATCH_AXIS = "batch"
-FSDP_AXIS = "fsdp"
+# BATCH_AXIS = "batch"
+# FSDP_AXIS = "fsdp"
 # In FSDP, we shard the data across both the batch and FSDP axes.
-DATA_AXIS = (BATCH_AXIS, FSDP_AXIS)
+# DATA_AXIS = (BATCH_AXIS, FSDP_AXIS)
+BATCH_AXIS = "data"
+FSDP_AXIS = "fsdp"
+DATA_AXIS = "data"
 
 
 class _MeshState:
     active_mesh: jax.sharding.Mesh | None = None
 
 
-def make_mesh(num_fsdp_devices: int) -> jax.sharding.Mesh:
-    if jax.device_count() % num_fsdp_devices != 0:
+def make_mesh(fsdp_devices: int) -> jax.sharding.Mesh:
+    P = jax.process_count()        # number of hosts
+    D = jax.local_device_count()   # devices per host
+    N = jax.device_count()         # total devices (P * D)
+
+    if N % fsdp_devices != 0:
         raise ValueError(
-            f"Number of devices {jax.device_count()} must be divisible by the number of FSDP devices {num_fsdp_devices}."
+            f"Total devices {N} must be divisible by fsdp_devices {fsdp_devices}."
         )
-    mesh_shape = (jax.device_count() // num_fsdp_devices, num_fsdp_devices)
-    return jax.make_mesh(mesh_shape, (BATCH_AXIS, FSDP_AXIS))
+
+    # Host-major device layout: shape [P, D] with each row = one host's devices.
+    # This has no "data/model" meaning by itself; it's just a physical arrangement.
+    devmesh = mesh_utils.create_device_mesh((P, D))  # shape (P, D)
+
+    if fsdp_devices <= D:
+        # Intra-host FSDP: split each host's devices into [dp_per_host, fsdp_devices]
+        if D % fsdp_devices != 0:
+            raise ValueError(
+                f"local_device_count {D} not divisible by fsdp_devices {fsdp_devices}"
+            )
+        dp_per_host = D // fsdp_devices
+        # Final mesh: collapse hosts and dp_per_host into one DATA axis; FSDP axis is local.
+        # Shape: (P * dp_per_host, fsdp_devices)
+        devmesh = devmesh.reshape(P * dp_per_host, fsdp_devices)
+
+    else:
+        # Cross-host FSDP: group whole hosts along FSDP axis.
+        # Require FSDP groups to be a multiple of per-host devices.
+        if fsdp_devices % D != 0:
+            raise ValueError(
+                f"When fsdp_devices > local_device_count, fsdp_devices ({fsdp_devices}) "
+                f"must be a multiple of local_device_count ({D}) to group whole hosts."
+            )
+        fsdp_hosts = fsdp_devices // D
+        if P % fsdp_hosts != 0:
+            raise ValueError(
+                f"process_count {P} must be divisible by fsdp_hosts {fsdp_hosts} "
+                f"(= fsdp_devices/local_device_count)."
+            )
+        dp_groups = P // fsdp_hosts
+        # Combine fsdp_hosts hosts along FSDP axis (each host contributes D devices).
+        # Shape: (dp_groups, fsdp_hosts * D) = (dp_groups, fsdp_devices)
+        devmesh = devmesh.reshape(dp_groups, fsdp_hosts * D)
+
+    # 2D logical mesh: first axis used for data-parallel sharding, second for FSDP
+    return jax.sharding.Mesh(devmesh, (BATCH_AXIS, FSDP_AXIS))
+
+
+# def make_mesh(num_fsdp_devices: int) -> jax.sharding.Mesh:
+#     if jax.device_count() % num_fsdp_devices != 0:
+#         raise ValueError(
+#             f"Number of devices {jax.device_count()} must be divisible by the number of FSDP devices {num_fsdp_devices}."
+#         )
+#     mesh_shape = (jax.device_count() // num_fsdp_devices, num_fsdp_devices)
+#     return jax.make_mesh(mesh_shape, (BATCH_AXIS, FSDP_AXIS))
 
 
 @contextlib.contextmanager

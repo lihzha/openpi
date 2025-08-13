@@ -473,23 +473,51 @@ class RLDSDataLoader:
         *,
         sharding: jax.sharding.Sharding | None = None,
         num_batches: int | None = None,
-        auto_shard: bool = True,  # turn off if your dataset is already host-sharded
+        auto_shard: bool = False,  # turn off if your dataset is already host-sharded
     ):
         self._dataset = dataset
         self._num_batches = num_batches
         self._auto_shard = auto_shard
 
         # Default to data-parallel sharding across local devices.
+        # if sharding is None:
+        #     sharding = jax.sharding.NamedSharding(
+        #         jax.sharding.Mesh(jax.devices(), ("B",)),
+        #         jax.sharding.PartitionSpec("B"),
+        #     )
         if sharding is None:
-            sharding = jax.sharding.NamedSharding(
-                jax.sharding.Mesh(jax.devices(), ("B",)),
-                jax.sharding.PartitionSpec("B"),
-            )
+            if self._n_proc > 1:
+                # one slice of the global sharding for this host
+                ps = jax.sharding.PositionalSharding(jax.devices())
+                ps = ps.reshape(self._n_proc, jax.local_device_count())[self._proc_idx]
+                sharding = ps
+            else:
+                sharding = jax.sharding.PositionalSharding(jax.devices())
         self._sharding = sharding
 
         # Multi-process information
         self._n_proc = jax.process_count()
         self._proc_idx = jax.process_index()
+        
+    def _to_device(self, batch):
+        return jax.tree_util.tree_map(
+            lambda x: jax.device_put(x, self._sharding) if hasattr(x, "shape") and x.shape else x,
+            batch,
+        )
+
+    def _assert_divisible(self, batch):
+        # infer batch size from any leaf with a leading dim
+        sizes = [x.shape[0] for x in jax.tree_util.tree_leaves(batch)
+                if hasattr(x, "shape") and x.shape]
+        if not sizes:  # no arrays? nothing to do
+            return
+        B = max(sizes)
+        if B % self._n_proc != 0:
+            raise ValueError(f"Global batch {B} not divisible by processes {self._n_proc}")
+        per_host = B // self._n_proc
+        ldc = jax.local_device_count()
+        if per_host % ldc != 0:
+            raise ValueError(f"Per-host batch {per_host} not divisible by local_device_count {ldc}")
 
     # ──────────────────────────────────────────────────────────────────────────
     # Helper: split a full batch so that each host keeps only its own rows
@@ -498,15 +526,23 @@ class RLDSDataLoader:
         if not self._auto_shard or self._n_proc == 1:
             return batch
 
-        def _slice(x):
-            if x.shape[0] % self._n_proc != 0:
-                raise ValueError(f"Batch size {x.shape[0]} not divisible by #processes {self._n_proc}")
-            per_host = x.shape[0] // self._n_proc
-            start = self._proc_idx * per_host
-            end = (self._proc_idx + 1) * per_host
-            return x[start:end]
+        # infer global batch size
+        sizes = [x.shape[0] for x in jax.tree_util.tree_leaves(batch)
+                if hasattr(x, "shape") and x.shape]
+        if not sizes:
+            return batch
+        B = max(sizes)
+        per_host = B // self._n_proc
+        start = self._proc_idx * per_host
+        end = start + per_host
 
-        return jax.tree.map(_slice, batch)
+        def _slice(x):
+            if hasattr(x, "shape") and x.shape and x.shape[0] == B:
+                return x[start:end]
+            return x  # leave non-batch leaves alone
+
+        return jax.tree_util.tree_map(_slice, batch)
+
 
     # ──────────────────────────────────────────────────────────────────────────
     def __iter__(self):
@@ -515,13 +551,10 @@ class RLDSDataLoader:
             for batch in self._dataset:
                 if self._num_batches is not None and seen >= self._num_batches:
                     return
+                self._assert_divisible(batch)
                 seen += 1
-                batch = self._local_slice(batch)  # host slicing
-                # Turn local NumPy → jax.Array on all local devices
-                yield jax.tree.map(
-                    lambda x: jax.make_array_from_process_local_data(self._sharding, x),
-                    batch,
-                )
+                batch = self._local_slice(batch)
+                yield self._to_device(batch)
 
 
 # class RLDSDataLoader:
