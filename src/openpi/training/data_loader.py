@@ -485,9 +485,11 @@ class RLDSDataLoader:
         #         jax.sharding.Mesh(jax.devices(), ("B",)),
         #         jax.sharding.PartitionSpec("B"),
         #     )
+        self._n_proc = jax.process_count()
+        self._proc_idx = jax.process_index()
+
         if sharding is None:
             if self._n_proc > 1:
-                # one slice of the global sharding for this host
                 ps = jax.sharding.PositionalSharding(jax.devices())
                 ps = ps.reshape(self._n_proc, jax.local_device_count())[self._proc_idx]
                 sharding = ps
@@ -495,29 +497,43 @@ class RLDSDataLoader:
                 sharding = jax.sharding.PositionalSharding(jax.devices())
         self._sharding = sharding
 
-        # Multi-process information
-        self._n_proc = jax.process_count()
-        self._proc_idx = jax.process_index()
         
     def _to_device(self, batch):
-        return jax.tree_util.tree_map(
-            lambda x: jax.device_put(x, self._sharding) if hasattr(x, "shape") and x.shape else x,
-            batch,
-        )
+        def put(x):
+            if not (hasattr(x, "shape") and x.shape):
+                return x
+            if isinstance(self._sharding, jax.sharding.NamedSharding):
+                # Assemble a global jax.Array across processes.
+                return jax.make_array_from_process_local_data(self._sharding, x)
+            else:
+                # Per-host sharding (PositionalSharding etc.).
+                return jax.device_put(x, self._sharding)
+        return jax.tree_util.tree_map(put, batch)
+
 
     def _assert_divisible(self, batch):
-        # infer batch size from any leaf with a leading dim
         sizes = [x.shape[0] for x in jax.tree_util.tree_leaves(batch)
                 if hasattr(x, "shape") and x.shape]
-        if not sizes:  # no arrays? nothing to do
+        if not sizes:
             return
-        B = max(sizes)
-        if B % self._n_proc != 0:
-            raise ValueError(f"Global batch {B} not divisible by processes {self._n_proc}")
-        per_host = B // self._n_proc
-        ldc = jax.local_device_count()
-        if per_host % ldc != 0:
-            raise ValueError(f"Per-host batch {per_host} not divisible by local_device_count {ldc}")
+        b = max(sizes)  # this is per-host if dataset was shard(...)’ed
+
+        if isinstance(self._sharding, jax.sharding.NamedSharding):
+            mesh = self._sharding.mesh
+            # DATA axis size across the whole mesh:
+            data_axis_size = mesh.shape.get("data", None)  # or use your DATA_AXIS constant
+            if data_axis_size is None:
+                return  # no data axis; nothing to check
+            dp_per_host = data_axis_size // self._n_proc
+            if dp_per_host == 0 or data_axis_size % self._n_proc != 0:
+                raise ValueError("Mesh/data axis inconsistent with process_count.")
+            if b % dp_per_host != 0:
+                raise ValueError(f"Per-host batch {b} must be divisible by dp_per_host {dp_per_host}")
+        else:
+            # PositionalSharding fallback shards leading axis across local devices
+            ldc = jax.local_device_count()
+            if b % ldc != 0:
+                raise ValueError(f"Per-host batch {b} must be divisible by local_device_count {ldc}")
 
     # ──────────────────────────────────────────────────────────────────────────
     # Helper: split a full batch so that each host keeps only its own rows
