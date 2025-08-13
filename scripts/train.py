@@ -48,6 +48,121 @@ def init_logging():
     logger.handlers[0].setFormatter(formatter)
 
 
+def _format_sharding(shard) -> str:
+    try:
+        import jax
+    except Exception:
+        return "<no-jax>"
+    if isinstance(shard, jax.sharding.NamedSharding):
+        mesh = shard.mesh
+        mesh_desc = ", ".join(f"{k}={v}" for k, v in mesh.shape.items())
+        return f"NamedSharding(mesh=[{mesh_desc}], spec={shard.spec})"
+    if hasattr(shard, "devices"):
+        # PositionalSharding and others expose .devices()
+        try:
+            ndev = len(shard.devices())
+        except Exception:
+            ndev = "?"
+        return f"{type(shard).__name__}(devices={ndev})"
+    return str(shard)
+
+
+def _get_array(obj):
+    # nnx.Param-like leaves store the array in .value
+    if hasattr(obj, "value") and hasattr(obj.value, "sharding"):
+        return obj.value
+    return obj
+
+
+def _pytree_array_leaves(tree):
+    leaves = []
+    for path, leaf in jax.tree_util.tree_flatten_with_path(tree)[0]:
+        arr = _get_array(leaf)
+        if hasattr(arr, "shape") and hasattr(arr, "sharding"):
+            leaves.append((path, arr))
+    return leaves
+
+
+def log_mesh_and_sharding_header(mesh: jax.sharding.Mesh, *, title: str):
+    mesh_desc = ", ".join(f"{k}={v}" for k, v in mesh.shape.items())
+    try:
+        import numpy as _np
+        total = int(_np.prod(list(mesh.shape.values())))
+    except Exception:
+        total = "?"
+    logging.info(f"{title}: mesh axes [{mesh_desc}] total_devices={total}")
+
+
+def log_batch_sharding(batch):
+    def fmt_path(path):
+        return jax.tree_util.keystr(path)
+    lines = []
+    for path, arr in _pytree_array_leaves(batch):
+        try:
+            ex_shape = None
+            # Example addressable shard shape on this host (if available)
+            if hasattr(arr, "addressable_shards") and arr.addressable_shards:
+                ex_shape = arr.addressable_shards[0].data.shape
+            shard_str = _format_sharding(arr.sharding)
+            line = f"{fmt_path(path)}: global={tuple(arr.shape)} dtype={arr.dtype} | {shard_str}"
+            if ex_shape is not None:
+                line += f" | local_shard={tuple(ex_shape)}"
+            lines.append(line)
+        except Exception as e:
+            lines.append(f"{fmt_path(path)}: <error formatting sharding: {e}>")
+    if lines:
+        logging.info("Batch sharding summary:\n" + "\n".join(lines))
+
+
+def log_param_sharding_planned(state_sharding):
+    from openpi.training import sharding as _sh
+    planned = state_sharding.params
+    entries = []
+    sharded = replicated = 0
+    for path, shard in jax.tree_util.tree_flatten_with_path(planned)[0]:
+        if isinstance(shard, jax.sharding.NamedSharding):
+            # Count as sharded if any dim uses FSDP axis
+            uses_fsdp = False
+            try:
+                spec = shard.spec
+                # spec is a PartitionSpec; check members for axis name
+                if isinstance(spec, jax.sharding.PartitionSpec):
+                    uses_fsdp = _sh.FSDP_AXIS in tuple(spec)
+            except Exception:
+                pass
+            if uses_fsdp:
+                sharded += 1
+            else:
+                replicated += 1
+        else:
+            replicated += 1
+        entries.append(f"{jax.tree_util.keystr(path)}: {_format_sharding(shard)}")
+    logging.info(
+        "Planned parameter sharding (from fsdp_sharding): sharded=%d replicated=%d\n%s",
+        sharded,
+        replicated,
+        "\n".join(entries),
+    )
+
+
+def log_param_sharding_actual(params):
+    lines = []
+    for path, arr in _pytree_array_leaves(params):
+        try:
+            ex_shape = None
+            if hasattr(arr, "addressable_shards") and arr.addressable_shards:
+                ex_shape = arr.addressable_shards[0].data.shape
+            shard_str = _format_sharding(arr.sharding)
+            line = f"{jax.tree_util.keystr(path)}: global={tuple(arr.shape)} dtype={arr.dtype} | {shard_str}"
+            if ex_shape is not None:
+                line += f" | local_shard={tuple(ex_shape)}"
+            lines.append(line)
+        except Exception as e:
+            lines.append(f"{jax.tree_util.keystr(path)}: <error formatting sharding: {e}>")
+    if lines:
+        logging.info("Actual parameter sharding:\n" + "\n".join(lines))
+
+
 def init_wandb(config: _config.TrainConfig, *, resuming: bool, log_code: bool = False, enabled: bool = True):
     if not enabled:
         wandb.init(mode="disabled")
@@ -217,6 +332,10 @@ def main(config: _config.TrainConfig):
     mesh = sharding.make_mesh(config.fsdp_devices)
     data_sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec(sharding.DATA_AXIS))
     replicated_sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec())
+    # Human-readable mesh overview
+    log_mesh_and_sharding_header(mesh, title="Device mesh")
+    logging.info("Data sharding spec: %s", _format_sharding(data_sharding))
+    logging.info("Replicated sharding spec: %s", _format_sharding(replicated_sharding))
 
     checkpoint_manager, resuming = _checkpoints.initialize_checkpoint_dir(
         config.checkpoint_dir,
@@ -235,7 +354,9 @@ def main(config: _config.TrainConfig):
     logging.info("Before getting batch")
     batch = next(data_iter)
     logging.info("After getting batch")
-    logging.info(f"Initialized data loader:\n{training_utils.array_tree_to_info(batch)}")
+    logging.info(f"Initialized data loader (shapes):\n{training_utils.array_tree_to_info(batch)}")
+    # Sharding details for the first batch
+    log_batch_sharding(batch)
 
     # Log images from first batch to sanity check.
     images_to_log = [
@@ -246,7 +367,10 @@ def main(config: _config.TrainConfig):
 
     train_state, train_state_sharding = init_train_state(config, init_rng, mesh, resume=resuming)
     jax.block_until_ready(train_state)
-    logging.info(f"Initialized train state:\n{training_utils.array_tree_to_info(train_state.params)}")
+    logging.info(f"Initialized train state (param shapes):\n{training_utils.array_tree_to_info(train_state.params)}")
+    # Planned vs actual parameter sharding
+    log_param_sharding_planned(train_state_sharding)
+    log_param_sharding_actual(train_state.params)
 
     if resuming:
         train_state = _checkpoints.restore_state(checkpoint_manager, train_state, data_loader)
