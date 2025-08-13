@@ -652,7 +652,7 @@ _CONFIGS = [
         ),
         num_train_steps=100_000,
         fsdp_devices=1,
-        batch_size=16,
+        batch_size=8,
         weight_loader=weight_loaders.PaliGemmaWeightLoader(),
         assets_base_dir="gs://pi0-cot/assets",
         checkpoint_base_dir="gs://pi0-cot/checkpoints",
