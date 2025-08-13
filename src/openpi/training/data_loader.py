@@ -137,6 +137,54 @@ class FakeDataset(Dataset):
         return self._num_samples
 
 
+class TestIterableDataset(IterableDataset[dict]):
+    """Lightweight iterable dataset that yields synthetic, already-batched samples.
+
+    This is intended for debugging multi-process data loading and sharding without
+    pulling in RLDS/DROID dependencies. It produces batches matching the model's
+    input/output specs.
+    """
+
+    def __init__(
+        self,
+        model_config: _model.BaseModelConfig,
+        local_batch_size: int,
+        *,
+        num_batches: int | None = None,
+        seed: int = 0,
+    ) -> None:
+        self._model_config = model_config
+        self._local_batch_size = local_batch_size
+        self._num_batches = num_batches
+        self._rng = np.random.RandomState(seed)
+
+        # Create shape/dtype specs with the desired per-host batch size.
+        self._observation_spec, self._action_spec = model_config.inputs_spec(batch_size=local_batch_size)
+
+    def __iter__(self):
+        produced = 0
+
+        def make_from_spec(spec: jax.ShapeDtypeStruct):
+            shape = spec.shape
+            if spec.dtype == jnp.float32:
+                return self._rng.uniform(-1.0, 1.0, size=shape).astype(np.float32)
+            if spec.dtype == jnp.int32:
+                return self._rng.randint(0, 2048, size=shape, dtype=np.int32)
+            return np.zeros(shape=shape, dtype=spec.dtype)
+
+        while True:
+            if self._num_batches is not None and produced >= self._num_batches:
+                return
+            observation = jax.tree.map(make_from_spec, self._observation_spec)
+            action = jax.tree.map(make_from_spec, self._action_spec)
+            produced += 1
+            # Convert Observation to dict expected by DataLoaderImpl.
+            yield {**observation.to_dict(), "actions": action}
+
+    def __len__(self) -> int:
+        return self._num_batches if self._num_batches is not None else 2**31 - 1
+
+
 def create_torch_dataset(
     data_config: _config.DataConfig, action_horizon: int, model_config: _model.BaseModelConfig
 ) -> Dataset:
@@ -255,6 +303,16 @@ def create_data_loader(
     data_config = config.data.create(config.assets_dirs, config.model)
 
     if data_config.rlds_data_dir is not None:
+        # Debug pathway: use a lightweight synthetic iterable dataset to test multi-process sharding
+        # without requiring RLDS/DROID. Enable by setting OPENPI_USE_TEST_ITER_DATASET=1.
+        if os.environ.get("OPENPI_USE_TEST_ITER_DATASET", "0") == "1":
+            return create_test_rlds_data_loader(
+                data_config,
+                config.model,
+                batch_size=config.batch_size,
+                sharding=sharding,
+                num_batches=num_batches,
+            )
         return create_rlds_data_loader(
             data_config,
             action_horizon=config.model.action_horizon,
@@ -361,6 +419,35 @@ def create_rlds_data_loader(
         auto_shard=False,
     )
 
+    return DataLoaderImpl(data_config, data_loader)
+
+
+def create_test_rlds_data_loader(
+    data_config: _config.DataConfig,
+    model_config: _model.BaseModelConfig,
+    *,
+    batch_size: int,
+    sharding: jax.sharding.Sharding | None = None,
+    num_batches: int | None = None,
+) -> DataLoader[tuple[_model.Observation, _model.Actions]]:
+    """Create a simple iterable data loader for multi-process sharding tests.
+
+    Produces synthetic per-host batches that already match the model's
+    Observation/Actions specs. This bypasses RLDS/DROID complexity while
+    exercising the same sharding/multi-process pathway as RLDSDataLoader.
+    """
+    local_batch_size = max(1, batch_size // jax.process_count())
+    dataset = TestIterableDataset(model_config, local_batch_size, num_batches=num_batches)
+
+    data_loader = RLDSDataLoader(
+        dataset,  # already per-host batched
+        sharding=sharding,
+        num_batches=num_batches,
+        auto_shard=False,
+    )
+
+    # Provide a minimal DataConfig to satisfy interfaces; callers may pass their
+    # own if desired.
     return DataLoaderImpl(data_config, data_loader)
 
 
