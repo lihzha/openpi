@@ -169,11 +169,14 @@ def create_rlds_dataset(
     shuffle: bool = False,
 ) -> Dataset:
     # At the moment, we only support DROID for RLDS datasets.
+    # Use per-host batching to avoid duplicative slicing work in the loader
+    # and reduce memory pressure when running multi-process (e.g., multi-host TPU).
+    local_batch_size = max(1, batch_size // jax.process_count())
     if data_config.cot:
         return DroidCoTRldsDataset(
             data_dir=data_config.rlds_data_dir,
             language_action_dir=data_config.language_action_dir,
-            batch_size=batch_size,
+            batch_size=local_batch_size,
             shuffle=shuffle,
             action_chunk_size=action_horizon,
             action_space=data_config.action_space,
@@ -181,7 +184,7 @@ def create_rlds_dataset(
         )
     return DroidRldsDataset(
         data_dir=data_config.rlds_data_dir,
-        batch_size=batch_size,
+        batch_size=local_batch_size,
         shuffle=shuffle,
         action_chunk_size=action_horizon,
         action_space=data_config.action_space,
@@ -354,6 +357,8 @@ def create_rlds_data_loader(
         dataset,
         sharding=sharding,
         num_batches=num_batches,
+        # Dataset is already host-sharded and per-host batched; skip extra host slicing.
+        auto_shard=False,
     )
 
     return DataLoaderImpl(data_config, data_loader)

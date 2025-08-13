@@ -96,11 +96,34 @@ class DroidRldsDataset:
         import tensorflow as tf
         import tensorflow_datasets as tfds
 
-        # Configure Tensorflow with *no GPU devices* (to prevent clobber with PyTorch / JAX)
+        # Configure Tensorflow with no GPU/TPU devices to avoid clobbering JAX/TPU runtime
         tf.config.set_visible_devices([], "GPU")
+        try:
+            tf.config.set_visible_devices([], "TPU")
+        except Exception:
+            pass
+
+        # Resolve autotune sentinels now that TF is imported
+        if num_parallel_reads == -1:
+            num_parallel_reads = tf.data.AUTOTUNE
+        if num_parallel_calls == -1:
+            num_parallel_calls = tf.data.AUTOTUNE
 
         builder = tfds.builder("droid", data_dir=data_dir)
-        dataset = dl.DLataset.from_rlds(builder, split="train", shuffle=shuffle, num_parallel_reads=num_parallel_reads)
+        dataset = dl.DLataset.from_rlds(
+            builder,
+            split="train",
+            shuffle=shuffle,
+            num_parallel_reads=num_parallel_reads,
+        )
+
+        # Enable non-deterministic mapping and other tf.data optimizations for throughput
+        opts = tf.data.Options()
+        opts.experimental_deterministic = False
+        dataset = dataset.with_options(opts)
+
+        # Host-shard the dataset across JAX processes to avoid duplicated work and I/O on TPUs.
+        dataset = dataset.shard(jax.process_count(), jax.process_index())
 
         # Filter out any unsuccessful trajectories -- we use the file name to check this
         dataset = dataset.filter(
@@ -204,6 +227,8 @@ class DroidRldsDataset:
         # Shuffle, batch
         dataset = dataset.shuffle(shuffle_buffer_size)
         dataset = dataset.batch(batch_size)
+        # Overlap input pipeline with consumers; lets TF fill a small buffer per host.
+        dataset = dataset.prefetch(2)
         # Note =>> Seems to reduce memory usage without affecting speed?
         dataset = dataset.with_ram_budget(1)
 
@@ -257,6 +282,12 @@ class DroidCoTRldsDataset:
         # ---------------------------------------------------------------------
         # 1. TF-DS builder + base dataset
         # ---------------------------------------------------------------------
+        # Resolve autotune sentinels now that TF is imported
+        if num_parallel_reads == -1:
+            num_parallel_reads = tf.data.AUTOTUNE
+        if num_parallel_calls == -1:
+            num_parallel_calls = tf.data.AUTOTUNE
+
         builder = tfds.builder("droid", data_dir=data_dir)
         dataset = dl.DLataset.from_rlds(
             builder,
@@ -266,6 +297,11 @@ class DroidCoTRldsDataset:
         )
 
         dataset = dataset.shard(jax.process_count(), jax.process_index())
+
+        # Enable non-deterministic mapping and other tf.data optimizations for throughput
+        opts = tf.data.Options()
+        opts.experimental_deterministic = False
+        dataset = dataset.with_options(opts)
 
         # ---------------------------------------------------------------------
         # 2. Language-action table (episode_id → serialized tensor)
@@ -589,6 +625,8 @@ class DroidCoTRldsDataset:
 
         # Shuffle, batch
         dataset = dataset.batch(batch_size)
+        # Overlap input pipeline with consumers; lets TF fill a small buffer per host.
+        dataset = dataset.prefetch(2)
         # Note =>> Seems to reduce memory usage without affecting speed?
         dataset = dataset.with_ram_budget(1)
 
