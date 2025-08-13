@@ -644,7 +644,7 @@ _CONFIGS = [
             base_config=DataConfig(
                 prompt_from_task=True,
             ),
-            shuffle_buffer_size=20_000,
+            shuffle_buffer_size=1_000,
             assets=AssetsConfig(
                 assets_dir="gs://pi0-cot/assets/pi0_droid_cot_v4",
                 asset_id="droid",
