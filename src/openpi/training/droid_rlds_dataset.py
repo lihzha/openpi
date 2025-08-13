@@ -268,38 +268,26 @@ class DroidCoTRldsDataset:
         dataset = dataset.shard(jax.process_count(), jax.process_index())
 
         # ---------------------------------------------------------------------
-        # 2. Episode-ID table  (valid_eids → True)
+        # 2. Language-action table (episode_id → serialized tensor)
         # ---------------------------------------------------------------------
-        lang_action_files = tf.io.gfile.listdir(language_action_dir)
-        valid_eids = [
-            fname.split("_language_action.json")[0]
-            for fname in lang_action_files
-            if fname.endswith("_language_action.json")
-        ]
-        keys = tf.constant(valid_eids, dtype=tf.string)
-        values = tf.ones(len(valid_eids), dtype=tf.bool)
-        eid_table = tf.lookup.StaticHashTable(
-            tf.lookup.KeyValueTensorInitializer(keys, values),
-            default_value=tf.constant(False, dtype=tf.bool),
-        )
+        FEATURES = {
+            "episode_id": tf.io.FixedLenFeature([], tf.string),
+            "lang_ser":   tf.io.FixedLenFeature([], tf.string),
+        }
+        def _parse(record):
+            ex = tf.io.parse_single_example(record, FEATURES)
+            lang = tf.io.parse_tensor(ex["lang_ser"], out_type=tf.string)  # shape: [T+1]
+            return ex["episode_id"], lang
 
-        print_memory_usage("After building eid_table")
-
-        # ---------------------------------------------------------------------
-        # 3. Language-action table (episode_id → serialized tensor)
-        # ---------------------------------------------------------------------
+        files = tf.io.gfile.glob(f"{language_action_dir}/droid_language_actions-*.tfrecord.gz")
+        ds = tf.data.TFRecordDataset(
+            files, compression_type="GZIP", num_parallel_reads=tf.data.AUTOTUNE
+        ).map(_parse, num_parallel_calls=tf.data.AUTOTUNE
+        ).prefetch(tf.data.AUTOTUNE)
         episodes, lang_serialized = [], []
-        for cnt, path in enumerate(tf.io.gfile.glob(f"{language_action_dir}/*_language_action.json")):
-            eid = os.path.basename(path).split("_language_action.json")[0]
-            with tf.io.gfile.GFile(path, "r") as fp:
-                lst = json.load(fp)  # list[str] (len == # steps)
-            lst.append("stop")
-            t = tf.constant(lst, dtype=tf.string)
-            lang_serialized.append(tf.io.serialize_tensor(t).numpy())
-            episodes.append(eid)
-            cnt += 1
-            if cnt >= 300:
-                break
+        for ep_id, lang in ds:
+            episodes.append(ep_id.numpy().decode())
+            lang_serialized.append(tf.io.serialize_tensor(lang).numpy())
 
         keys = tf.constant(episodes, dtype=tf.string)
         values = tf.constant(lang_serialized, dtype=tf.string)
@@ -310,6 +298,18 @@ class DroidCoTRldsDataset:
         )
 
         print_memory_usage("After building lang_table")
+        
+        # ---------------------------------------------------------------------
+        # 3. Episode-ID table  (valid_eids → True)
+        # ---------------------------------------------------------------------
+        keys = tf.constant(episodes, dtype=tf.string)
+        values = tf.ones(len(episodes), dtype=tf.bool)
+        eid_table = tf.lookup.StaticHashTable(
+            tf.lookup.KeyValueTensorInitializer(keys, values),
+            default_value=tf.constant(False, dtype=tf.bool),
+        )
+
+        print_memory_usage("After building eid_table")
 
         # ---------------------------------------------------------------------
         # 4. Episode-path ↔ Episode-ID table
