@@ -249,7 +249,7 @@ class DroidCoTRldsDataset:
         # ⇨ point all data + metadata directories to the GCS bucket
 
         if "pi0-cot" in data_dir:  # for v4
-            METADATA_PATH = language_action_dir.replace("lang_annotations", "metadata")
+            METADATA_PATH = language_action_dir.replace("droid-lang-actions", "metadata")
         else:  # for v6
             assert "droid-cot" in data_dir
             METADATA_PATH = language_action_dir.replace("posed_droid", "metadata")
