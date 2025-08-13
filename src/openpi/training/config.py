@@ -651,7 +651,7 @@ _CONFIGS = [
             ),
         ),
         num_train_steps=100_000,
-        fsdp_devices=4,
+        fsdp_devices=1,
         batch_size=16,
         weight_loader=weight_loaders.PaliGemmaWeightLoader(),
         assets_base_dir="gs://pi0-cot/assets",
