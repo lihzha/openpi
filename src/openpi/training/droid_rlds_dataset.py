@@ -50,6 +50,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import time
 
 import jax
 import psutil
@@ -59,6 +60,9 @@ IMAGE_LIST = [
     "exterior_image_1_left",
     "exterior_image_2_left",
 ]
+
+# Enable lightweight timing logs when set to "1"
+DEBUG_TIMING = os.environ.get("OPENPI_TIMING", "0") == "1"
 
 
 def print_memory_usage(label):
@@ -288,6 +292,7 @@ class DroidCoTRldsDataset:
         if num_parallel_calls == -1:
             num_parallel_calls = tf.data.AUTOTUNE
 
+        t_build_ds_start = time.perf_counter() if DEBUG_TIMING else 0.0
         builder = tfds.builder("droid", data_dir=data_dir)
         dataset = dl.DLataset.from_rlds(
             builder,
@@ -295,9 +300,12 @@ class DroidCoTRldsDataset:
             shuffle=shuffle,
             num_parallel_reads=num_parallel_reads,
         )
+        t_build_ds = (time.perf_counter() - t_build_ds_start) if DEBUG_TIMING else 0.0
         
         # dataset = dataset.with_ram_budget(1)
+        t_shard_start = time.perf_counter() if DEBUG_TIMING else 0.0
         dataset = dataset.shard(jax.process_count(), jax.process_index())
+        t_shard = (time.perf_counter() - t_shard_start) if DEBUG_TIMING else 0.0
 
         # Enable non-deterministic mapping and other tf.data optimizations for throughput
         opts = tf.data.Options()
@@ -316,6 +324,7 @@ class DroidCoTRldsDataset:
             lang = tf.io.parse_tensor(ex["lang_ser"], out_type=tf.string)  # shape: [T+1]
             return ex["episode_id"], lang
 
+        t_lang_scan_start = time.perf_counter() if DEBUG_TIMING else 0.0
         files = tf.io.gfile.glob(f"{language_action_dir}/droid_language_actions-*.tfrecord.gz")
         ds = tf.data.TFRecordDataset(
             files, compression_type="GZIP", num_parallel_reads=tf.data.AUTOTUNE
@@ -325,6 +334,7 @@ class DroidCoTRldsDataset:
         for ep_id, lang in ds:
             episodes.append(ep_id.numpy().decode())
             lang_serialized.append(tf.io.serialize_tensor(lang).numpy())
+        t_lang_scan = (time.perf_counter() - t_lang_scan_start) if DEBUG_TIMING else 0.0
 
         keys = tf.constant(episodes, dtype=tf.string)
         values = tf.constant(lang_serialized, dtype=tf.string)
@@ -334,23 +344,33 @@ class DroidCoTRldsDataset:
             default_value=default_lang_value,
         )
 
+        if DEBUG_TIMING:
+            logging.info(
+                "DroidCoTRldsDataset: built lang table for %d episodes in %.1f ms (build_ds=%.1f ms, shard=%.1f ms)",
+                len(episodes), t_lang_scan * 1000.0, t_build_ds * 1000.0, t_shard * 1000.0
+            )
         print_memory_usage("After building lang_table")
         
         # ---------------------------------------------------------------------
         # 3. Episode-ID table  (valid_eids → True)
         # ---------------------------------------------------------------------
+        t_eid_start = time.perf_counter() if DEBUG_TIMING else 0.0
         keys = tf.constant(episodes, dtype=tf.string)
         values = tf.ones(len(episodes), dtype=tf.bool)
         eid_table = tf.lookup.StaticHashTable(
             tf.lookup.KeyValueTensorInitializer(keys, values),
             default_value=tf.constant(False, dtype=tf.bool),
         )
+        t_eid = (time.perf_counter() - t_eid_start) if DEBUG_TIMING else 0.0
 
+        if DEBUG_TIMING:
+            logging.info("DroidCoTRldsDataset: built eid table in %.1f ms", t_eid * 1000.0)
         print_memory_usage("After building eid_table")
 
         # ---------------------------------------------------------------------
         # 4. Episode-path ↔ Episode-ID table
         # ---------------------------------------------------------------------
+        t_epmap_start = time.perf_counter() if DEBUG_TIMING else 0.0
         with tf.io.gfile.GFile(f"{METADATA_PATH}/episode_id_to_path.json", "r") as fp:
             episode_id_to_path = json.load(fp)
         episode_path_to_id = {v: k for k, v in episode_id_to_path.items()}
@@ -362,12 +382,16 @@ class DroidCoTRldsDataset:
             tf.lookup.KeyValueTensorInitializer(keys, values),
             default_value=default_ep_value,
         )
+        t_epmap = (time.perf_counter() - t_epmap_start) if DEBUG_TIMING else 0.0
 
+        if DEBUG_TIMING:
+            logging.info("DroidCoTRldsDataset: built episode path↔id table in %.1f ms", t_epmap * 1000.0)
         print_memory_usage("After building ep_table")
 
         # ---------------------------------------------------------------------
         # 5. Camera-index table  (episode_id → ext-cam idx)
         # ---------------------------------------------------------------------
+        t_cam_start = time.perf_counter() if DEBUG_TIMING else 0.0
         with tf.io.gfile.GFile(f"{METADATA_PATH}/cam2base_extrinsics.json", "r") as fp:
             cam2base_extrinsics = json.load(fp)
         with tf.io.gfile.GFile(f"{METADATA_PATH}/camera_serials.json", "r") as fp:
@@ -398,12 +422,16 @@ class DroidCoTRldsDataset:
             tf.lookup.KeyValueTensorInitializer(keys, values),
             default_value=-1,  # -1 ⇒ fallback camera
         )
+        t_cam = (time.perf_counter() - t_cam_start) if DEBUG_TIMING else 0.0
 
+        if DEBUG_TIMING:
+            logging.info("DroidCoTRldsDataset: built camera index table in %.1f ms", t_cam * 1000.0)
         print_memory_usage("After building cam_table")
 
         # ---------------------------------------------------------------------
         # 6. Language-instruction tables (3 per episode_id)
         # ---------------------------------------------------------------------
+        t_instr_start = time.perf_counter() if DEBUG_TIMING else 0.0
         with tf.io.gfile.GFile(f"{METADATA_PATH}/droid_language_annotations.json", "r") as fp:
             language_annotations = json.load(fp)
 
@@ -448,6 +476,9 @@ class DroidCoTRldsDataset:
             dtype=tf.string,
         )
 
+        t_instr = (time.perf_counter() - t_instr_start) if DEBUG_TIMING else 0.0
+        if DEBUG_TIMING:
+            logging.info("DroidCoTRldsDataset: built instruction tables in %.1f ms", t_instr * 1000.0)
         print_memory_usage("After building instr_table")
 
         def _id_ok(traj):

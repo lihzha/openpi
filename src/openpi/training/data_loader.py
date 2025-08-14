@@ -3,6 +3,7 @@ import multiprocessing
 import os
 import typing
 from typing import Protocol, SupportsIndex, TypeVar
+import time
 
 import jax
 import jax.numpy as jnp
@@ -31,6 +32,8 @@ import logging
 
 T_co = TypeVar("T_co", covariant=True)
 
+# Enable lightweight timing logs when set to "1"
+DEBUG_TIMING = os.environ.get("OPENPI_TIMING", "0") == "1"
 
 class Dataset(Protocol[T_co]):
     """Interface for a dataset with random access."""
@@ -88,22 +91,54 @@ class IterableTransformedDataset(IterableDataset[T_co]):
         self._is_batched = is_batched
 
     def __iter__(self):
-        for sample in self._dataset:
+        upstream_iter = iter(self._dataset)
+        while True:
+            # Fetch from upstream iterable (e.g., RLDS/TF pipeline)
+            try:
+                t_fetch_start = time.perf_counter() if DEBUG_TIMING else 0.0
+                sample = next(upstream_iter)
+                t_fetch = (time.perf_counter() - t_fetch_start) if DEBUG_TIMING else 0.0
+            except StopIteration:
+                return
+
             if self._is_batched:
                 # Transforms are designed to be applied to individual samples. So we need to split the batch into
                 # individual samples and apply the transform to each sample individually.
                 batch_size = next(v.shape[0] for v in sample.values())
 
-                # Split batch into individual samples using tree_map
+                # Split -> Transform -> Stack timings
+                t_split_start = time.perf_counter() if DEBUG_TIMING else 0.0
                 individual_samples = [jax.tree.map(lambda x: x[i], sample) for i in range(batch_size)]  # noqa: B023
+                t_split = (time.perf_counter() - t_split_start) if DEBUG_TIMING else 0.0
 
-                # Transform each sample
+                t_transform_start = time.perf_counter() if DEBUG_TIMING else 0.0
                 transformed = [self._transform(s) for s in individual_samples]
+                t_transform = (time.perf_counter() - t_transform_start) if DEBUG_TIMING else 0.0
 
-                # Recombine batch with tree_map
-                yield jax.tree.map(lambda *x: np.stack(x, axis=0), *transformed)
+                t_stack_start = time.perf_counter() if DEBUG_TIMING else 0.0
+                out = jax.tree.map(lambda *x: np.stack(x, axis=0), *transformed)
+                t_stack = (time.perf_counter() - t_stack_start) if DEBUG_TIMING else 0.0
+
+                if DEBUG_TIMING:
+                    logging.info(
+                        "IterableTransformedDataset timings: fetch=%.1f ms split=%.1f ms transform=%.1f ms stack=%.1f ms",
+                        t_fetch * 1000.0,
+                        t_split * 1000.0,
+                        t_transform * 1000.0,
+                        t_stack * 1000.0,
+                    )
+                yield out
             else:
-                yield self._transform(sample)
+                t_transform_start = time.perf_counter() if DEBUG_TIMING else 0.0
+                out = self._transform(sample)
+                t_transform = (time.perf_counter() - t_transform_start) if DEBUG_TIMING else 0.0
+                if DEBUG_TIMING:
+                    logging.info(
+                        "IterableTransformedDataset timings: fetch=%.1f ms transform=%.1f ms",
+                        t_fetch * 1000.0,
+                        t_transform * 1000.0,
+                    )
+                yield out
 
     def __len__(self) -> int:
         return len(self._dataset)
@@ -654,14 +689,39 @@ class RLDSDataLoader:
     # ──────────────────────────────────────────────────────────────────────────
     def __iter__(self):
         seen = 0
+        data_iter = iter(self._dataset)
         while True:
-            for batch in self._dataset:
-                if self._num_batches is not None and seen >= self._num_batches:
-                    return
-                self._assert_divisible(batch)
-                seen += 1
-                batch = self._local_slice(batch)
-                yield self._to_device(batch)
+            if self._num_batches is not None and seen >= self._num_batches:
+                return
+
+            # Pull next preprocessed batch (may block on upstream I/O/TF)
+            t_fetch_start = time.perf_counter() if DEBUG_TIMING else 0.0
+            try:
+                batch = next(data_iter)
+            except StopIteration:
+                data_iter = iter(self._dataset)
+                continue
+            t_fetch = (time.perf_counter() - t_fetch_start) if DEBUG_TIMING else 0.0
+
+            self._assert_divisible(batch)
+            t_slice_start = time.perf_counter() if DEBUG_TIMING else 0.0
+            batch = self._local_slice(batch)
+            t_slice = (time.perf_counter() - t_slice_start) if DEBUG_TIMING else 0.0
+
+            t_dev_start = time.perf_counter() if DEBUG_TIMING else 0.0
+            out = self._to_device(batch)
+            t_dev = (time.perf_counter() - t_dev_start) if DEBUG_TIMING else 0.0
+
+            seen += 1
+
+            if DEBUG_TIMING:
+                logging.info(
+                    "RLDSDataLoader timings: upstream=%.1f ms slice=%.1f ms device_put=%.1f ms",
+                    t_fetch * 1000.0,
+                    t_slice * 1000.0,
+                    t_dev * 1000.0,
+                )
+            yield out
 
 
 # class RLDSDataLoader:
