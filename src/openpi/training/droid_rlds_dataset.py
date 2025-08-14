@@ -613,7 +613,7 @@ class DroidCoTRldsDataset:
                 "episode_id": episode_id_vec,
             }
 
-        dataset = dataset.traj_map(restructure, num_parallel_calls)
+        # dataset = dataset.traj_map(restructure, num_parallel_calls)
 
         # TODO: chunk reasoning as well depending on the frequency ratio between reasoning and actions
         def chunk_actions(traj):
