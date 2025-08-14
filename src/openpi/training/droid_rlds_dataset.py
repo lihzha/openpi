@@ -757,15 +757,15 @@ class DroidCoTRldsDataset:
     def __iter__(self):
         logging.info("Drawing sample...")
         t00 = time.perf_counter() if DEBUG_TIMING else 0.0
-        logging.info("DroidCoTRldsDataset as_numpy_iterator.before: %.1f ms", t00*1000)
         it = self.dataset.as_numpy_iterator()
         dt = (time.perf_counter() - t00) * 1000.0
-        logging.info("DroidCoTRldsDataset as_numpy_iterator.delta: %.1f ms", dt*1000)
+        logging.info("DroidCoTRldsDataset as_numpy_iterator.delta: %.1f ms", dt)
         while True:
             t0 = time.perf_counter() if DEBUG_TIMING else 0.0
             try:
                 batch = next(it)
             except StopIteration:
+                logging.info("StopIteration")
                 return
             if DEBUG_TIMING:
                 dt = (time.perf_counter() - t0) * 1000.0
