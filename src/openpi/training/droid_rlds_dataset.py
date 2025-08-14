@@ -53,6 +53,7 @@ from pathlib import Path
 import time
 
 import jax
+import numpy as np
 import psutil
 
 METADATA_PATH = "/n/fs/robot-data/vlm-syn/droid"
@@ -538,7 +539,8 @@ class DroidCoTRldsDataset:
             episode_id = ep_table.lookup(episode_path)
             if tf.equal(episode_id, default_ep_value):
                 return tf.constant(value=False, dtype=tf.bool)
-            lang = lang_table.lookup(episode_path)
+            # Look up by episode_id (NOT episode_path). Using episode_path here would filter everything out.
+            lang = lang_table.lookup(episode_id)
             if tf.equal(lang, default_lang_value):
                 return tf.constant(value=False, dtype=tf.bool)
             return eid_table.lookup(episode_id)
@@ -753,6 +755,7 @@ class DroidCoTRldsDataset:
         self.dataset = dataset
         self.batch_size = batch_size
         self.shuffle = shuffle
+        
 
     def __iter__(self):
         logging.info("Drawing sample...")
