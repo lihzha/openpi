@@ -638,6 +638,7 @@ class DroidCoTRldsDataset:
             return traj
 
         if DEBUG_TIMING:
+            logging.info("ohno")
             def _wrap_timed_map(fn, name):
                 def _inner(x):
                     t0 = tf.timestamp()
