@@ -726,19 +726,19 @@ class DroidCoTRldsDataset:
         self.batch_size = batch_size
         self.shuffle = shuffle
 
-        def __iter__(self):
-            logging.info("Drawing sample...")
-            it = self.dataset.as_numpy_iterator()
-            while True:
-                t0 = time.perf_counter() if DEBUG_TIMING else 0.0
-                try:
-                    batch = next(it)
-                except StopIteration:
-                    return
-                if DEBUG_TIMING:
-                    dt = (time.perf_counter() - t0) * 1000.0
-                    logging.info("DroidCoTRldsDataset as_numpy_iterator.next: %.1f ms", dt)
-                yield batch
+    def __iter__(self):
+        logging.info("Drawing sample...")
+        it = self.dataset.as_numpy_iterator()
+        while True:
+            t0 = time.perf_counter() if DEBUG_TIMING else 0.0
+            try:
+                batch = next(it)
+            except StopIteration:
+                return
+            if DEBUG_TIMING:
+                dt = (time.perf_counter() - t0) * 1000.0
+                logging.info("DroidCoTRldsDataset as_numpy_iterator.next: %.1f ms", dt)
+            yield batch
 
     def __len__(self):
         # This is the approximate number of samples in DROID after filtering.
