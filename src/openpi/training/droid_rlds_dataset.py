@@ -183,7 +183,14 @@ class DroidRldsDataset:
                     t0 = tf.timestamp()
                     y = fn(x)
                     t1 = tf.timestamp()
-                    tf.print("[tf.data]", name, "ms=", (t1 - t0) * 1000.0)
+                    ms = (t1 - t0) * 1000.0
+                    def _log(ms_np):
+                        try:
+                            logging.info(f"[tf.data] {name} ms={float(ms_np):.1f}")
+                        except Exception:
+                            pass
+                        return np.int64(0)
+                    _ = tf.py_function(_log, [ms], Tout=tf.int64)
                     return y
                 return _inner
             dataset = dataset.traj_map(_wrap_timed_map(restructure, "restructure"), num_parallel_calls)
@@ -230,7 +237,14 @@ class DroidRldsDataset:
                 t0 = tf.timestamp()
                 out = filter_idle(x)
                 t1 = tf.timestamp()
-                tf.print("[tf.data]", "filter_idle", "ms=", (t1 - t0) * 1000.0)
+                ms = (t1 - t0) * 1000.0
+                def _log(ms_np):
+                    try:
+                        logging.info(f"[tf.data] filter_idle ms={float(ms_np):.1f}")
+                    except Exception:
+                        pass
+                    return np.int64(0)
+                _ = tf.py_function(_log, [ms], Tout=tf.int64)
                 return out
             dataset = dataset.filter(_timed_filter)
         else:
@@ -638,13 +652,19 @@ class DroidCoTRldsDataset:
             return traj
 
         if DEBUG_TIMING:
-            logging.info("ohno")
             def _wrap_timed_map(fn, name):
                 def _inner(x):
                     t0 = tf.timestamp()
                     y = fn(x)
                     t1 = tf.timestamp()
-                    tf.print("[tf.data]", name, "ms=", (t1 - t0) * 1000.0)
+                    ms = (t1 - t0) * 1000.0
+                    def _log(ms_np):
+                        try:
+                            logging.info(f"[tf.data] {name} ms={float(ms_np):.1f}")
+                        except Exception:
+                            pass
+                        return np.int64(0)
+                    _ = tf.py_function(_log, [ms], Tout=tf.int64)
                     return y
                 return _inner
             dataset = dataset.traj_map(_wrap_timed_map(restructure, "restructure"), num_parallel_calls)
@@ -691,7 +711,14 @@ class DroidCoTRldsDataset:
                 t0 = tf.timestamp()
                 out = filter_idle(x)
                 t1 = tf.timestamp()
-                tf.print("[tf.data]", "filter_idle", "ms=", (t1 - t0) * 1000.0)
+                ms = (t1 - t0) * 1000.0
+                def _log(ms_np):
+                    try:
+                        logging.info(f"[tf.data] filter_idle ms={float(ms_np):.1f}")
+                    except Exception:
+                        pass
+                    return np.int64(0)
+                _ = tf.py_function(_log, [ms], Tout=tf.int64)
                 return out
             dataset = dataset.filter(_timed_filter)
         else:
