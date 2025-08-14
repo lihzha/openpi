@@ -140,10 +140,11 @@ def deserialize_json(data: str) -> dict[str, NormStats]:
 
 def save(directory: str, norm_stats: dict[str, NormStats]) -> None:
     import tensorflow as tf
+    import os
 
     """Save the normalization stats to a directory (supports gs:// or local)."""
     path = tf.io.gfile.join(directory, "norm_stats.json")
-    tf.io.gfile.makedirs(tf.io.gfile.dirname(path))
+    tf.io.gfile.makedirs(os.path.dirname(str(path)))
     with tf.io.gfile.GFile(path, "w") as f:
         f.write(serialize_json(norm_stats))
 
