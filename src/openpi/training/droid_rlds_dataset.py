@@ -177,7 +177,18 @@ class DroidRldsDataset:
                 "prompt": instruction,
             }
 
-        dataset = dataset.traj_map(restructure, num_parallel_calls)
+        if DEBUG_TIMING:
+            def _wrap_timed_map(fn, name):
+                def _inner(x):
+                    t0 = tf.timestamp()
+                    y = fn(x)
+                    t1 = tf.timestamp()
+                    tf.print("[tf.data]", name, "ms=", (t1 - t0) * 1000.0)
+                    return y
+                return _inner
+            dataset = dataset.traj_map(_wrap_timed_map(restructure, "restructure"), num_parallel_calls)
+        else:
+            dataset = dataset.traj_map(restructure, num_parallel_calls)
 
         def chunk_actions(traj):
             """Splits episode into action chunks."""
@@ -200,7 +211,10 @@ class DroidRldsDataset:
             traj["actions"] = tf.gather(traj["actions"], action_chunk_indices)
             return traj
 
-        dataset = dataset.traj_map(chunk_actions, num_parallel_calls)
+        if DEBUG_TIMING:
+            dataset = dataset.traj_map(_wrap_timed_map(chunk_actions, "chunk_actions"), num_parallel_calls)
+        else:
+            dataset = dataset.traj_map(chunk_actions, num_parallel_calls)
 
         def filter_idle(traj):
             """Filter out chunks with idle actions.
@@ -211,7 +225,16 @@ class DroidRldsDataset:
                 return tf.reduce_any(tf.abs(traj["actions"][: action_chunk_size // 2] - traj["actions"][:1]) > 1e-3)
             return tf.reduce_any(tf.abs(traj["actions"][: action_chunk_size // 2]) > 1e-3)
 
-        dataset = dataset.filter(filter_idle)
+        if DEBUG_TIMING:
+            def _timed_filter(x):
+                t0 = tf.timestamp()
+                out = filter_idle(x)
+                t1 = tf.timestamp()
+                tf.print("[tf.data]", "filter_idle", "ms=", (t1 - t0) * 1000.0)
+                return out
+            dataset = dataset.filter(_timed_filter)
+        else:
+            dataset = dataset.filter(filter_idle)
 
         # Flatten: map from trajectory dataset to dataset of individual action chunks
         dataset = dataset.flatten(num_parallel_calls=num_parallel_calls)
@@ -226,7 +249,10 @@ class DroidRldsDataset:
             )
             return traj
 
-        dataset = dataset.frame_map(decode_images, num_parallel_calls)
+        if DEBUG_TIMING:
+            dataset = dataset.frame_map(_wrap_timed_map(decode_images, "decode_images"), num_parallel_calls)
+        else:
+            dataset = dataset.frame_map(decode_images, num_parallel_calls)
 
         # Shuffle, batch
         dataset = dataset.shuffle(shuffle_buffer_size)
@@ -241,7 +267,17 @@ class DroidRldsDataset:
         self.shuffle = shuffle
 
     def __iter__(self):
-        yield from self.dataset.as_numpy_iterator()
+        it = self.dataset.as_numpy_iterator()
+        while True:
+            t0 = time.perf_counter() if DEBUG_TIMING else 0.0
+            try:
+                batch = next(it)
+            except StopIteration:
+                return
+            if DEBUG_TIMING:
+                dt = (time.perf_counter() - t0) * 1000.0
+                logging.info("DroidRldsDataset as_numpy_iterator.next: %.1f ms", dt)
+            yield batch
 
     def __len__(self):
         # This is the approximate number of samples in DROID after filtering.
@@ -601,7 +637,20 @@ class DroidCoTRldsDataset:
             traj["actions"] = tf.gather(traj["actions"], action_chunk_indices)
             return traj
 
-        dataset = dataset.traj_map(chunk_actions, num_parallel_calls)
+        if DEBUG_TIMING:
+            def _wrap_timed_map(fn, name):
+                def _inner(x):
+                    t0 = tf.timestamp()
+                    y = fn(x)
+                    t1 = tf.timestamp()
+                    tf.print("[tf.data]", name, "ms=", (t1 - t0) * 1000.0)
+                    return y
+                return _inner
+            dataset = dataset.traj_map(_wrap_timed_map(restructure, "restructure"), num_parallel_calls)
+            dataset = dataset.traj_map(_wrap_timed_map(chunk_actions, "chunk_actions"), num_parallel_calls)
+        else:
+            dataset = dataset.traj_map(restructure, num_parallel_calls)
+            dataset = dataset.traj_map(chunk_actions, num_parallel_calls)
 
         def chunk_language_actions(traj):
             """Splits episode into action chunks."""
@@ -636,7 +685,16 @@ class DroidCoTRldsDataset:
                 return tf.reduce_any(tf.abs(traj["actions"][: action_chunk_size // 2] - traj["actions"][:1]) > 1e-3)
             return tf.reduce_any(tf.abs(traj["actions"][: action_chunk_size // 2]) > 1e-3)
 
-        dataset = dataset.filter(filter_idle)
+        if DEBUG_TIMING:
+            def _timed_filter(x):
+                t0 = tf.timestamp()
+                out = filter_idle(x)
+                t1 = tf.timestamp()
+                tf.print("[tf.data]", "filter_idle", "ms=", (t1 - t0) * 1000.0)
+                return out
+            dataset = dataset.filter(_timed_filter)
+        else:
+            dataset = dataset.filter(filter_idle)
 
         # Flatten: map from trajectory dataset to dataset of individual action chunks
         dataset = dataset.flatten(num_parallel_calls=num_parallel_calls)
@@ -653,7 +711,10 @@ class DroidCoTRldsDataset:
 
         dataset = dataset.shuffle(shuffle_buffer_size)
 
-        dataset = dataset.frame_map(decode_images, num_parallel_calls)
+        if DEBUG_TIMING:
+            dataset = dataset.frame_map(_wrap_timed_map(decode_images, "decode_images"), num_parallel_calls)
+        else:
+            dataset = dataset.frame_map(decode_images, num_parallel_calls)
 
         # Shuffle, batch
         dataset = dataset.batch(batch_size)
@@ -665,9 +726,19 @@ class DroidCoTRldsDataset:
         self.batch_size = batch_size
         self.shuffle = shuffle
 
-    def __iter__(self):
-        logging.info("Drawing sample...")
-        yield from self.dataset.as_numpy_iterator()
+        def __iter__(self):
+            logging.info("Drawing sample...")
+            it = self.dataset.as_numpy_iterator()
+            while True:
+                t0 = time.perf_counter() if DEBUG_TIMING else 0.0
+                try:
+                    batch = next(it)
+                except StopIteration:
+                    return
+                if DEBUG_TIMING:
+                    dt = (time.perf_counter() - t0) * 1000.0
+                    logging.info("DroidCoTRldsDataset as_numpy_iterator.next: %.1f ms", dt)
+                yield batch
 
     def __len__(self):
         # This is the approximate number of samples in DROID after filtering.
