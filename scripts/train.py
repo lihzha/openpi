@@ -355,6 +355,7 @@ def main(config: _config.TrainConfig):
     batch = next(data_iter)
     logging.info("After getting batch")
     logging.info(f"Initialized data loader (shapes):\n{training_utils.array_tree_to_info(batch)}")
+    print(batch)
     breakpoint()
     # Sharding details for the first batch
     log_batch_sharding(batch)
