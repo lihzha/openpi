@@ -308,7 +308,7 @@ def train_step(
 
 
 def main(config: _config.TrainConfig):
-    jax.distributed.initialize()
+    # jax.distributed.initialize()
     data_dir = save_dir = config.data.rlds_data_dir
     prevent_cross_region(data_dir, save_dir)
 
@@ -355,6 +355,7 @@ def main(config: _config.TrainConfig):
     batch = next(data_iter)
     logging.info("After getting batch")
     logging.info(f"Initialized data loader (shapes):\n{training_utils.array_tree_to_info(batch)}")
+    breakpoint()
     # Sharding details for the first batch
     log_batch_sharding(batch)
 
