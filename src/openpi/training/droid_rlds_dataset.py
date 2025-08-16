@@ -705,12 +705,23 @@ class DroidCoTRldsDataset:
                     'down': 'up'
                 }
                 
-                for action_str in actions_np:
-                    if not action_str:  # Skip empty strings
+                # Convert possible EagerTensor to numpy array of bytes
+                try:
+                    actions_arr = actions_np.numpy()
+                except AttributeError:
+                    actions_arr = actions_np
+                
+                for action_str in actions_arr:
+                    # Ensure we operate on a Python string
+                    if isinstance(action_str, (bytes, bytearray)):
+                        s = action_str.decode("utf-8")
+                    else:
+                        s = str(action_str)
+                    if not s:
                         continue
                     
                     # Split by " and " to get individual movements
-                    movements = action_str.decode('utf-8').split(" and ")
+                    movements = s.split(" and ")
                     
                     for movement in movements:
                         # Parse movement: "move direction value unit"

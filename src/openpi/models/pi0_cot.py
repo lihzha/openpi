@@ -181,10 +181,9 @@ class Pi0CoTConfig(_model.BaseModelConfig):
             # If no other freeze rules, just freeze the input embedding.
             return input_embedding_filter
 
-        # Union existing freeze rules with input embedding freeze using De Morgan:
-        # (A or B) == not( not A and not B )
+        # Union existing freeze rules with input embedding freeze.
         combined = nnx.All(*filters)
-        return nnx.Not(nnx.All(nnx.Not(combined), nnx.Not(input_embedding_filter)))
+        return nnx.Any(combined, input_embedding_filter)
 
 
 class Pi0CoT(_model.BaseModel):
