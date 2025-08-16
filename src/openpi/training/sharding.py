@@ -5,13 +5,10 @@ import jax
 from jax.experimental import mesh_utils
 import numpy as np
 
-# BATCH_AXIS = "batch"
-# FSDP_AXIS = "fsdp"
-# In FSDP, we shard the data across both the batch and FSDP axes.
-# DATA_AXIS = (BATCH_AXIS, FSDP_AXIS)
 BATCH_AXIS = "data"
 FSDP_AXIS = "fsdp"
-DATA_AXIS = "data"
+# In FSDP, we shard the data across both the batch and FSDP axes.
+DATA_AXIS = (BATCH_AXIS, FSDP_AXIS)
 
 
 class _MeshState:
