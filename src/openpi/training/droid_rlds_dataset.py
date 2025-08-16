@@ -309,6 +309,7 @@ class DroidCoTRldsDataset:
         *,  # Force keyword-only arguments
         shuffle: bool = True,
         action_chunk_size: int = 16,
+        summation_steps: int = 5,  # Number of future steps to sum over for language actions
         # We default to joint position actions, since they allow policy evaluation in simulation.
         action_space: DroidActionSpace = DroidActionSpace.CARTESIAN_POSITION,
         max_loaded_steps_per_episode: int = 100,
@@ -675,29 +676,133 @@ class DroidCoTRldsDataset:
             dataset = dataset.traj_map(restructure, num_parallel_calls)
             dataset = dataset.traj_map(chunk_actions, num_parallel_calls)
 
-        def chunk_language_actions(traj):
-            """Splits episode into action chunks."""
-            traj_len = tf.shape(traj["language_actions"])[0]
+        def _sum_language_actions(language_actions_batch):
+            """Helper function to sum over a batch of language actions.
+            
+            Args:
+                language_actions_batch: Tensor of shape [summation_steps] containing language action strings
+                
+            Returns:
+                A single string representing the summed language action
+            """
+            # Use py_function to implement the complex string parsing and summation logic
+            # This allows us to use Python string operations while keeping the function traceable
+            
+            def _python_sum_language_actions(actions_np):
+                """Python implementation of language action summation."""
+                import re
+                
+                # Dictionary to store summed movements by direction
+                movement_sums = {}
+                
+                # Define opposite directions for cancellation
+                opposite_directions = {
+                    'left': 'right',
+                    'right': 'left',
+                    'forward': 'backward',
+                    'backward': 'forward',
+                    'up': 'down',
+                    'down': 'up'
+                }
+                
+                for action_str in actions_np:
+                    if not action_str:  # Skip empty strings
+                        continue
+                    
+                    # Split by " and " to get individual movements
+                    movements = action_str.decode('utf-8').split(" and ")
+                    
+                    for movement in movements:
+                        # Parse movement: "move direction value unit"
+                        # Use regex to handle variations in spacing
+                        match = re.match(r'move\s+(\w+)\s+([\d.]+)\s*(\w+)', movement.strip())
+                        if match:
+                            direction = match.group(1)
+                            value = float(match.group(2))
+                            unit = match.group(3)
+                            
+                            # Check if we have an opposite direction already
+                            opposite = opposite_directions.get(direction)
+                            if opposite in movement_sums:
+                                # Cancel out opposite movements
+                                opposite_value = movement_sums[opposite]['value']
+                                if value > opposite_value:
+                                    # Current direction wins
+                                    movement_sums[direction] = {'value': value - opposite_value, 'unit': unit}
+                                    del movement_sums[opposite]
+                                elif value < opposite_value:
+                                    # Opposite direction wins
+                                    movement_sums[opposite]['value'] = opposite_value - value
+                                else:
+                                    # Equal values, cancel out completely
+                                    del movement_sums[opposite]
+                            else:
+                                # Initialize if direction not seen before
+                                if direction not in movement_sums:
+                                    movement_sums[direction] = {'value': 0.0, 'unit': unit}
+                                
+                                # Add the value
+                                movement_sums[direction]['value'] += value
+                
+                # Build the result string
+                if not movement_sums:
+                    return ""
+                
+                result_parts = []
+                for direction, data in movement_sums.items():
+                    if data['value'] > 0:  # Only include positive values
+                        result_parts.append(f"move {direction} {data['value']:.2f} {data['unit']}")
+                
+                return " and ".join(result_parts)
+            
+            # Convert TensorFlow tensor to numpy and back
+            result = tf.py_function(
+                _python_sum_language_actions,
+                [language_actions_batch],
+                tf.string
+            )
+            
+            return result
+        
+        def group_language_actions(traj):
+            """Compute per-timestep summed language actions over future steps.
 
-            # For each step in the trajectory, construct indices for the next n actions
-            action_chunk_indices = tf.broadcast_to(
-                tf.range(action_chunk_size)[None],
-                [traj_len, action_chunk_size],
+            For each timestep t, we sum the language actions from t to
+            t + summation_steps - 1 (capped at trajectory end). We DO NOT
+            chunk the language actions; after flattening, each sample will
+            have a single language string aligned to its action chunk.
+            """
+            traj_len = tf.shape(traj["language_actions"])[0]
+            
+            # First, create indices for summation (current + future steps)
+            summation_indices = tf.broadcast_to(
+                tf.range(summation_steps)[None],
+                [traj_len, summation_steps],
             ) + tf.broadcast_to(
                 tf.range(traj_len)[:, None],
-                [traj_len, action_chunk_size],
+                [traj_len, summation_steps],
             )
-
-            # Cap to length of the sequence --> final chunks will repeat the last action
-            # This makes sense, since we are using absolute joint + gripper position actions
-            action_chunk_indices = tf.minimum(action_chunk_indices, traj_len - 1)
-
-            # Gather the actions for each chunk
-            traj["language_actions"] = tf.gather(traj["language_actions"], action_chunk_indices)
+            
+            # Cap to length of the sequence (same as chunk_actions)
+            summation_indices = tf.minimum(summation_indices, traj_len - 1)
+            
+            # Gather the language actions for summation
+            language_actions_to_sum = tf.gather(traj["language_actions"], summation_indices)
+            # Keep unsummed window for debugging: shape [traj_len, summation_steps]
+            traj["language_actions_unsummed"] = language_actions_to_sum
+            
+            # Sum over the language actions
+            summed_language_actions = tf.map_fn(
+                _sum_language_actions,
+                language_actions_to_sum,
+                fn_output_signature=tf.string
+            )
+            # Keep a single summed language string per timestep (no chunking)
+            traj["language_actions"] = summed_language_actions
             return traj
 
         # TODO: chunk action or not
-        # dataset = dataset.traj_map(chunk_language_actions, num_parallel_calls)
+        dataset = dataset.traj_map(group_language_actions, num_parallel_calls)
 
         def filter_idle(traj):
             """Filter out chunks with idle actions.
@@ -755,6 +860,8 @@ class DroidCoTRldsDataset:
         self.dataset = dataset
         self.batch_size = batch_size
         self.shuffle = shuffle
+        self.action_chunk_size = action_chunk_size
+        self.summation_steps = summation_steps
         
 
     def __iter__(self):
