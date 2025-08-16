@@ -651,7 +651,7 @@ _CONFIGS = [
             ),
         ),
         num_train_steps=100_000,
-        fsdp_devices=1,
+        fsdp_devices=4,
         batch_size=4,
         log_interval=50,
         weight_loader=weight_loaders.PaliGemmaWeightLoader(),
