@@ -308,7 +308,7 @@ def train_step(
 
 
 def main(config: _config.TrainConfig):
-    # jax.distributed.initialize()
+    jax.distributed.initialize()
     data_dir = save_dir = config.data.rlds_data_dir
     prevent_cross_region(data_dir, save_dir)
 
