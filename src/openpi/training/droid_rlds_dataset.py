@@ -310,7 +310,7 @@ class DroidCoTRldsDataset:
         *,  # Force keyword-only arguments
         shuffle: bool = True,
         action_chunk_size: int = 16,
-        summation_steps: int = 5,  # Number of future steps to sum over for language actions
+        summation_steps: int = 15,  # Number of future steps to sum over for language actions
         # We default to joint position actions, since they allow policy evaluation in simulation.
         action_space: DroidActionSpace = DroidActionSpace.CARTESIAN_POSITION,
         max_loaded_steps_per_episode: int = 100,

@@ -9,11 +9,11 @@ gsutil -m cp -r assets gs://v6_east1d/assets
 
 
 # setup tpu environment
-curl -LsSf https://astral.sh/uv/install.sh | sh &&
-echo 'export WANDB_API_KEY=9d133998a3d44bf5dd2d827a5d8e2710dc91a19b' >> ~/.zshrc &&
-echo 'export OPENPI_DATA_HOME="gs://pi0-cot/cache"' >> ~/.zshrc &&
-source ~/.zshrc &&
-git clone --branch tpu https://github.com/lihzha/openpi.git && cd openpi && GIT_LFS_SKIP_SMUDGE=1 uv sync && GIT_LFS_SKIP_SMUDGE=1 uv pip install -e .
+
+v4 "curl -LsSf https://astral.sh/uv/install.sh | sh && echo 'export WANDB_API_KEY=9d133998a3d44bf5dd2d827a5d8e2710dc91a19b' >> ~/.zshrc && echo 'export OPENPI_DATA_HOME="gs://pi0-cot/cache"' >> ~/.zshrc && source ~/.zshrc && git clone --branch tpu https://github.com/lihzha/openpi.git && cd openpi && GIT_LFS_SKIP_SMUDGE=1 uv sync && GIT_LFS_SKIP_SMUDGE=1 uv pip install -e . "
+v6 "curl -LsSf https://astral.sh/uv/install.sh | sh && echo 'export WANDB_API_KEY=9d133998a3d44bf5dd2d827a5d8e2710dc91a19b' >> ~/.zshrc && echo 'export OPENPI_DATA_HOME="gs://v6_east1d/cache"' >> ~/.zshrc && source ~/.zshrc && git clone --branch tpu https://github.com/lihzha/openpi.git && cd openpi && GIT_LFS_SKIP_SMUDGE=1 uv sync && GIT_LFS_SKIP_SMUDGE=1 uv pip install -e . "
+
 
 # train
-source ~/.zshrc && cd openpi && git pull origin tpu && XLA_PYTHON_CLIENT_MEM_FRACTION=0.95 uv run --group rlds scripts/train.py pi0_droid_cot_v4 --exp-name=v4_fsdp4_bs256 --overwrite
+v4 "source ~/.zshrc && cd openpi && git pull origin tpu && XLA_PYTHON_CLIENT_MEM_FRACTION=0.95 uv run --group rlds scripts/train.py pi0_droid_cot_v4 --exp-name=v4_fsdp4_bs256 --overwrite"
+v6 "source ~/.zshrc && cd openpi && git pull origin tpu && XLA_PYTHON_CLIENT_MEM_FRACTION=0.95 uv run --group rlds scripts/train.py pi0_droid_cot_v6 --exp-name=v6_fsdp4_bs256 --resume"
