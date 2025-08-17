@@ -479,7 +479,7 @@ def main(config: _config.TrainConfig):
                         ", ".join(f"{k}={v:.4f}" for k, v in reduced_val.items()),
                     )
                 )
-                wandb.log(reduced_val | {"phase": "val"}, step=step)
+                wandb.log({**reduced_val, "split": "val"}, step=step)
         batch = next(data_iter)
 
         if (step % config.save_interval == 0 and step > start_step) or step == config.num_train_steps - 1:
