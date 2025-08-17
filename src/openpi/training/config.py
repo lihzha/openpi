@@ -666,36 +666,33 @@ _CONFIGS = [
         ),
         data=RLDSDroidCoTDataConfig(
             repo_id="droid",
-            rlds_data_dir="gs://droid-cot",
-            language_action_dir="gs://droid-cot/lang_annotations/posed_droid",
+            rlds_data_dir="gs://v6_east1d",
+            language_action_dir="gs://v6_east1d/droid-lang-actions",
             action_space=droid_rlds_dataset.DroidActionSpace.CARTESIAN_POSITION,
             base_config=DataConfig(
                 prompt_from_task=True,
             ),
-            shuffle_buffer_size=20_000,
+            shuffle_buffer_size=250_000,
             assets=AssetsConfig(
-                assets_dir="gs://droid-cot/assets/pi0_droid_cot_v6",
+                assets_dir="gs://v6_east1d/assets/pi0_droid_cot_v4",
                 asset_id="droid",
             ),
         ),
         num_train_steps=100_000,
         fsdp_devices=8,
-        batch_size=64,
+        batch_size=256,
         weight_loader=weight_loaders.PaliGemmaWeightLoader(),
-        assets_base_dir="gs://droid-cot/assets",
-        checkpoint_base_dir="gs://droid-cot/checkpoints",
-        # lr_schedule=_optimizer.CosineDecaySchedule(
-        #     warmup_steps=1_000,
-        #     peak_lr=5e-5,
-        #     decay_steps=1_000_000,
-        #     decay_lr=5e-5,
-        # ),
-        # num_train_steps=100_000,  # 100k steps should be sufficient, takes ~2 days on 8x H100s
-        # batch_size=256,
-        # log_interval=100,
-        # save_interval=5000,
-        # keep_period=20_000,
-        # num_workers=0,  # Important: RLDS DataLoader requires num_workers=0, handles multi-processing internally
+        assets_base_dir="gs://v6_east1d/assets",
+        checkpoint_base_dir="gs://v6_east1d/checkpoints",
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=1e-4,
+            decay_steps=1_000_000,
+            decay_lr=1e-4,
+        ),
+        log_interval=50,
+        save_interval=5000,
+        keep_period=20_000,
     ),
     #
     # Inference Aloha configs.
