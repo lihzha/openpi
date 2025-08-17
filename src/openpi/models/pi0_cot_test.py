@@ -15,6 +15,8 @@ def test_pi0_cot_embedder_frozen_no_lora():
     state = _get_frozen_state(config)
     paths = list(state.keys())
     # Expect only the input embedding to be frozen when no LoRA is used
+    for p in paths:
+        print(p)
     assert len(paths) == 1
     assert all("input_embedding" in p for p in paths)
 
