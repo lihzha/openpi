@@ -387,6 +387,7 @@ def main(config: _config.TrainConfig):
         shuffle=False,
         split="val",
     )
+    
     val_iter = iter(val_loader)
     logging.info("Before getting batch")
     batch = next(data_iter)
@@ -433,6 +434,7 @@ def main(config: _config.TrainConfig):
     )
 
     infos = []
+    num_val_batches = getattr(config, "num_val_batches", 8)
     for step in pbar:
         with sharding.set_mesh(mesh):
             train_state, info = ptrain_step(train_rng, train_state, batch)
@@ -445,17 +447,24 @@ def main(config: _config.TrainConfig):
             wandb.log(reduced_info, step=step)
             infos = []
         # Periodic validation
-        if step % getattr(config, "val_interval", 1000) == 0:
+        if step % getattr(config, "val_interval", 5000) == 0:
+            # use a pbar to track the validation progress
+            val_pbar = tqdm.tqdm(
+                range(num_val_batches),
+                initial=0,
+                total=num_val_batches,
+                dynamic_ncols=True,
+            )
             with sharding.set_mesh(mesh):
                 val_infos = []
-                num_val_batches = getattr(config, "num_val_batches", 8)
-                for _ in range(num_val_batches):
+                for _ in val_pbar:
                     val_batch = next(val_iter)
                     val_info = peval_step(train_rng, train_state, val_batch)
+                    val_pbar.set_postfix(val_info)
                     val_infos.append(val_info)
                 stacked_val = common_utils.stack_forest(val_infos)
                 reduced_val = jax.device_get(jax.tree.map(jnp.mean, stacked_val))
-                pbar.write(
+                val_pbar.write(
                     "Step %d (val): %s"
                     % (
                         step,
