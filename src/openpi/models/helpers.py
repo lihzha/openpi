@@ -1,6 +1,6 @@
 import jax
 import jax.numpy as jnp
-import nnx
+import flax.nnx as nnx
 from openpi.shared import array_typing as at
 
 
