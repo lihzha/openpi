@@ -902,7 +902,9 @@ class DroidCoTRldsDataset:
             # )
             return traj
 
-        dataset = dataset.shuffle(shuffle_buffer_size)
+        # Only shuffle during training; validation should be deterministic and cheaper
+        if shuffle:
+            dataset = dataset.shuffle(shuffle_buffer_size)
 
         if DEBUG_TIMING:
             dataset = dataset.frame_map(_wrap_timed_map(decode_images, "decode_images"), num_parallel_calls)

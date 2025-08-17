@@ -425,6 +425,15 @@ def main(config: _config.TrainConfig):
         in_shardings=(replicated_sharding, train_state_sharding, data_sharding),
     )
 
+    # Warm up eval compilation to avoid first-iteration latency during validation
+    with sharding.set_mesh(mesh):
+        _warm_val = peval_step(train_rng, train_state, batch)
+    # Block on one leaf to ensure compile completes before timing-sensitive loops
+    try:
+        jax.tree_util.tree_leaves(_warm_val)[0].block_until_ready()
+    except Exception:
+        pass
+
     start_step = int(train_state.step)
     pbar = tqdm.tqdm(
         range(start_step, config.num_train_steps),
@@ -460,7 +469,6 @@ def main(config: _config.TrainConfig):
                 for _ in val_pbar:
                     val_batch = next(val_iter)
                     val_info = peval_step(train_rng, train_state, val_batch)
-                    val_pbar.set_postfix(val_info)
                     val_infos.append(val_info)
                 stacked_val = common_utils.stack_forest(val_infos)
                 reduced_val = jax.device_get(jax.tree.map(jnp.mean, stacked_val))
