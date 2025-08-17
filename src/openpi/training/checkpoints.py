@@ -10,6 +10,7 @@ from etils import epath
 import jax
 import orbax.checkpoint as ocp
 import orbax.checkpoint.future as future
+import tensorflow as tf
 
 from openpi.shared import array_typing as at
 import openpi.shared.normalize as _normalize
@@ -24,10 +25,16 @@ def initialize_checkpoint_dir(
     checkpoint_dir = epath.Path(checkpoint_dir)
     logging.info(f"Checkpoint_dir:{checkpoint_dir}")
     resuming = False
-    if checkpoint_dir.exists():
+    is_gcs = str(checkpoint_dir).startswith("gs://")
+    exists = tf.io.gfile.exists(str(checkpoint_dir)) if is_gcs else checkpoint_dir.exists()
+    if exists:
         if overwrite:
-            checkpoint_dir.rmtree()
-            checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            if is_gcs:
+                tf.io.gfile.rmtree(str(checkpoint_dir))
+                tf.io.gfile.makedirs(str(checkpoint_dir))
+            else:
+                checkpoint_dir.rmtree()
+                checkpoint_dir.mkdir(parents=True, exist_ok=True)
             logging.info(f"Wiped checkpoint directory {checkpoint_dir}")
         elif resume:
             resuming = True
@@ -37,7 +44,10 @@ def initialize_checkpoint_dir(
                 "to indicate how to handle it."
             )
 
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    if is_gcs:
+        tf.io.gfile.makedirs(str(checkpoint_dir))
+    else:
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     mngr = ocp.CheckpointManager(
         checkpoint_dir,
@@ -75,7 +85,7 @@ def save_state(
         data_config = data_loader.data_config()
         norm_stats = data_config.norm_stats
         if norm_stats is not None and data_config.asset_id is not None:
-            _normalize.save(directory / data_config.asset_id, norm_stats)
+            _normalize.save(str(directory / data_config.asset_id), norm_stats)
 
     # Split params that can be used for inference into a separate item.
     with at.disable_typechecking():
@@ -111,7 +121,7 @@ def restore_state(
 
 def load_norm_stats(assets_dir: epath.Path | str, asset_id: str) -> dict[str, _normalize.NormStats] | None:
     norm_stats_dir = epath.Path(assets_dir) / asset_id
-    norm_stats = _normalize.load(norm_stats_dir)
+    norm_stats = _normalize.load(str(norm_stats_dir))
     logging.info(f"Loaded norm stats from {norm_stats_dir}")
     return norm_stats
 

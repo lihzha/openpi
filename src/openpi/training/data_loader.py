@@ -326,7 +326,6 @@ def create_data_loader(
     if data_config.rlds_data_dir is not None:
         # Debug pathway: use a lightweight synthetic iterable dataset to test multi-process sharding
         # without requiring RLDS/DROID. Enable by setting OPENPI_USE_TEST_ITER_DATASET=1.
-        logging.info("Using test dataset.")
         if os.environ.get("OPENPI_USE_TEST_ITER_DATASET", "0") == "1":
             return create_test_rlds_data_loader(
                 data_config,
