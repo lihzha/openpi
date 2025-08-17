@@ -332,13 +332,46 @@ class Pi0CoT(_model.BaseModel):
         reasoning_and_pad_mask = jnp.logical_and(
             observation.tokenized_reasoning_mask[:, 1:], observation.tokenized_prompt_mask[:, 1:]
         )
-        loss = cross_entropy_loss(shift_logits, shift_labels, mask=reasoning_and_pad_mask, axis=-1, train=True)
+        # If present, fold example_mask (B,) into the token mask (B, L-1)
+        if getattr(observation, "example_mask", None) is not None:
+            # Broadcast example_mask over the sequence length
+            ex_mask = jnp.asarray(observation.example_mask)[..., None]
+            token_mask = reasoning_and_pad_mask * ex_mask
+        else:
+            token_mask = reasoning_and_pad_mask
+
+        loss = cross_entropy_loss(shift_logits, shift_labels, mask=token_mask, axis=-1, train=True)
 
         if not self.lang_action_only:
             v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
             loss += jnp.mean(jnp.square(v_t - u_t))
 
         return loss
+
+    # # Optional eval metrics for validation
+    # def compute_eval_metrics(
+    #     self, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions
+    # ) -> dict[str, at.Array]:
+    #     loss = self.compute_loss(rng, observation, actions, train=False)
+    #     out = {"val_loss": jnp.mean(loss)}
+    #     # Add a simple language perplexity estimate when reasoning tokens present
+    #     if observation.tokenized_reasoning_mask is not None:
+    #         try:
+    #             prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
+    #             max_len = observation.tokenized_reasoning_mask.shape[1]
+    #             positions = jnp.cumsum(prefix_mask, axis=1) - 1
+    #             (prefix_out, _), _ = self.PaliGemma.llm([prefix_tokens, None], mask=make_attn_mask(prefix_mask, prefix_ar_mask), positions=positions)
+    #             shift_tokens = prefix_out[:, -max_len:-1, :]
+    #             logits = self.PaliGemma.llm(shift_tokens, method="decode")
+    #             shift_labels = observation.tokenized_prompt[:, 1:]
+    #             reasoning_and_pad_mask = jnp.logical_and(
+    #                 observation.tokenized_reasoning_mask[:, 1:], observation.tokenized_prompt_mask[:, 1:]
+    #             )
+    #             nll = cross_entropy_loss(logits, shift_labels, mask=reasoning_and_pad_mask, axis=-1, train=False)
+    #             out["val_lang_nll"] = nll
+    #         except Exception:
+    #             pass
+    #     return out
 
     @override
     def sample_actions(

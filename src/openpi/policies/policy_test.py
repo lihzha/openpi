@@ -1,7 +1,9 @@
 from openpi_client import action_chunk_broker
+import numpy as np
 import pytest
 
 from openpi.policies import aloha_policy
+from openpi.policies import droid_cot_policy
 from openpi.policies import policy_config as _policy_config
 from openpi.training import config as _config
 

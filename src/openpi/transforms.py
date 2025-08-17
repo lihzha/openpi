@@ -267,6 +267,34 @@ class TokenizePromptAndReasoning(DataTransformFn):
         if language_actions is not None and not isinstance(language_actions, str):
             language_actions = language_actions.item()
 
+        # Idle check: mark examples whose summed language action is effectively zero on all axes
+        def _is_idle_language_action(s: str | None) -> bool:
+            if s is None:
+                return False
+            s = s.strip()
+            if s == "":
+                return True
+            # Robust parse: accept patterns like "move forward 0.00 cm" joined by " and "
+            parts = [p.strip() for p in s.split(" and ") if p.strip()]
+            if not parts:
+                return True
+            any_nonzero = False
+            for p in parts:
+                m = re.match(r"move\s+(\w+)\s+([-+]?\d*\.?\d+)\s*(\w+)", p)
+                if not m:
+                    continue
+                try:
+                    val = float(m.group(2))
+                except Exception:
+                    continue
+                if abs(val) > 1e-6:
+                    any_nonzero = True
+                    break
+            return not any_nonzero
+
+        is_idle = _is_idle_language_action(language_actions)
+        example_mask = not is_idle
+
         tokens, pad_mask, reasoning_mask = self.tokenizer.tokenize_cot(prompt, language_actions)
 
         return {
@@ -274,6 +302,8 @@ class TokenizePromptAndReasoning(DataTransformFn):
             "tokenized_prompt": tokens,  # inaccurate name, but kept for compatibility. Should be `tokenized_text`
             "tokenized_prompt_mask": pad_mask,  # inaccurate name, but kept for compatibility. Should be `tokenized_text_mask`
             "tokenized_reasoning_mask": reasoning_mask,
+            # Expose example-level mask so loaders/models can skip or mask (True = keep, False = idle)
+            "example_mask": np.asarray(example_mask, dtype=bool),
         }
 
 

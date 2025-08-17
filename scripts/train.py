@@ -307,6 +307,34 @@ def train_step(
     return new_state, info
 
 
+@at.typecheck
+def eval_step(
+    config: _config.TrainConfig,
+    rng: at.KeyArrayLike,
+    state: training_utils.TrainState,
+    batch: tuple[_model.Observation, _model.Actions],
+) -> dict[str, at.Array]:
+    model = nnx.merge(state.model_def, state.params)
+    model.eval()
+
+    @at.typecheck
+    def loss_fn(
+        model: _model.BaseModel, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions
+    ):
+        # compute_loss may return per-example; reduce to scalar
+        val_loss = model.compute_loss(rng, observation, actions, train=False)
+        return jnp.mean(val_loss)
+
+    eval_rng = jax.random.fold_in(rng, state.step)
+    observation, actions = batch
+    if hasattr(model, "compute_eval_metrics"):
+        # type: ignore[attr-defined]
+        metrics = model.compute_eval_metrics(eval_rng, observation, actions)  # pyright: ignore
+        return metrics
+    loss = loss_fn(model, eval_rng, observation, actions)
+    return {"val_loss": loss}
+
+
 def main(config: _config.TrainConfig):
     jax.distributed.initialize()
     data_dir = save_dir = config.data.rlds_data_dir
@@ -351,12 +379,19 @@ def main(config: _config.TrainConfig):
         shuffle=True,
     )
     data_iter = iter(data_loader)
+
+    # Validation data loader (non-shuffled, val split)
+    val_loader = _data_loader.create_data_loader(
+        config,
+        sharding=data_sharding,
+        shuffle=False,
+        split="val",
+    )
+    val_iter = iter(val_loader)
     logging.info("Before getting batch")
     batch = next(data_iter)
     logging.info("After getting batch")
     logging.info(f"Initialized data loader (shapes):\n{training_utils.array_tree_to_info(batch)}")
-    print(batch)
-    breakpoint()
     # Sharding details for the first batch
     log_batch_sharding(batch)
 
@@ -384,6 +419,11 @@ def main(config: _config.TrainConfig):
         donate_argnums=(1,),
     )
 
+    peval_step = jax.jit(
+        functools.partial(eval_step, config),
+        in_shardings=(replicated_sharding, train_state_sharding, data_sharding),
+    )
+
     start_step = int(train_state.step)
     pbar = tqdm.tqdm(
         range(start_step, config.num_train_steps),
@@ -404,6 +444,25 @@ def main(config: _config.TrainConfig):
             pbar.write(f"Step {step}: {info_str}")
             wandb.log(reduced_info, step=step)
             infos = []
+        # Periodic validation
+        if step % getattr(config, "val_interval", 1000) == 0:
+            with sharding.set_mesh(mesh):
+                val_infos = []
+                num_val_batches = getattr(config, "num_val_batches", 8)
+                for _ in range(num_val_batches):
+                    val_batch = next(val_iter)
+                    val_info = peval_step(train_rng, train_state, val_batch)
+                    val_infos.append(val_info)
+                stacked_val = common_utils.stack_forest(val_infos)
+                reduced_val = jax.device_get(jax.tree.map(jnp.mean, stacked_val))
+                pbar.write(
+                    "Step %d (val): %s"
+                    % (
+                        step,
+                        ", ".join(f"{k}={v:.4f}" for k, v in reduced_val.items()),
+                    )
+                )
+                wandb.log(reduced_val | {"phase": "val"}, step=step)
         batch = next(data_iter)
 
         if (step % config.save_interval == 0 and step > start_step) or step == config.num_train_steps - 1:

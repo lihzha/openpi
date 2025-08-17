@@ -270,7 +270,8 @@ class DroidRldsDataset:
             dataset = dataset.frame_map(decode_images, num_parallel_calls)
 
         # Shuffle, batch
-        dataset = dataset.shuffle(shuffle_buffer_size)
+        if shuffle:
+            dataset = dataset.shuffle(shuffle_buffer_size)
         dataset = dataset.batch(batch_size)
         # Overlap input pipeline with consumers; lets TF fill a small buffer per host.
         dataset = dataset.prefetch(2)
@@ -317,6 +318,10 @@ class DroidCoTRldsDataset:
         shuffle_buffer_size: int = 250_000,
         num_parallel_reads: int = -1,  # -1 == tf.data.AUTOTUNE -- hack to not import tf at top level
         num_parallel_calls: int = -1,  # -1 == tf.data.AUTOTUNE -- hack to not import tf at top level
+        # Validation support
+        split: str = "train",  # one of {"train", "val"}
+        val_fraction: float = 0.05,
+        split_seed: int = 0,
     ):
         # Import tensorflow here to not make it mandatory in case RLDS data loader is not used.
         import dlimp as dl
@@ -327,13 +332,9 @@ class DroidCoTRldsDataset:
 
         tf.config.set_visible_devices([], "TPU")
 
-        # ⇨ point all data + metadata directories to the GCS bucket
 
-        if "pi0-cot" in data_dir:  # for v4
-            METADATA_PATH = language_action_dir.replace("droid-lang-actions", "metadata")
-        else:  # for v6
-            assert "droid-cot" in data_dir
-            METADATA_PATH = language_action_dir.replace("posed_droid", "metadata")
+        METADATA_PATH = language_action_dir.replace("droid-lang-actions", "metadata")
+
 
         # ---------------------------------------------------------------------
         # 1. TF-DS builder + base dataset
@@ -344,7 +345,6 @@ class DroidCoTRldsDataset:
         if num_parallel_calls == -1:
             num_parallel_calls = tf.data.AUTOTUNE
 
-        t_build_ds_start = time.perf_counter() if DEBUG_TIMING else 0.0
         builder = tfds.builder("droid", data_dir=data_dir)
         dataset = dl.DLataset.from_rlds(
             builder,
@@ -352,12 +352,8 @@ class DroidCoTRldsDataset:
             shuffle=shuffle,
             num_parallel_reads=num_parallel_reads,
         )
-        t_build_ds = (time.perf_counter() - t_build_ds_start) if DEBUG_TIMING else 0.0
         
-        # dataset = dataset.with_ram_budget(1)
-        t_shard_start = time.perf_counter() if DEBUG_TIMING else 0.0
         dataset = dataset.shard(jax.process_count(), jax.process_index())
-        t_shard = (time.perf_counter() - t_shard_start) if DEBUG_TIMING else 0.0
 
         # Enable non-deterministic mapping and other tf.data optimizations for throughput
         opts = tf.data.Options()
@@ -376,7 +372,6 @@ class DroidCoTRldsDataset:
             lang = tf.io.parse_tensor(ex["lang_ser"], out_type=tf.string)  # shape: [T+1]
             return ex["episode_id"], lang
 
-        t_lang_scan_start = time.perf_counter() if DEBUG_TIMING else 0.0
         files = tf.io.gfile.glob(f"{language_action_dir}/droid_language_actions-*.tfrecord.gz")
         ds = tf.data.TFRecordDataset(
             files, compression_type="GZIP", num_parallel_reads=tf.data.AUTOTUNE
@@ -386,7 +381,6 @@ class DroidCoTRldsDataset:
         for ep_id, lang in ds:
             episodes.append(ep_id.numpy().decode())
             lang_serialized.append(tf.io.serialize_tensor(lang).numpy())
-        t_lang_scan = (time.perf_counter() - t_lang_scan_start) if DEBUG_TIMING else 0.0
 
         keys = tf.constant(episodes, dtype=tf.string)
         values = tf.constant(lang_serialized, dtype=tf.string)
@@ -396,33 +390,21 @@ class DroidCoTRldsDataset:
             default_value=default_lang_value,
         )
 
-        if DEBUG_TIMING:
-            logging.info(
-                "DroidCoTRldsDataset: built lang table for %d episodes in %.1f ms (build_ds=%.1f ms, shard=%.1f ms)",
-                len(episodes), t_lang_scan * 1000.0, t_build_ds * 1000.0, t_shard * 1000.0
-            )
         print_memory_usage("After building lang_table")
         
         # ---------------------------------------------------------------------
         # 3. Episode-ID table  (valid_eids → True)
         # ---------------------------------------------------------------------
-        t_eid_start = time.perf_counter() if DEBUG_TIMING else 0.0
         keys = tf.constant(episodes, dtype=tf.string)
         values = tf.ones(len(episodes), dtype=tf.bool)
         eid_table = tf.lookup.StaticHashTable(
             tf.lookup.KeyValueTensorInitializer(keys, values),
             default_value=tf.constant(False, dtype=tf.bool),
         )
-        t_eid = (time.perf_counter() - t_eid_start) if DEBUG_TIMING else 0.0
-
-        if DEBUG_TIMING:
-            logging.info("DroidCoTRldsDataset: built eid table in %.1f ms", t_eid * 1000.0)
-        print_memory_usage("After building eid_table")
 
         # ---------------------------------------------------------------------
         # 4. Episode-path ↔ Episode-ID table
         # ---------------------------------------------------------------------
-        t_epmap_start = time.perf_counter() if DEBUG_TIMING else 0.0
         with tf.io.gfile.GFile(f"{METADATA_PATH}/episode_id_to_path.json", "r") as fp:
             episode_id_to_path = json.load(fp)
         episode_path_to_id = {v: k for k, v in episode_id_to_path.items()}
@@ -434,16 +416,11 @@ class DroidCoTRldsDataset:
             tf.lookup.KeyValueTensorInitializer(keys, values),
             default_value=default_ep_value,
         )
-        t_epmap = (time.perf_counter() - t_epmap_start) if DEBUG_TIMING else 0.0
-
-        if DEBUG_TIMING:
-            logging.info("DroidCoTRldsDataset: built episode path↔id table in %.1f ms", t_epmap * 1000.0)
         print_memory_usage("After building ep_table")
 
         # ---------------------------------------------------------------------
         # 5. Camera-index table  (episode_id → ext-cam idx)
         # ---------------------------------------------------------------------
-        t_cam_start = time.perf_counter() if DEBUG_TIMING else 0.0
         with tf.io.gfile.GFile(f"{METADATA_PATH}/cam2base_extrinsics.json", "r") as fp:
             cam2base_extrinsics = json.load(fp)
         with tf.io.gfile.GFile(f"{METADATA_PATH}/camera_serials.json", "r") as fp:
@@ -474,16 +451,11 @@ class DroidCoTRldsDataset:
             tf.lookup.KeyValueTensorInitializer(keys, values),
             default_value=-1,  # -1 ⇒ fallback camera
         )
-        t_cam = (time.perf_counter() - t_cam_start) if DEBUG_TIMING else 0.0
-
-        if DEBUG_TIMING:
-            logging.info("DroidCoTRldsDataset: built camera index table in %.1f ms", t_cam * 1000.0)
         print_memory_usage("After building cam_table")
 
         # ---------------------------------------------------------------------
         # 6. Language-instruction tables (3 per episode_id)
         # ---------------------------------------------------------------------
-        t_instr_start = time.perf_counter() if DEBUG_TIMING else 0.0
         with tf.io.gfile.GFile(f"{METADATA_PATH}/droid_language_annotations.json", "r") as fp:
             language_annotations = json.load(fp)
 
@@ -528,16 +500,39 @@ class DroidCoTRldsDataset:
             dtype=tf.string,
         )
 
-        t_instr = (time.perf_counter() - t_instr_start) if DEBUG_TIMING else 0.0
-        if DEBUG_TIMING:
-            logging.info("DroidCoTRldsDataset: built instruction tables in %.1f ms", t_instr * 1000.0)
         print_memory_usage("After building instr_table")
 
-        def _id_ok(traj):
+        # ------------------------------------------------------------------
+        # Regex helpers for robust path/id extraction
+        # ------------------------------------------------------------------
+        def _extract_episode_path_from_file_path(file_path):
+            """Extract episode path from a full file path using regex.
+
+            Removes everything up to and including 'r2d2-data/' or
+            'r2d2-data-full/', then trims anything from '/trajectory' onwards.
+            """
+            # Strip dataset prefix up to r2d2-data or r2d2-data-full
+            rel = tf.strings.regex_replace(
+                file_path,
+                r"^.*r2d2-data(?:-full)?/",
+                "",
+            )
+            # Remove trailing '/trajectory...' suffix
+            episode_path = tf.strings.regex_replace(
+                rel,
+                r"/trajectory.*$",
+                "",
+            )
+            return episode_path
+
+        def _episode_id_from_traj(traj):
+            """Lookup episode_id from trajectory metadata using regex extraction."""
             file_path = traj["traj_metadata"]["episode_metadata"]["file_path"][0]
-            after_prefix = tf.strings.split(file_path, "r2d2-data-full/")[1]
-            episode_path = tf.strings.split(after_prefix, "/trajectory")[0]
-            episode_id = ep_table.lookup(episode_path)
+            episode_path = _extract_episode_path_from_file_path(file_path)
+            return ep_table.lookup(episode_path)
+
+        def _id_ok(traj):
+            episode_id = _episode_id_from_traj(traj)
             if tf.equal(episode_id, default_ep_value):
                 return tf.constant(value=False, dtype=tf.bool)
             # Look up by episode_id (NOT episode_path). Using episode_path here would filter everything out.
@@ -556,6 +551,31 @@ class DroidCoTRldsDataset:
             # .cache() .shuffle() .prefetch(...)  ↳ whatever else you need
         )
 
+        # ---------------------------------------------------------------------
+        # 5a. Deterministic train/val split by episode_id
+        # ---------------------------------------------------------------------
+        # We apply the split at the trajectory level (before repeat/flatten) so
+        # that full trajectories are consistently assigned to either split.
+        def _split_filter(traj):
+            episode_id = _episode_id_from_traj(traj)
+            # If we somehow cannot resolve an id, keep for train & val=False
+            missing = tf.equal(episode_id, default_ep_value)
+            # Hash with a salt for reproducibility
+            salt = tf.strings.as_string(split_seed)
+            key = tf.strings.join([salt, episode_id])
+            n_buckets = tf.constant(1000, dtype=tf.int64)
+            bucket = tf.strings.to_hash_bucket_fast(key, n_buckets)
+            thr = tf.constant(int(val_fraction * 1000), dtype=tf.int64)
+            is_val = bucket < thr
+            is_train = tf.logical_not(is_val)
+            return tf.cond(
+                tf.equal(tf.constant(split), tf.constant("val")),
+                lambda: tf.logical_and(tf.logical_not(missing), is_val),
+                lambda: tf.logical_or(missing, is_train),
+            )
+
+        dataset = dataset.filter(_split_filter)
+
         # Repeat dataset so we never run out of data.
         dataset = dataset.repeat()
 
@@ -569,10 +589,7 @@ class DroidCoTRldsDataset:
                 ),
                 axis=-1,
             )
-            file_path = traj["traj_metadata"]["episode_metadata"]["file_path"][0]
-            after_prefix = tf.strings.split(file_path, "r2d2-data-full/")[1]
-            episode_path = tf.strings.split(after_prefix, "/trajectory")[0]
-            episode_id = ep_table.lookup(episode_path)
+            episode_id = _episode_id_from_traj(traj)
             lang_bytes = lang_table.lookup(episode_id)
             lang_tensor = tf.io.parse_tensor(lang_bytes, tf.string)
             instruction_1 = instr_table_1.lookup(episode_id)
@@ -595,7 +612,7 @@ class DroidCoTRldsDataset:
 
             instruction_vec = tf.fill([tf.shape(actions)[0]], instruction)
 
-            cam_idx = cam_table.lookup(episode_path)
+            cam_idx = cam_table.lookup(episode_id)
             cam_images = [
                 traj["observation"]["exterior_image_1_left"],
                 traj["observation"]["exterior_image_2_left"],
@@ -800,16 +817,16 @@ class DroidCoTRldsDataset:
             # Gather the language actions for summation
             language_actions_to_sum = tf.gather(traj["language_actions"], summation_indices)
             # Keep unsummed window for debugging: shape [traj_len, summation_steps]
-            traj["language_actions_unsummed"] = language_actions_to_sum
+            traj["language_actions"] = language_actions_to_sum
             
             # Sum over the language actions
-            summed_language_actions = tf.map_fn(
-                _sum_language_actions,
-                language_actions_to_sum,
-                fn_output_signature=tf.string
-            )
-            # Keep a single summed language string per timestep (no chunking)
-            traj["language_actions"] = summed_language_actions
+            # summed_language_actions = tf.map_fn(
+            #     _sum_language_actions,
+            #     language_actions_to_sum,
+            #     fn_output_signature=tf.string
+            # )
+            # # Keep a single summed language string per timestep (no chunking)
+            # traj["language_actions"] = summed_language_actions
             return traj
 
         # TODO: chunk action or not

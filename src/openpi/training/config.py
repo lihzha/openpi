@@ -644,7 +644,7 @@ _CONFIGS = [
             base_config=DataConfig(
                 prompt_from_task=True,
             ),
-            shuffle_buffer_size=1_000,
+            shuffle_buffer_size=250_000,
             assets=AssetsConfig(
                 assets_dir="gs://pi0-cot/assets/pi0_droid_cot_v4",
                 asset_id="droid",
@@ -652,7 +652,7 @@ _CONFIGS = [
         ),
         num_train_steps=100_000,
         fsdp_devices=4,
-        batch_size=4,
+        batch_size=256,
         log_interval=50,
         weight_loader=weight_loaders.PaliGemmaWeightLoader(),
         assets_base_dir="gs://pi0-cot/assets",

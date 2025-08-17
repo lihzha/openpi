@@ -95,9 +95,7 @@ class IterableTransformedDataset(IterableDataset[T_co]):
         while True:
             # Fetch from upstream iterable (e.g., RLDS/TF pipeline)
             try:
-                t_fetch_start = time.perf_counter() if DEBUG_TIMING else 0.0
                 sample = next(upstream_iter)
-                t_fetch = (time.perf_counter() - t_fetch_start) if DEBUG_TIMING else 0.0
             except StopIteration:
                 return
 
@@ -106,38 +104,16 @@ class IterableTransformedDataset(IterableDataset[T_co]):
                 # individual samples and apply the transform to each sample individually.
                 batch_size = next(v.shape[0] for v in sample.values())
 
-                # Split -> Transform -> Stack timings
-                t_split_start = time.perf_counter() if DEBUG_TIMING else 0.0
+                # Split -> Transform -> Stack
                 individual_samples = [jax.tree.map(lambda x: x[i], sample) for i in range(batch_size)]  # noqa: B023
-                t_split = (time.perf_counter() - t_split_start) if DEBUG_TIMING else 0.0
 
-                t_transform_start = time.perf_counter() if DEBUG_TIMING else 0.0
                 transformed = [self._transform(s) for s in individual_samples]
-                t_transform = (time.perf_counter() - t_transform_start) if DEBUG_TIMING else 0.0
 
-                t_stack_start = time.perf_counter() if DEBUG_TIMING else 0.0
                 out = jax.tree.map(lambda *x: np.stack(x, axis=0), *transformed)
-                t_stack = (time.perf_counter() - t_stack_start) if DEBUG_TIMING else 0.0
-
-                if DEBUG_TIMING:
-                    logging.info(
-                        "IterableTransformedDataset timings: fetch=%.1f ms split=%.1f ms transform=%.1f ms stack=%.1f ms",
-                        t_fetch * 1000.0,
-                        t_split * 1000.0,
-                        t_transform * 1000.0,
-                        t_stack * 1000.0,
-                    )
+            
                 yield out
             else:
-                t_transform_start = time.perf_counter() if DEBUG_TIMING else 0.0
                 out = self._transform(sample)
-                t_transform = (time.perf_counter() - t_transform_start) if DEBUG_TIMING else 0.0
-                if DEBUG_TIMING:
-                    logging.info(
-                        "IterableTransformedDataset timings: fetch=%.1f ms transform=%.1f ms",
-                        t_fetch * 1000.0,
-                        t_transform * 1000.0,
-                    )
                 yield out
 
     def __len__(self) -> int:
@@ -253,6 +229,9 @@ def create_rlds_dataset(
     batch_size: int,
     *,
     shuffle: bool = False,
+    split: str = "train",
+    val_fraction: float = 0.05,
+    split_seed: int = 0,
 ) -> Dataset:
     # At the moment, we only support DROID for RLDS datasets.
     # Use per-host batching to avoid duplicative slicing work in the loader
@@ -267,6 +246,9 @@ def create_rlds_dataset(
             action_chunk_size=action_horizon,
             action_space=data_config.action_space,
             shuffle_buffer_size=data_config.shuffle_buffer_size,
+            split=split,
+            val_fraction=val_fraction,
+            split_seed=split_seed,
         )
     return DroidRldsDataset(
         data_dir=data_config.rlds_data_dir,
@@ -336,6 +318,7 @@ def create_data_loader(
     shuffle: bool = False,
     num_batches: int | None = None,
     skip_norm_stats: bool = False,
+    split: str = "train",
 ) -> DataLoader[tuple[_model.Observation, _model.Actions]]:
     """Create a data loader for training."""
     data_config = config.data.create(config.assets_dirs, config.model)
@@ -360,6 +343,9 @@ def create_data_loader(
             shuffle=shuffle,
             num_batches=num_batches,
             skip_norm_stats=skip_norm_stats,
+            split=split,
+            val_fraction=getattr(config, "val_fraction", 0.05),
+            split_seed=config.seed,
         )
     return create_torch_data_loader(
         data_config,
@@ -430,6 +416,9 @@ def create_rlds_data_loader(
     skip_norm_stats: bool = False,
     shuffle: bool = False,
     num_batches: int | None = None,
+    split: str = "train",
+    val_fraction: float = 0.05,
+    split_seed: int = 0,
 ) -> DataLoader[tuple[_model.Observation, _model.Actions]]:
     """Create an RLDS data loader for training.
 
@@ -447,7 +436,15 @@ def create_rlds_data_loader(
             number of batches in the dataset, the data loader will loop over the dataset.
             If not provided, will iterate over the dataset indefinitely.
     """
-    dataset = create_rlds_dataset(data_config, action_horizon, batch_size, shuffle=shuffle)
+    dataset = create_rlds_dataset(
+        data_config,
+        action_horizon,
+        batch_size,
+        shuffle=shuffle,
+        split=split,
+        val_fraction=val_fraction,
+        split_seed=split_seed,
+    )
     dataset = transform_iterable_dataset(dataset, data_config, skip_norm_stats=skip_norm_stats, is_batched=True)
 
     data_loader = RLDSDataLoader(
@@ -695,32 +692,17 @@ class RLDSDataLoader:
                 return
 
             # Pull next preprocessed batch (may block on upstream I/O/TF)
-            t_fetch_start = time.perf_counter() if DEBUG_TIMING else 0.0
             try:
                 batch = next(data_iter)
             except StopIteration:
                 data_iter = iter(self._dataset)
                 continue
-            t_fetch = (time.perf_counter() - t_fetch_start) if DEBUG_TIMING else 0.0
 
             self._assert_divisible(batch)
-            t_slice_start = time.perf_counter() if DEBUG_TIMING else 0.0
             batch = self._local_slice(batch)
-            t_slice = (time.perf_counter() - t_slice_start) if DEBUG_TIMING else 0.0
-
-            t_dev_start = time.perf_counter() if DEBUG_TIMING else 0.0
             out = self._to_device(batch)
-            t_dev = (time.perf_counter() - t_dev_start) if DEBUG_TIMING else 0.0
-
             seen += 1
-
-            if DEBUG_TIMING:
-                logging.info(
-                    "RLDSDataLoader timings: upstream=%.1f ms slice=%.1f ms device_put=%.1f ms",
-                    t_fetch * 1000.0,
-                    t_slice * 1000.0,
-                    t_dev * 1000.0,
-                )
+          
             yield out
 
 

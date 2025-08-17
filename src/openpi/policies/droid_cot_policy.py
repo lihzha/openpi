@@ -26,63 +26,70 @@ def _parse_image(image) -> np.ndarray:
         image = einops.rearrange(image, "c h w -> h w c")
     return image
 
+def _to_str_list(x):
+    if isinstance(x, (list, tuple)):
+        seq = x
+    elif isinstance(x, np.ndarray):
+        seq = x.tolist()
+    else:
+        return None
+    out = []
+    for item in seq:
+        if isinstance(item, (bytes, np.bytes_)):
+            out.append(item.decode("utf-8"))
+        else:
+            out.append(str(item))
+    return out
 
-@dataclasses.dataclass(frozen=True)
-class DroidCoTTestInputs(transforms.DataTransformFn):
-    # The action dimension of the model. Will be used to pad state and actions.
-    action_dim: int
-
-    # Determines which model will be used.
-    model_type: _model.ModelType = _model.ModelType.PI0
-
-    def __call__(self, data: dict) -> dict:
-        # state = np.concatenate([data["observation/joint_position"], data["observation/gripper_position"]])
-        state = transforms.pad_to_dim(data["observation/state"], self.action_dim)
-
-        # Possibly need to parse images to uint8 (H,W,C) since LeRobot automatically
-        # stores as float32 (C,H,W), gets skipped for policy inference
-        base_image = _parse_image(data["observation/image"])
-        # wrist_image = _parse_image(data["observation/wrist_image_left"])
-
-        match self.model_type:
-            case _model.ModelType.PI0CoT:
-                names = ("base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb")
-                images = (base_image, np.zeros_like(base_image), np.zeros_like(base_image))
-                image_masks = (np.True_, np.False_, np.False_)
-            # case _model.ModelType.PI0_FAST:
-            #     names = ("base_0_rgb", "base_1_rgb", "wrist_0_rgb")
-            #     # We don't mask out padding images for FAST models.
-            #     images = (base_image, np.zeros_like(base_image), wrist_image)
-            #     image_masks = (np.True_, np.True_, np.True_)
-            case _:
-                raise ValueError(f"Unsupported model type: {self.model_type}")
-
-        inputs = {
-            "state": state,
-            "image": dict(zip(names, images, strict=True)),
-            "image_mask": dict(zip(names, image_masks, strict=True)),
-        }
-
-        if "actions" in data:
-            actions = transforms.pad_to_dim(data["actions"], self.action_dim)
-            inputs["actions"] = np.array(actions)
-
-        if "prompt" in data:
-            if isinstance(data["prompt"], bytes):
-                data["prompt"] = data["prompt"].decode("utf-8")
-            inputs["prompt"] = data["prompt"]
-
-        if "language_actions" in data:
-            inputs["language_actions"] = data["language_actions"]
-
-        return inputs
-
-
-@dataclasses.dataclass(frozen=True)
-class DroidCoTTestOutputs(transforms.DataTransformFn):
-    def __call__(self, data: dict) -> dict:
-        # Only return the first 8 dims.
-        return {"actions": np.asarray(data["actions"][:, :7])}
+def _sum_language_actions(actions_list):
+    import re
+    # Accumulate per-direction totals
+    totals = {
+        "left": 0.0,
+        "right": 0.0,
+        "forward": 0.0,
+        "backward": 0.0,
+        "up": 0.0,
+        "down": 0.0,
+    }
+    units = {k: "cm" for k in totals.keys()}
+    if actions_list is None:
+        return None
+    for action in actions_list:
+        if not action:
+            continue
+        parts = action.split(" and ")
+        for mv in parts:
+            m = re.match(r"move\s+(\w+)\s+([\d.]+)\s*(\w+)", mv.strip())
+            if not m:
+                continue
+            direction = m.group(1)
+            value = float(m.group(2))
+            unit = m.group(3)
+            if direction in totals:
+                totals[direction] += value
+                units[direction] = unit
+    # Compute axis-wise nets
+    result = []
+    # X axis: right/left
+    net = totals["right"] - totals["left"]
+    if net > 0:
+        result.append(f"move right {net:.2f} {units['right']}")
+    elif net < 0:
+        result.append(f"move left {abs(net):.2f} {units['left']}")
+    # Y axis: forward/backward
+    net = totals["forward"] - totals["backward"]
+    if net > 0:
+        result.append(f"move forward {net:.2f} {units['forward']}")
+    elif net < 0:
+        result.append(f"move backward {abs(net):.2f} {units['backward']}")
+    # Z axis: up/down
+    net = totals["up"] - totals["down"]
+    if net > 0:
+        result.append(f"move up {net:.2f} {units['up']}")
+    elif net < 0:
+        result.append(f"move down {abs(net):.2f} {units['down']}")
+    return " and ".join(result)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -128,8 +135,19 @@ class DroidCoTInputs(transforms.DataTransformFn):
             inputs["prompt"] = data["prompt"]
 
         if "language_actions" in data:
-            inputs["language_actions"] = data["language_actions"].decode()
-
+            seq = _to_str_list(data["language_actions"])
+            if seq is not None:
+                summed = _sum_language_actions(seq)
+                if summed is not None and len(summed) > 0:
+                    inputs["language_actions"] = summed
+            else:
+                # Scalar/bytes case
+                la = data["language_actions"]
+                if isinstance(la, bytes):
+                    la = la.decode("utf-8")
+                else:
+                    raise ValueError(f"Language actions is not a bytes string: {la}")
+                inputs["language_actions"] = la
         return inputs
 
 
