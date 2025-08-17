@@ -556,22 +556,53 @@ class DroidCoTRldsDataset:
         # ---------------------------------------------------------------------
         # We apply the split at the trajectory level (before repeat/flatten) so
         # that full trajectories are consistently assigned to either split.
+        # def _split_filter(traj):
+        #     episode_id = _episode_id_from_traj(traj)
+        #     # If we somehow cannot resolve an id, keep for train & val=False
+        #     missing = tf.equal(episode_id, default_ep_value)
+        #     # Hash with a salt for reproducibility
+        #     salt = tf.strings.as_string(split_seed)
+        #     key = tf.strings.join([salt, episode_id])
+        #     bucket = tf.strings.to_hash_bucket_fast(key, 1000)
+        #     thr = tf.constant(int(val_fraction * 1000), dtype=tf.int64)
+        #     is_val = bucket < thr
+        #     is_train = tf.logical_not(is_val)
+        #     return tf.cond(
+        #         tf.equal(tf.constant(split), tf.constant("val")),
+        #         lambda: tf.logical_and(tf.logical_not(missing), is_val),
+        #         lambda: tf.logical_or(missing, is_train),
+        #     )
+        want_val = (split == "val")
+
         def _split_filter(traj):
-            episode_id = _episode_id_from_traj(traj)
-            # If we somehow cannot resolve an id, keep for train & val=False
-            missing = tf.equal(episode_id, default_ep_value)
-            # Hash with a salt for reproducibility
-            salt = tf.strings.as_string(split_seed)
-            key = tf.strings.join([salt, episode_id])
-            bucket = tf.strings.to_hash_bucket_fast(key, 1000)
-            thr = tf.constant(int(val_fraction * 1000), dtype=tf.int64)
-            is_val = bucket < thr
-            is_train = tf.logical_not(is_val)
-            return tf.cond(
-                tf.equal(tf.constant(split), tf.constant("val")),
-                lambda: tf.logical_and(tf.logical_not(missing), is_val),
-                lambda: tf.logical_or(missing, is_train),
+            episode_id = _episode_id_from_traj(traj)  # scalar tf.string
+
+            # --- Assertions: fail fast if any bad traj leaks through ---
+            # 1) episode_id must be non-empty (not the default "" from failed lookup)
+            a1 = tf.debugging.assert_greater(
+                tf.strings.length(episode_id),
+                0,
+                message="[_split_filter] Empty/missing episode_id; expected pre-filtering."
             )
+            # 2) episode_id must exist in eid_table (has language actions)
+            a2 = tf.debugging.assert_equal(
+                eid_table.lookup(episode_id),
+                True,
+                message="[_split_filter] episode_id not found in eid_table (no lang actions / bad metadata)."
+            )
+
+            # Make sure assertions run before we use episode_id.
+            with tf.control_dependencies([a1, a2]):
+                episode_id = tf.identity(episode_id)
+
+            # --- Deterministic hash split ---
+            salt   = tf.strings.as_string(split_seed)
+            key    = tf.strings.join([salt, episode_id])
+            bucket = tf.strings.to_hash_bucket_fast(key, 1000)
+            thr    = tf.cast(int(val_fraction * 1000), tf.int64)
+            is_val = bucket < thr
+
+            return is_val if want_val else tf.logical_not(is_val)
 
         dataset = dataset.filter(_split_filter)
 
