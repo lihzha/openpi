@@ -443,7 +443,7 @@ def main(config: _config.TrainConfig):
     )
 
     infos = []
-    num_val_batches = getattr(config, "num_val_batches", 8)
+    num_val_batches = getattr(config, "num_val_batches", 1000)
     for step in pbar:
         with sharding.set_mesh(mesh):
             train_state, info = ptrain_step(train_rng, train_state, batch)
