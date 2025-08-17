@@ -4,6 +4,7 @@ import asyncio
 import concurrent.futures as futures
 import dataclasses
 import logging
+import subprocess
 from typing import Protocol
 
 from etils import epath
@@ -18,6 +19,18 @@ import openpi.training.data_loader as _data_loader
 import openpi.training.utils as training_utils
 
 
+def _delete_gcs_prefix_with_gsutil(uri: str) -> None:
+    """Delete a GCS URI prefix using gsutil recursively.
+
+    Raises a CalledProcessError if deletion fails.
+    """
+    cmd = ["gsutil", "-m", "rm", "-r", uri]
+    result = subprocess.run(
+        cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+    )
+    logging.info("gsutil deletion output for %s:\n%s", uri, result.stdout)
+
+
 def initialize_checkpoint_dir(
     checkpoint_dir: epath.Path | str, *, keep_period: int | None, overwrite: bool, resume: bool
 ) -> tuple[ocp.CheckpointManager, bool]:
@@ -29,13 +42,22 @@ def initialize_checkpoint_dir(
     exists = tf.io.gfile.exists(str(checkpoint_dir)) if is_gcs else checkpoint_dir.exists()
     if exists:
         if overwrite:
-            if is_gcs:
-                tf.io.gfile.rmtree(str(checkpoint_dir))
-                tf.io.gfile.makedirs(str(checkpoint_dir))
-            else:
-                checkpoint_dir.rmtree()
-                checkpoint_dir.mkdir(parents=True, exist_ok=True)
-            logging.info(f"Wiped checkpoint directory {checkpoint_dir}")
+            try:
+                if is_gcs:
+                    # Use gsutil to delete the GCS prefix recursively.
+                    _delete_gcs_prefix_with_gsutil(str(checkpoint_dir))
+                    # Recreate the prefix to ensure later writes succeed.
+                    tf.io.gfile.makedirs(str(checkpoint_dir))
+                else:
+                    checkpoint_dir.rmtree()
+                    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+                logging.info(f"Wiped checkpoint directory {checkpoint_dir}")
+            except Exception as e:
+                logging.warning(
+                    "Failed to wipe checkpoint directory %s due to %s. Proceeding without wiping.",
+                    checkpoint_dir,
+                    e,
+                )
         elif resume:
             resuming = True
         else:
