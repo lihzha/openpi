@@ -563,8 +563,7 @@ class DroidCoTRldsDataset:
             # Hash with a salt for reproducibility
             salt = tf.strings.as_string(split_seed)
             key = tf.strings.join([salt, episode_id])
-            n_buckets = tf.constant(1000, dtype=tf.int64)
-            bucket = tf.strings.to_hash_bucket_fast(key, n_buckets)
+            bucket = tf.strings.to_hash_bucket_fast(key, 1000)
             thr = tf.constant(int(val_fraction * 1000), dtype=tf.int64)
             is_val = bucket < thr
             is_train = tf.logical_not(is_val)
