@@ -372,7 +372,7 @@ class DroidCoTRldsDataset:
             lang = tf.io.parse_tensor(ex["lang_ser"], out_type=tf.string)  # shape: [T+1]
             return ex["episode_id"], lang
 
-        files = tf.io.gfile.glob(f"{language_action_dir}/droid_language_actions-*.tfrecord.gz")
+        files = tf.io.gfile.glob(f"{language_action_dir}/tfds_language_actions-*.tfrecord.gz")
         ds = tf.data.TFRecordDataset(
             files, compression_type="GZIP", num_parallel_reads=tf.data.AUTOTUNE
         ).map(_parse, num_parallel_calls=tf.data.AUTOTUNE
