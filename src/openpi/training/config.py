@@ -690,9 +690,9 @@ _CONFIGS = [
             decay_steps=1_000_000,
             decay_lr=1e-4,
         ),
+        save_interval=1000,
         log_interval=50,
-        save_interval=5000,
-        keep_period=20_000,
+        # keep_period=20_000,
     ),
     #
     # Inference Aloha configs.
