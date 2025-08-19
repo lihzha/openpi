@@ -53,6 +53,7 @@ def _sum_language_actions(actions_list):
         "down": 0.0,
     }
     units = {k: "cm" for k in totals.keys()}
+    last_gripper_value_str = None
     if actions_list is None:
         return None
     for action in actions_list:
@@ -60,7 +61,14 @@ def _sum_language_actions(actions_list):
             continue
         parts = action.split(" and ")
         for mv in parts:
-            m = re.match(r"move\s+(\w+)\s+([\d.]+)\s*(\w+)", mv.strip())
+            mv = mv.strip()
+            # Capture the last gripper command in the chunk
+            g = re.match(r"set\s+gripper\s+to\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+))", mv)
+            if g:
+                last_gripper_value_str = g.group(1)
+                continue
+            # Sum directional move commands
+            m = re.match(r"move\s+(\w+)\s+([\d.]+)\s*(\w+)", mv)
             if not m:
                 continue
             direction = m.group(1)
@@ -89,6 +97,9 @@ def _sum_language_actions(actions_list):
         result.append(f"move up {net:.2f} {units['up']}")
     elif net < 0:
         result.append(f"move down {abs(net):.2f} {units['down']}")
+    # Append the final gripper setting if present
+    if last_gripper_value_str is not None:
+        result.append(f"set gripper to {last_gripper_value_str}")
     return " and ".join(result)
 
 
@@ -111,13 +122,12 @@ class DroidCoTInputs(transforms.DataTransformFn):
         base_image = _parse_image(data["observation/exterior_image_1_left"])
         # wrist_image = _parse_image(data["observation/wrist_image_left"])
 
-        match self.model_type:
-            case _model.ModelType.PI0CoT:
-                names = ("base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb")
-                images = (base_image, np.zeros_like(base_image), np.zeros_like(base_image))
-                image_masks = (np.True_, np.False_, np.False_)
-            case _:
-                raise ValueError(f"Unsupported model type: {self.model_type}")
+        if self.model_type == _model.ModelType.PI0CoT:
+            names = ("base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb")
+            images = (base_image, np.zeros_like(base_image), np.zeros_like(base_image))
+            image_masks = (np.True_, np.False_, np.False_)
+        else:
+            raise ValueError(f"Unsupported model type: {self.model_type}")
 
         inputs = {
             "state": state,

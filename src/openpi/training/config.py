@@ -111,6 +111,8 @@ class DataConfig:
     cot: bool = False
     language_action_dir: str | None = None
     shuffle_buffer_size: int = 250_000
+    # For CoT-style datasets (e.g., DROID-CoT): number of future steps to sum over for language actions
+    summation_steps: int = 15
 
 
 class GroupFactory(Protocol):
@@ -487,6 +489,8 @@ class RLDSDroidCoTDataConfig(DataConfigFactory):
     cot: bool = True
     language_action_dir: str = "/n/fs/robot-data/vlm-syn/posed_droid"
     shuffle_buffer_size: int = 250_000
+    # Number of future steps to sum over for language actions
+    summation_steps: int = 15
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
@@ -537,6 +541,7 @@ class RLDSDroidCoTDataConfig(DataConfigFactory):
             cot=self.cot,
             language_action_dir=self.language_action_dir,
             shuffle_buffer_size=self.shuffle_buffer_size,
+            summation_steps=self.summation_steps,
         )
 
 

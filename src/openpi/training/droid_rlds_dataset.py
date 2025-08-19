@@ -330,11 +330,14 @@ class DroidCoTRldsDataset:
 
         assert action_space == DroidActionSpace.CARTESIAN_POSITION, "CoT only supports EEF actions for now"
 
-        tf.config.set_visible_devices([], "TPU")
-
+        # Configure Tensorflow with no GPU/TPU devices to avoid clobbering JAX/TPU runtime
+        tf.config.set_visible_devices([], "GPU")
+        try:
+            tf.config.set_visible_devices([], "TPU")
+        except Exception:
+            pass
 
         METADATA_PATH = language_action_dir.replace("droid-lang-actions", "metadata")
-
 
         # ---------------------------------------------------------------------
         # 1. TF-DS builder + base dataset
@@ -551,27 +554,6 @@ class DroidCoTRldsDataset:
             # .cache() .shuffle() .prefetch(...)  ↳ whatever else you need
         )
 
-        # ---------------------------------------------------------------------
-        # 5a. Deterministic train/val split by episode_id
-        # ---------------------------------------------------------------------
-        # We apply the split at the trajectory level (before repeat/flatten) so
-        # that full trajectories are consistently assigned to either split.
-        # def _split_filter(traj):
-        #     episode_id = _episode_id_from_traj(traj)
-        #     # If we somehow cannot resolve an id, keep for train & val=False
-        #     missing = tf.equal(episode_id, default_ep_value)
-        #     # Hash with a salt for reproducibility
-        #     salt = tf.strings.as_string(split_seed)
-        #     key = tf.strings.join([salt, episode_id])
-        #     bucket = tf.strings.to_hash_bucket_fast(key, 1000)
-        #     thr = tf.constant(int(val_fraction * 1000), dtype=tf.int64)
-        #     is_val = bucket < thr
-        #     is_train = tf.logical_not(is_val)
-        #     return tf.cond(
-        #         tf.equal(tf.constant(split), tf.constant("val")),
-        #         lambda: tf.logical_and(tf.logical_not(missing), is_val),
-        #         lambda: tf.logical_or(missing, is_train),
-        #     )
         want_val = (split == "val")
 
         def _split_filter(traj):
@@ -619,9 +601,13 @@ class DroidCoTRldsDataset:
                 ),
                 axis=-1,
             )
+            # Align lengths across modalities
+            traj_len = tf.shape(actions)[0]
             episode_id = _episode_id_from_traj(traj)
             lang_bytes = lang_table.lookup(episode_id)
             lang_tensor = tf.io.parse_tensor(lang_bytes, tf.string)
+            # Language actions may include an extra terminal step; crop to match action length
+            lang_tensor = lang_tensor[:traj_len]
             instruction_1 = instr_table_1.lookup(episode_id)
             instruction_2 = instr_table_2.lookup(episode_id)
             instruction_3 = instr_table_3.lookup(episode_id)
@@ -647,8 +633,8 @@ class DroidCoTRldsDataset:
                 traj["observation"]["exterior_image_1_left"],
                 traj["observation"]["exterior_image_2_left"],
             ]
-            cam_images = tf.stack(cam_images, axis=0)  # shape (3, H, W, C)
-            cam_idx_clamped = tf.where(cam_idx < 0, 0, cam_idx)
+            cam_images = tf.stack(cam_images, axis=0)  # shape (2, H, W, C)
+            cam_idx_clamped = tf.clip_by_value(cam_idx, 0, tf.shape(cam_images)[0] - 1)
             exterior_img = tf.gather(cam_images, cam_idx_clamped)
 
             # TODO: use wrist camera image or not
@@ -661,7 +647,6 @@ class DroidCoTRldsDataset:
             # )
             # wrist_img = traj["observation"]["wrist_image_left"]
 
-            traj_len = tf.shape(actions)[0]
             episode_id_vec = tf.fill([traj_len], episode_id)
 
             return {
@@ -916,6 +901,7 @@ class DroidCoTRldsDataset:
         # Overlap input pipeline with consumers; lets TF fill a small buffer per host.
         dataset = dataset.prefetch(2)
         # Note =>> Seems to reduce memory usage without affecting speed?
+        dataset = dataset.with_ram_budget(1)
 
         self.dataset = dataset
         self.batch_size = batch_size

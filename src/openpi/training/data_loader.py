@@ -244,6 +244,7 @@ def create_rlds_dataset(
             batch_size=local_batch_size,
             shuffle=shuffle,
             action_chunk_size=action_horizon,
+            summation_steps=getattr(data_config, "summation_steps", 15),
             action_space=data_config.action_space,
             shuffle_buffer_size=data_config.shuffle_buffer_size,
             split=split,
