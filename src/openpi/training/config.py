@@ -12,7 +12,7 @@ import etils.epath as epath
 import flax.nnx as nnx
 from typing_extensions import override, Annotated
 import tyro
-
+from tyro import extras as _tx
 import openpi.models.model as _model
 import openpi.models.pi0 as pi0
 import openpi.models.pi0_cot as pi0_cot
@@ -545,7 +545,7 @@ class RLDSDroidCoTDataConfig(DataConfigFactory):
         )
 
 
-@dataclasses.dataclass(frozen=False)
+@dataclasses.dataclass(frozen=True)
 class TrainConfig:
     # Name of the config. Must be unique. Will be used to reference this config.
     name: tyro.conf.Suppress[str]
@@ -978,8 +978,17 @@ if len({config.name for config in _CONFIGS}) != len(_CONFIGS):
 _CONFIGS_DICT = {config.name: config for config in _CONFIGS}
 
 
+# def cli() -> TrainConfig:
+#     return tyro.extras.overridable_config_cli({k: (k, v) for k, v in _CONFIGS_DICT.items()})
+
 def cli() -> TrainConfig:
-    return tyro.extras.overridable_config_cli({k: (k, v) for k, v in _CONFIGS_DICT.items()})
+    # Build a real subcommand type from your default instances by name.
+    # prefix_names=False keeps your current flat flag names.
+    SubType = _tx.subcommand_type_from_defaults(
+        {cfg.name: cfg for cfg in _CONFIGS},  # or _CONFIGS_DICT if you already have it
+        prefix_names=False,
+    )
+    return tyro.cli(SubType)
 
 
 def get_config(config_name: str) -> TrainConfig:
