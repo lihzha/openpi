@@ -132,13 +132,18 @@ def maybe_download(
         if invalidate_cache and _exists(cache_path):
             logger.info("Removing expired cached entry: %s", cache_path)
             if remote_cache:
-                if tf.io.gfile.isdir(cache_path):
-                    tf.io.gfile.rmtree(cache_path)
-                else:
-                    tf.io.gfile.remove(cache_path)
+                try:
+                    if tf.io.gfile.isdir(cache_path):
+                        tf.io.gfile.rmtree(cache_path)
+                    elif tf.io.gfile.exists(cache_path):
+                        tf.io.gfile.remove(cache_path)
+                except tf.errors.NotFoundError:
+                    # If it no longer exists, nothing to do.
+                    pass
             else:
                 p = pathlib.Path(cache_path)
-                shutil.rmtree(p) if p.is_dir() else p.unlink()
+                if p.exists():
+                    shutil.rmtree(p) if p.is_dir() else p.unlink()
 
         # ── 5. Download via fsspec to a scratch location ──────────────────────
         logger.info("Downloading %s to %s", url, scratch_path)
