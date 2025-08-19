@@ -978,17 +978,17 @@ if len({config.name for config in _CONFIGS}) != len(_CONFIGS):
 _CONFIGS_DICT = {config.name: config for config in _CONFIGS}
 
 
-# def cli() -> TrainConfig:
-#     return tyro.extras.overridable_config_cli({k: (k, v) for k, v in _CONFIGS_DICT.items()})
-
 def cli() -> TrainConfig:
-    # Build a real subcommand type from your default instances by name.
-    # prefix_names=False keeps your current flat flag names.
-    SubType = _tx.subcommand_type_from_defaults(
-        {cfg.name: cfg for cfg in _CONFIGS},  # or _CONFIGS_DICT if you already have it
-        prefix_names=False,
-    )
-    return tyro.cli(SubType)
+    return tyro.extras.overridable_config_cli({k: (k, v) for k, v in _CONFIGS_DICT.items()})
+
+# def cli() -> TrainConfig:
+#     # Build a real subcommand type from your default instances by name.
+#     # prefix_names=False keeps your current flat flag names.
+#     SubType = _tx.subcommand_type_from_defaults(
+#         {cfg.name: cfg for cfg in _CONFIGS},  # or _CONFIGS_DICT if you already have it
+#         prefix_names=False,
+#     )
+#     return tyro.cli(SubType)
 
 
 def get_config(config_name: str) -> TrainConfig:
