@@ -8,9 +8,13 @@ uv run --group rlds scripts/train.py pi0_droid_cot_v6 \
 
 
 # Another example with v4
-uv run --group rlds scripts/train.py pi0_droid_cot_v4 \
-  --exp-name=v4_tuned --overwrite \
+XLA_PYTHON_CLIENT_MEM_FRACTION=0.95 uv run --group rlds scripts/train.py pi0_droid_cot_v4 \
+  --exp-name=v4_bs256_lr1e4_ss15_pi0 --resume \
   --fsdp-devices=4 \
   --batch-size=256 \
   --data.shuffle-buffer-size=200000 \
-  --data.summation-steps=10
+  --data.summation-steps=15 \
+  --weight-loader CheckpointWeightLoader \
+  --weight-loader.params-path gs://openpi-assets/checkpoints/pi0_base/params
+
+  # --weight-loader PaliGemmaWeightLoader

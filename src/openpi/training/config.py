@@ -10,7 +10,7 @@ from typing import Any, Protocol, TypeAlias
 
 import etils.epath as epath
 import flax.nnx as nnx
-from typing_extensions import override
+from typing_extensions import override, Annotated
 import tyro
 
 import openpi.models.model as _model
@@ -560,7 +560,13 @@ class TrainConfig:
     model: _model.BaseModelConfig = dataclasses.field(default_factory=pi0.Pi0Config)
 
     # A weight loader can optionally load (possibly partial) weights from disk after the model is initialized.
-    weight_loader: weight_loaders.WeightLoader = dataclasses.field(default_factory=weight_loaders.NoOpWeightLoader)
+    # Expose as a CLI-selectable subcommand so users can pick the loader type and its args.
+    weight_loader: Annotated[
+        weight_loaders.NoOpWeightLoader
+        | weight_loaders.CheckpointWeightLoader
+        | weight_loaders.PaliGemmaWeightLoader,
+        tyro.conf.subcommand,
+    ] = dataclasses.field(default_factory=weight_loaders.NoOpWeightLoader)
 
     lr_schedule: _optimizer.LRScheduleConfig = dataclasses.field(default_factory=_optimizer.CosineDecaySchedule)
     optimizer: _optimizer.OptimizerConfig = dataclasses.field(default_factory=_optimizer.AdamW)
@@ -659,9 +665,16 @@ _CONFIGS = [
         fsdp_devices=4,
         batch_size=256,
         log_interval=50,
+        save_interval=5000,
         weight_loader=weight_loaders.PaliGemmaWeightLoader(),
         assets_base_dir="gs://pi0-cot/assets",
         checkpoint_base_dir="gs://pi0-cot/checkpoints",
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=1e-4,
+            decay_steps=1_000_000,
+            decay_lr=1e-4,
+        ),
     ),
     TrainConfig(
         name="pi0_droid_cot_v6",
