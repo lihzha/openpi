@@ -304,20 +304,26 @@ def restore_params(
     Returns:
         The restored params.
     """
-    params_path = pathlib.Path(params_path).resolve()
-    if not params_path.exists():
-        raise FileNotFoundError(f"Model params not found at: {params_path}")
+    # Support both local filesystem paths and remote GCS URIs (gs://...).
+    is_gcs = str(params_path).startswith("gs://")
+    if is_gcs:
+        params_path_str = str(params_path)
+    else:
+        params_path_local = pathlib.Path(params_path).resolve()
+        if not params_path_local.exists():
+            raise FileNotFoundError(f"Model params not found at: {params_path_local}")
+        params_path_str = str(params_path_local)
 
     if restore_type is jax.Array and sharding is None:
         mesh = jax.sharding.Mesh(jax.devices(), ("x",))
         sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec())
 
     with ocp.PyTreeCheckpointer() as ckptr:
-        metadata = ckptr.metadata(params_path)
+        metadata = ckptr.metadata(params_path_str)
         item = {"params": metadata["params"]}
 
         params = ckptr.restore(
-            params_path,
+            params_path_str,
             ocp.args.PyTreeRestore(
                 item=item,
                 restore_args=jax.tree.map(
