@@ -16,7 +16,7 @@ import optax
 from rail_tpu_utils import prevent_cross_region
 import tqdm_loggable.auto as tqdm
 import wandb
-
+import tyro
 import openpi.models.model as _model
 import openpi.shared.array_typing as at
 import openpi.shared.nnx_utils as nnx_utils
@@ -489,5 +489,13 @@ def main(config: _config.TrainConfig):
     checkpoint_manager.wait_until_finished()
 
 
+def cli():
+    # Turn your list of default configs into a subcommand union
+    Sub = tyro.extras.subcommand_type_from_defaults(_CONFIGS, prefix_names=False)
+    return tyro.cli(Sub)
+
 if __name__ == "__main__":
-    main(_config.cli())
+    main(cli())
+
+# if __name__ == "__main__":
+#     main(_config.cli())
