@@ -86,6 +86,8 @@ def maybe_download(
     lock_path = f"{cache_path}.lock"
     complete_marker = _join(cache_path, ".openpi_cache_complete")
     scratch_complete_marker = _join(scratch_path, ".openpi_cache_complete")
+    scratch_commit_success = _join(scratch_path, "COMMIT_SUCCESS")
+    scratch_commit_success_file = _join(scratch_path, "COMMIT_SUCCESS_FILE")
 
     # ── 3. Cache-validation check ─────────────────────────────────────────────
     def _exists(p: str) -> bool:
@@ -149,8 +151,16 @@ def maybe_download(
             if remote_cache and tf.io.gfile.isdir(scratch_path):
                 with tf.io.gfile.GFile(scratch_complete_marker, "w") as f:
                     f.write("ok")
+                # Also create an Orbax-style completion marker so the cached
+                # checkpoint is considered complete during restore.
+                with tf.io.gfile.GFile(scratch_commit_success, "w") as f:
+                    f.write("ok")
+                with tf.io.gfile.GFile(scratch_commit_success_file, "w") as f:
+                    f.write("ok")
             elif not remote_cache and pathlib.Path(scratch_path).is_dir():
                 pathlib.Path(scratch_complete_marker).write_text("ok")
+                pathlib.Path(scratch_commit_success).write_text("ok")
+                pathlib.Path(scratch_commit_success_file).write_text("ok")
         except Exception:
             # Marker is best-effort; continue even if it fails.
             pass

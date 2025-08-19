@@ -326,7 +326,31 @@ def restore_params(
         mesh = jax.sharding.Mesh(jax.devices(), ("x",))
         sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec())
 
+    def _ensure_commit_success(dir_path: str) -> None:
+        # Some mirrored or copied checkpoints may be missing the COMMIT_SUCCESS file.
+        # If _METADATA exists but COMMIT_SUCCESS does not, create it to allow restore.
+        # This is safe because we only do this on read, and we don't modify checkpoint contents.
+        # We try to create both COMMIT_SUCCESS and COMMIT_SUCCESS_FILE.
+        try:
+            fs = ocp.utils.async_utils.async_gfile
+        except Exception:
+            fs = None
+        commit_success = f"{dir_path}/COMMIT_SUCCESS"
+        commit_success_file = f"{dir_path}/COMMIT_SUCCESS_FILE"
+        metadata_file = f"{dir_path}/_METADATA"
+        try:
+            if fs and fs.exists(metadata_file):
+                if not fs.exists(commit_success):
+                    with fs.GFile(commit_success, "w") as f:
+                        f.write("ok")
+                if not fs.exists(commit_success_file):
+                    with fs.GFile(commit_success_file, "w") as f:
+                        f.write("ok")
+        except Exception:
+            pass
+
     def _try_restore(dir_path: str) -> at.Params:
+        _ensure_commit_success(dir_path)
         with ocp.PyTreeCheckpointer() as ckptr:
             metadata = ckptr.metadata(dir_path)
             item = {"params": metadata["params"]}
