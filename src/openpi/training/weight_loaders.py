@@ -49,9 +49,22 @@ class CheckpointWeightLoader(WeightLoader):
 
     def load(self, params: at.Params) -> at.Params:
         # We are loading np.ndarray and relying on the training code to properly convert and shard the params.
-        # For remote GCS checkpoints, restore directly from the remote URI to avoid
-        # potential partial copies in remote caches being flagged as incomplete by Orbax.
-        params_source = self.params_path if str(self.params_path).startswith("gs://") else download.maybe_download(self.params_path)
+        # Normalize "gs://<bucket>/cache/<upstream-bucket>/<path>" to "gs://<upstream-bucket>/<path>".
+        # This avoids restoring from a mirrored cache that might be incomplete.
+        params_path_str = str(self.params_path)
+
+        if params_path_str.startswith("gs://"):
+            # Example: gs://v6_east1d/cache/openpi-assets/checkpoints/pi0_base/params
+            if "/cache/" in params_path_str:
+                after_cache = params_path_str.split("/cache/", 1)[1]
+                # If the remainder already starts with gs:// keep it, else prefix gs://
+                upstream_uri = after_cache if after_cache.startswith("gs://") else f"gs://{after_cache}"
+                params_source = upstream_uri
+            else:
+                params_source = params_path_str
+        else:
+            params_source = str(download.maybe_download(params_path_str))
+
         loaded_params = _model.restore_params(params_source, restore_type=np.ndarray)
         # Add all missing LoRA weights.
         return _merge_params(loaded_params, params, missing_regex=".*lora.*")

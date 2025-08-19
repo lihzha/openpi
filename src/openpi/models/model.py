@@ -308,6 +308,14 @@ def restore_params(
     is_gcs = str(params_path).startswith("gs://")
     if is_gcs:
         params_path_str = str(params_path)
+        # Normalize any mirrored cache path like
+        #   gs://<cache-bucket>/cache/<upstream-bucket>/<path>
+        # to the original upstream path:
+        #   gs://<upstream-bucket>/<path>
+        if "/cache/" in params_path_str:
+            after_cache = params_path_str.split("/cache/", 1)[1]
+            params_path_str = after_cache if after_cache.startswith("gs://") else f"gs://{after_cache}"
+            logger.info("Redirected checkpoint path to upstream: %s", params_path_str)
     else:
         params_path_local = pathlib.Path(params_path).resolve()
         if not params_path_local.exists():
@@ -318,19 +326,42 @@ def restore_params(
         mesh = jax.sharding.Mesh(jax.devices(), ("x",))
         sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec())
 
-    with ocp.PyTreeCheckpointer() as ckptr:
-        metadata = ckptr.metadata(params_path_str)
-        item = {"params": metadata["params"]}
-
-        params = ckptr.restore(
-            params_path_str,
-            ocp.args.PyTreeRestore(
-                item=item,
-                restore_args=jax.tree.map(
-                    lambda _: ocp.ArrayRestoreArgs(sharding=sharding, restore_type=restore_type, dtype=dtype), item
+    def _try_restore(dir_path: str) -> at.Params:
+        with ocp.PyTreeCheckpointer() as ckptr:
+            metadata = ckptr.metadata(dir_path)
+            item = {"params": metadata["params"]}
+            return ckptr.restore(
+                dir_path,
+                ocp.args.PyTreeRestore(
+                    item=item,
+                    restore_args=jax.tree.map(
+                        lambda _: ocp.ArrayRestoreArgs(sharding=sharding, restore_type=restore_type, dtype=dtype), item
+                    ),
                 ),
-            ),
-        )["params"]
+            )["params"]
+
+    # Try original path first; on known metadata/incomplete errors, try upstream fallback.
+    paths_to_try: list[str] = [params_path_str]
+    if is_gcs and "/cache/" in params_path_str:
+        after_cache = params_path_str.split("/cache/", 1)[1]
+        upstream = after_cache if after_cache.startswith("gs://") else f"gs://{after_cache}"
+        if upstream != params_path_str:
+            paths_to_try.append(upstream)
+
+    last_error: Exception | None = None
+    for candidate in paths_to_try:
+        try:
+            if candidate != params_path_str:
+                logger.info("Falling back to upstream checkpoint at %s", candidate)
+            params = _try_restore(candidate)
+            break
+        except (FileNotFoundError, ValueError) as e:
+            # Orbax may raise FileNotFoundError for missing _METADATA or ValueError for incomplete checkpoints.
+            last_error = e
+            continue
+    else:
+        assert last_error is not None
+        raise last_error
 
     # If the params were saved with `save_state` during openpi training, every key path will end with "value", which is
     # added by `nnx.State`. We remove the "value" suffix here and always return what NNX calls a "pure dict".
