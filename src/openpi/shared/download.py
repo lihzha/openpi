@@ -84,24 +84,39 @@ def maybe_download(
     cache_path = _join(cache_dir, parsed.netloc, parsed.path.lstrip("/"))
     scratch_path = f"{cache_path}.partial"
     lock_path = f"{cache_path}.lock"
+    complete_marker = _join(cache_path, ".openpi_cache_complete")
+    scratch_complete_marker = _join(scratch_path, ".openpi_cache_complete")
 
     # ── 3. Cache-validation check ─────────────────────────────────────────────
     def _exists(p: str) -> bool:
         return tf.io.gfile.exists(p) if remote_cache else pathlib.Path(p).exists()
 
+    def _is_complete_dir(p: str) -> bool:
+        marker = _join(p, ".openpi_cache_complete")
+        return _exists(marker)
+
     invalidate_cache = False
     if _exists(cache_path):
-        if force_download or (not remote_cache and _should_invalidate_cache(cache_dir, cache_path)):
+        if force_download or (remote_cache and not _is_complete_dir(cache_path)) or (
+            not remote_cache and _should_invalidate_cache(cache_dir, cache_path)
+        ):
             invalidate_cache = True
         else:
             print(f"Cache hit: {cache_path}")
             return epath.Path(cache_path) if remote_cache else pathlib.Path(cache_path)
 
-    if _is_gcs(cache_path):
-        logger.info("Copying %s → %s (GCS fast-path)", url, cache_path)
-        print(f"****Downloading {url} to {cache_path}****")
-        _download_fsspec(url, cache_path, **kwargs)  # final path!
-        return epath.Path(cache_path)
+    # Ensure scratch location is clean before starting a new copy
+    if _exists(scratch_path):
+        logger.info("Removing existing scratch path: %s", scratch_path)
+        if remote_cache:
+            if tf.io.gfile.isdir(scratch_path):
+                tf.io.gfile.rmtree(scratch_path)
+            else:
+                tf.io.gfile.remove(scratch_path)
+        else:
+            p = pathlib.Path(scratch_path)
+            if p.exists():
+                shutil.rmtree(p) if p.is_dir() else p.unlink()
 
     # ── 4. Acquire lock (local FS only) ────────────────────────────────────────
     # GCS locking is best-effort with atomic object creation; we skip `filelock`.
@@ -111,7 +126,7 @@ def maybe_download(
         if lock:
             lock.acquire()
 
-        # Remove expired cache entry
+        # Remove expired/incomplete cache entry
         if invalidate_cache and _exists(cache_path):
             logger.info("Removing expired cached entry: %s", cache_path)
             if remote_cache:
@@ -124,15 +139,27 @@ def maybe_download(
                 shutil.rmtree(p) if p.is_dir() else p.unlink()
 
         # ── 5. Download via fsspec to a scratch location ──────────────────────
-        logger.info("Downloading %s to %s", url, cache_path)
+        logger.info("Downloading %s to %s", url, scratch_path)
+        print(f"****Downloading {url} to {scratch_path}****")
         _download_fsspec(url, scratch_path, **kwargs)
 
         # ── 6. Atomic rename to final location ────────────────────────────────
+        # Mark completion inside the scratch directory (only for directories)
+        try:
+            if remote_cache and tf.io.gfile.isdir(scratch_path):
+                with tf.io.gfile.GFile(scratch_complete_marker, "w") as f:
+                    f.write("ok")
+            elif not remote_cache and pathlib.Path(scratch_path).is_dir():
+                pathlib.Path(scratch_complete_marker).write_text("ok")
+        except Exception:
+            # Marker is best-effort; continue even if it fails.
+            pass
+
         if remote_cache:
             tf.io.gfile.rename(scratch_path, cache_path, overwrite=True)
         else:
             shutil.move(scratch_path, cache_path)
-            _ensure_permissions(cache_path)
+            _ensure_permissions(pathlib.Path(cache_path))
 
     except PermissionError as e:
         msg = f"Permission error while downloading {url}. Try removing the cache entry: rm -rf {cache_path}*"

@@ -49,7 +49,10 @@ class CheckpointWeightLoader(WeightLoader):
 
     def load(self, params: at.Params) -> at.Params:
         # We are loading np.ndarray and relying on the training code to properly convert and shard the params.
-        loaded_params = _model.restore_params(download.maybe_download(self.params_path), restore_type=np.ndarray)
+        # For remote GCS checkpoints, restore directly from the remote URI to avoid
+        # potential partial copies in remote caches being flagged as incomplete by Orbax.
+        params_source = self.params_path if str(self.params_path).startswith("gs://") else download.maybe_download(self.params_path)
+        loaded_params = _model.restore_params(params_source, restore_type=np.ndarray)
         # Add all missing LoRA weights.
         return _merge_params(loaded_params, params, missing_regex=".*lora.*")
 
