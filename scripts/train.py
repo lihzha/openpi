@@ -336,7 +336,6 @@ def eval_step(
 
 
 def main(config: _config.TrainConfig):
-    print(config.data.summation_steps)
     jax.distributed.initialize()
     data_dir = save_dir = config.data.rlds_data_dir
     prevent_cross_region(data_dir, save_dir)
@@ -346,6 +345,8 @@ def main(config: _config.TrainConfig):
     assert jax.local_device_count() % config.fsdp_devices == 0  # holds for 1,2,4 on v4 2x2x2
 
     init_logging()
+    logging.info(config.data.summation_steps)
+    
     logging.info(f"Running on: {platform.node()}")
 
     # if config.batch_size % jax.device_count() != 0:
