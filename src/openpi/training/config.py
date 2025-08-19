@@ -32,6 +32,17 @@ ModelType: TypeAlias = _model.ModelType
 # Work around a tyro issue with using nnx.filterlib.Filter directly.
 Filter: TypeAlias = nnx.filterlib.Filter
 
+# CLI-selectable weight loader type. Enables choosing the loader kind and
+# overriding its parameters (e.g., params_path) from the command line.
+WeightLoaderType: TypeAlias = _tx.subcommand_type_from_defaults(
+    {
+        "noop": weight_loaders.NoOpWeightLoader(),
+        "checkpoint": weight_loaders.CheckpointWeightLoader(params_path=""),
+        "paligemma": weight_loaders.PaliGemmaWeightLoader(),
+    },
+    prefix_names=False,
+)
+
 
 def _to_path(base: str | pathlib.Path, *extra: str) -> pathlib.Path | epath.Path:
     """
@@ -560,14 +571,9 @@ class TrainConfig:
     model: _model.BaseModelConfig = dataclasses.field(default_factory=pi0.Pi0Config)
 
     # A weight loader can optionally load (possibly partial) weights from disk after the model is initialized.
-    # Expose as a CLI-selectable subcommand so users can pick the loader type and its args.
-    # weight_loader: Annotated[
-    #     weight_loaders.NoOpWeightLoader
-    #     | weight_loaders.CheckpointWeightLoader
-    #     | weight_loaders.PaliGemmaWeightLoader,
-    #     tyro.conf.subcommand,
-    # ] = dataclasses.field(default_factory=weight_loaders.NoOpWeightLoader)
-    weight_loader: weight_loaders.WeightLoader = dataclasses.field(default_factory=weight_loaders.NoOpWeightLoader)
+    # CLI: choose via --weight-loader {noop,checkpoint,paligemma}; for checkpoint, set --params-path.
+    weight_loader: WeightLoaderType = dataclasses.field(default_factory=weight_loaders.NoOpWeightLoader)
+    
 
     lr_schedule: _optimizer.LRScheduleConfig = dataclasses.field(default_factory=_optimizer.CosineDecaySchedule)
     optimizer: _optimizer.OptimizerConfig = dataclasses.field(default_factory=_optimizer.AdamW)

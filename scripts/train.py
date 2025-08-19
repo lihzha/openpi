@@ -345,6 +345,13 @@ def main(config: _config.TrainConfig):
     assert jax.local_device_count() % config.fsdp_devices == 0  # holds for 1,2,4 on v4 2x2x2
 
     init_logging()
+    # Log selected weight loader and validate required args
+    wl = config.weight_loader
+    logging.info("Weight loader: %s", type(wl).__name__)
+    if isinstance(wl, _weight_loaders.CheckpointWeightLoader):
+        if not getattr(wl, "params_path", ""):
+            raise ValueError("CheckpointWeightLoader requires --params-path when selected via --weight-loader checkpoint")
+        logging.info("Checkpoint params_path: %s", wl.params_path)
     logging.info(config.data.summation_steps)
     
     logging.info(f"Running on: {platform.node()}")
