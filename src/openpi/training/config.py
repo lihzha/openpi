@@ -561,12 +561,13 @@ class TrainConfig:
 
     # A weight loader can optionally load (possibly partial) weights from disk after the model is initialized.
     # Expose as a CLI-selectable subcommand so users can pick the loader type and its args.
-    weight_loader: Annotated[
-        weight_loaders.NoOpWeightLoader
-        | weight_loaders.CheckpointWeightLoader
-        | weight_loaders.PaliGemmaWeightLoader,
-        tyro.conf.subcommand,
-    ] = dataclasses.field(default_factory=weight_loaders.NoOpWeightLoader)
+    # weight_loader: Annotated[
+    #     weight_loaders.NoOpWeightLoader
+    #     | weight_loaders.CheckpointWeightLoader
+    #     | weight_loaders.PaliGemmaWeightLoader,
+    #     tyro.conf.subcommand,
+    # ] = dataclasses.field(default_factory=weight_loaders.NoOpWeightLoader)
+    weight_loader: weight_loaders.WeightLoader = dataclasses.field(default_factory=weight_loaders.NoOpWeightLoader)
 
     lr_schedule: _optimizer.LRScheduleConfig = dataclasses.field(default_factory=_optimizer.CosineDecaySchedule)
     optimizer: _optimizer.OptimizerConfig = dataclasses.field(default_factory=_optimizer.AdamW)
