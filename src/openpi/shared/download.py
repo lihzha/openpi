@@ -112,9 +112,17 @@ def maybe_download(
         logger.info("Removing existing scratch path: %s", scratch_path)
         if remote_cache:
             if tf.io.gfile.isdir(scratch_path):
-                tf.io.gfile.rmtree(scratch_path)
+                try:
+                    tf.io.gfile.rmtree(scratch_path)
+                except tf.errors.NotFoundError:
+                    # If it no longer exists, nothing to do.
+                    pass
             else:
-                tf.io.gfile.remove(scratch_path)
+                try:
+                    tf.io.gfile.remove(scratch_path)
+                except tf.errors.NotFoundError:
+                    # If it no longer exists, nothing to do.
+                    pass
         else:
             p = pathlib.Path(scratch_path)
             if p.exists():
