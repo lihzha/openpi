@@ -86,7 +86,7 @@ def maybe_download(
     lock_path = f"{cache_path}.lock"
     complete_marker = _join(cache_path, ".openpi_cache_complete")
     scratch_complete_marker = _join(scratch_path, ".openpi_cache_complete")
-    scratch_commit_success = _join(scratch_path, "COMMIT_SUCCESS")
+    scratch_commit_success = _join(scratch_path, "commit_success.txt")
     scratch_commit_success_file = _join(scratch_path, "COMMIT_SUCCESS_FILE")
 
     # ── 3. Cache-validation check ─────────────────────────────────────────────
