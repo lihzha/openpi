@@ -17,3 +17,42 @@ v6 "curl -LsSf https://astral.sh/uv/install.sh | sh && echo 'export WANDB_API_KE
 # train
 v4 "source ~/.zshrc && cd openpi && git pull origin tpu && XLA_PYTHON_CLIENT_MEM_FRACTION=0.95 uv run --group rlds scripts/train.py pi0_droid_cot_v4 --exp-name=v4_fsdp4_bs256 --overwrite"
 v6 "source ~/.zshrc && cd openpi && git pull origin tpu && XLA_PYTHON_CLIENT_MEM_FRACTION=0.95 uv run --group rlds scripts/train.py pi0_droid_cot_v6 --exp-name=v6_fsdp4_bs256 --resume"
+
+
+# Override fsdp_devices, batch_size, data.shuffle_buffer_size, data.summation_steps
+uv run --group rlds scripts/train.py pi0_droid_cot_v6 \
+  --exp-name=my_run --overwrite \
+  --fsdp-devices=8 \
+  --batch-size=128 \
+  --data.shuffle-buffer-size=300000 \
+  --data.summation-steps=12
+
+
+# Another example with v4
+XLA_PYTHON_CLIENT_MEM_FRACTION=0.95 uv run --group rlds scripts/train.py pi0_droid_cot_v4 \
+  --exp-name=v4_bs256_lr1e4_ss15_pi0 --resume \
+  --fsdp-devices=4 \
+  --batch-size=256 \
+  --data.shuffle-buffer-size=200000 \
+  --data.summation-steps=15 \
+  --weight-loader=CheckpointWeightLoader \
+  --weight-loader.params-path=gs://openpi-assets/checkpoints/pi0_base/params
+
+XLA_PYTHON_CLIENT_MEM_FRACTION=0.95 uv run --group rlds scripts/train.py pi0_droid_cot_v4 \
+  --exp-name=v4_bs256_lr1e4_ss15_paligemma --resume \
+  --fsdp-devices=4 \
+  --batch-size=256 \
+  --data.shuffle-buffer-size=200000 \
+  --data.summation-steps=15 \
+  --weight-loader PaliGemmaWeightLoader
+
+v4 "source ~/.zshrc && cd openpi && git pull origin tpu && XLA_PYTHON_CLIENT_MEM_FRACTION=0.95 uv run --group rlds scripts/train.py pi0_droid_cot_v4 --exp-name=v4_bs256_lr1e4_ss15_paligemma_max115 --resume --fsdp-devices=4 --batch-size=256 --data.summation-steps=15"
+
+
+--weight-loader.params-path=gs://openpi-assets/checkpoints/pi0_base/params
+
+#1. create tmux
+tmux new -s pi0-cot
+source ~/.tpu_env.sh
+export TPU_NAME=pi0-cot
+./watch_and_run.sh --exp-name v6_bs256_lr1e4_ss15_paligemma_max110 --fsdp-devices=8 --batch-size=256 --data.summation-steps=15 --resume --weight-loader.kind=paligemma

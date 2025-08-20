@@ -342,7 +342,7 @@ def main(config: _config.TrainConfig):
 
     assert jax.device_count() % config.fsdp_devices == 0
     # Prefer intra-host FSDP:
-    assert jax.local_device_count() % config.fsdp_devices == 0  # holds for 1,2,4 on v4 2x2x2
+    # assert jax.local_device_count() % config.fsdp_devices == 0  # holds for 1,2,4 on v4 2x2x2
 
     init_logging()
     logging.info(config.data.summation_steps)
