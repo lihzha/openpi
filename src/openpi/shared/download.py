@@ -84,22 +84,18 @@ def maybe_download(
     cache_path = _join(cache_dir, parsed.netloc, parsed.path.lstrip("/"))
     scratch_path = f"{cache_path}.partial"
     lock_path = f"{cache_path}.lock"
-    complete_marker = _join(cache_path, ".openpi_cache_complete")
-    scratch_complete_marker = _join(scratch_path, ".openpi_cache_complete")
-    scratch_commit_success = _join(scratch_path, "commit_success.txt")
-    scratch_commit_success_file = _join(scratch_path, "COMMIT_SUCCESS_FILE")
+    scratch_commit_success = _join(scratch_path, "COMMIT_SUCCESS")
 
     # ── 3. Cache-validation check ─────────────────────────────────────────────
     def _exists(p: str) -> bool:
         return tf.io.gfile.exists(p) if remote_cache else pathlib.Path(p).exists()
 
-    def _is_complete_dir(p: str) -> bool:
-        marker = _join(p, ".openpi_cache_complete")
-        return _exists(marker)
+    def _is_complete_remote_dir(p: str) -> bool:
+        return tf.io.gfile.isdir(p) and tf.io.gfile.exists(_join(p, "_METADATA"))
 
     invalidate_cache = False
     if _exists(cache_path):
-        if force_download or (remote_cache and not _is_complete_dir(cache_path)) or (
+        if force_download or (remote_cache and not _is_complete_remote_dir(cache_path)) or (
             not remote_cache and _should_invalidate_cache(cache_dir, cache_path)
         ):
             invalidate_cache = True
@@ -162,18 +158,12 @@ def maybe_download(
         # Mark completion inside the scratch directory (only for directories)
         try:
             if remote_cache and tf.io.gfile.isdir(scratch_path):
-                with tf.io.gfile.GFile(scratch_complete_marker, "w") as f:
-                    f.write("ok")
-                # Also create an Orbax-style completion marker so the cached
-                # checkpoint is considered complete during restore.
+                # Create an Orbax-style completion marker so the cached checkpoint
+                # is considered complete during restore if upstream is missing it.
                 with tf.io.gfile.GFile(scratch_commit_success, "w") as f:
                     f.write("ok")
-                with tf.io.gfile.GFile(scratch_commit_success_file, "w") as f:
-                    f.write("ok")
             elif not remote_cache and pathlib.Path(scratch_path).is_dir():
-                pathlib.Path(scratch_complete_marker).write_text("ok")
                 pathlib.Path(scratch_commit_success).write_text("ok")
-                pathlib.Path(scratch_commit_success_file).write_text("ok")
         except Exception:
             # Marker is best-effort; continue even if it fails.
             pass
@@ -299,6 +289,27 @@ def _download_fsspec(url: str, local_path: pathlib.Path | str, **kwargs) -> None
     )
 
 
+def ensure_commit_success(dir_path: str) -> None:
+    """Create commit_success.txt in dir_path if missing.
+
+    Works for both local and gs:// paths. Best-effort: ignores errors.
+    """
+    try:
+        if _is_gcs(dir_path):
+            marker = _join(dir_path, "commit_success.txt")
+            if not tf.io.gfile.exists(marker):
+                with tf.io.gfile.GFile(marker, "w") as f:
+                    f.write("ok")
+        else:
+            marker_path = pathlib.Path(dir_path) / "commit_success.txt"
+            marker_path.parent.mkdir(parents=True, exist_ok=True)
+            if not marker_path.exists():
+                marker_path.write_text("ok")
+    except Exception:
+        # Best-effort only
+        pass
+
+
 def mirror_checkpoint_to_remote_cache(url: str, **kwargs) -> str:
     """Ensure a checkpoint at `url` (gs://...) is mirrored into the remote cache.
 
@@ -318,16 +329,16 @@ def mirror_checkpoint_to_remote_cache(url: str, **kwargs) -> str:
     cache_root = str(cache_dir)
     mirror_path = _join(cache_root, "cache", parsed.netloc, parsed.path.lstrip("/"))
     scratch_path = f"{mirror_path}.partial"
-    complete_marker = _join(mirror_path, ".openpi_cache_complete")
-    scratch_complete_marker = _join(scratch_path, ".openpi_cache_complete")
-    scratch_commit_success = _join(scratch_path, "commit_success.txt")
-    scratch_commit_success_file = _join(scratch_path, "COMMIT_SUCCESS_FILE")
+    scratch_commit_success = _join(scratch_path, "COMMIT_SUCCESS")
 
     def _exists(p: str) -> bool:
         return tf.io.gfile.exists(p)
 
-    # If already complete, return immediately.
-    if _exists(complete_marker):
+    # If checkpoint already present at mirror location, skip copying if it appears
+    # complete (directory with _METADATA file present).
+    metadata_marker = _join(mirror_path, "_METADATA")
+    if tf.io.gfile.isdir(mirror_path) and _exists(metadata_marker):
+        ensure_commit_success(mirror_path)
         return mirror_path
 
     # Clean scratch
@@ -347,14 +358,10 @@ def mirror_checkpoint_to_remote_cache(url: str, **kwargs) -> str:
     logger.info("Mirroring %s → %s", url, mirror_path)
     _download_fsspec(url, scratch_path, **kwargs)
 
-    # Add markers for completeness and Orbax compatibility
+    # Add markers for Orbax compatibility (best-effort)
     try:
         if tf.io.gfile.isdir(scratch_path):
-            with tf.io.gfile.GFile(scratch_complete_marker, "w") as f:
-                f.write("ok")
             with tf.io.gfile.GFile(scratch_commit_success, "w") as f:
-                f.write("ok")
-            with tf.io.gfile.GFile(scratch_commit_success_file, "w") as f:
                 f.write("ok")
     except Exception:
         pass

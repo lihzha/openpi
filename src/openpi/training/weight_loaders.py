@@ -58,14 +58,11 @@ class CheckpointWeightLoader(WeightLoader):
                 cache_candidate = params_path_str
                 upstream = params_path_str.split("/cache/", 1)[1]
                 upstream = upstream if upstream.startswith("gs://") else f"gs://{upstream}"
-                # If cache candidate exists, use it; else mirror upstream into cache and use the mirror.
+                # Prefer existing cache; if present, ensure commit_success marker and use it.
+                # Otherwise, mirror upstream into cache and use the mirror.
                 try:
-                    # We don’t have exists() over GCS here; rely on restore to raise and retry.
+                    download.ensure_commit_success(cache_candidate)
                     params_source = cache_candidate
-                    try:
-                        _model.restore_params(params_source, restore_type=np.ndarray)
-                    except Exception:
-                        params_source = download.mirror_checkpoint_to_remote_cache(upstream)
                 except Exception:
                     params_source = download.mirror_checkpoint_to_remote_cache(upstream)
             else:
