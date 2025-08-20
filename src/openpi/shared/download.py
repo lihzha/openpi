@@ -91,17 +91,32 @@ def maybe_download(
         return tf.io.gfile.exists(p) if remote_cache else pathlib.Path(p).exists()
 
     def _is_complete_remote_dir(p: str) -> bool:
+        # Directory is considered complete if Orbax metadata exists.
         return tf.io.gfile.isdir(p) and tf.io.gfile.exists(_join(p, "_METADATA"))
 
     invalidate_cache = False
     if _exists(cache_path):
-        if force_download or (remote_cache and not _is_complete_remote_dir(cache_path)) or (
-            not remote_cache and _should_invalidate_cache(cache_dir, cache_path)
-        ):
+        if force_download:
             invalidate_cache = True
+        elif remote_cache:
+            # Remote cache: if it's a directory, require Orbax metadata; if it's a file, existence is enough.
+            if tf.io.gfile.isdir(cache_path):
+                if not _is_complete_remote_dir(cache_path):
+                    invalidate_cache = True
+                else:
+                    print(f"Cache hit: {cache_path}")
+                    return epath.Path(cache_path)
+            else:
+                # Remote file exists → cache hit
+                print(f"Cache hit: {cache_path}")
+                return epath.Path(cache_path)
         else:
-            print(f"Cache hit: {cache_path}")
-            return epath.Path(cache_path) if remote_cache else pathlib.Path(cache_path)
+            # Local cache invalidation policy
+            if _should_invalidate_cache(cache_dir, pathlib.Path(cache_path)):
+                invalidate_cache = True
+            else:
+                print(f"Cache hit: {cache_path}")
+                return pathlib.Path(cache_path)
 
     # Ensure scratch location is clean before starting a new copy
     if _exists(scratch_path):
@@ -313,7 +328,7 @@ def ensure_commit_success(dir_path: str) -> None:
 def mirror_checkpoint_to_remote_cache(url: str, **kwargs) -> str:
     """Ensure a checkpoint at `url` (gs://...) is mirrored into the remote cache.
 
-    The mirror location is: gs://<OPENPI_DATA_HOME>/cache/<bucket>/<path>
+    The mirror location is: gs://<OPENPI_DATA_HOME>/<bucket>/<path>
 
     Returns the mirror path (as a gs:// string). If OPENPI_DATA_HOME is not a
     GCS path, returns the original url unchanged.
@@ -327,7 +342,7 @@ def mirror_checkpoint_to_remote_cache(url: str, **kwargs) -> str:
         return url
 
     cache_root = str(cache_dir)
-    mirror_path = _join(cache_root, "cache", parsed.netloc, parsed.path.lstrip("/"))
+    mirror_path = _join(cache_root, parsed.netloc, parsed.path.lstrip("/"))
     scratch_path = f"{mirror_path}.partial"
     scratch_commit_success = _join(scratch_path, "COMMIT_SUCCESS")
 
