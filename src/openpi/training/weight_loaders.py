@@ -2,6 +2,7 @@ import dataclasses
 import logging
 import re
 from typing import Protocol, runtime_checkable
+from typing import Literal
 
 import flax.traverse_util
 import numpy as np
@@ -94,6 +95,40 @@ class PaliGemmaWeightLoader(WeightLoader):
         # Add all missing weights.
         return _merge_params(loaded_params, params, missing_regex=".*")
 
+
+@dataclasses.dataclass(frozen=True)
+class WeightLoaderChoice(WeightLoader):
+    """CLI-friendly wrapper to choose a weight loader without nested subcommands.
+
+    This class implements the WeightLoader protocol and forwards to a concrete
+    loader based on the selected kind. It allows setting the loader type and its
+    arguments via flat flags like:
+
+      --weight-loader.kind=checkpoint --weight-loader.params-path=gs://...
+      --weight-loader.kind=paligemma
+      --weight-loader.kind=none
+    """
+
+    # Which loader to use.
+    kind: Literal["none", "checkpoint", "paligemma"] = "none"
+    # Only used when kind == "checkpoint".
+    params_path: str | None = None
+
+    def _resolve(self) -> WeightLoader:
+        match self.kind:
+            case "checkpoint":
+                if not self.params_path:
+                    raise ValueError("--weight-loader.params-path must be set when kind=checkpoint")
+                return CheckpointWeightLoader(self.params_path)
+            case "paligemma":
+                return PaliGemmaWeightLoader()
+            case "none":
+                return NoOpWeightLoader()
+            case _:
+                raise ValueError(f"Unknown weight loader kind: {self.kind}")
+
+    def load(self, params: at.Params) -> at.Params:
+        return self._resolve().load(params)
 
 def _merge_params(loaded_params: at.Params, params: at.Params, *, missing_regex: str) -> at.Params:
     """Merges the loaded parameters with the reference parameters.
