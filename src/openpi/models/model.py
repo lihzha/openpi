@@ -308,14 +308,7 @@ def restore_params(
     is_gcs = str(params_path).startswith("gs://")
     if is_gcs:
         params_path_str = str(params_path)
-        # Normalize any mirrored cache path like
-        #   gs://<cache-bucket>/cache/<upstream-bucket>/<path>
-        # to the original upstream path:
-        #   gs://<upstream-bucket>/<path>
-        if "/cache/" in params_path_str:
-            after_cache = params_path_str.split("/cache/", 1)[1]
-            params_path_str = after_cache if after_cache.startswith("gs://") else f"gs://{after_cache}"
-            logger.info("Redirected checkpoint path to upstream: %s", params_path_str)
+        # Prefer cache path if provided; do not redirect to upstream here. Fallback is handled below.
     else:
         params_path_local = pathlib.Path(params_path).resolve()
         if not params_path_local.exists():

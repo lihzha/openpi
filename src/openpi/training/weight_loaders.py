@@ -49,19 +49,28 @@ class CheckpointWeightLoader(WeightLoader):
 
     def load(self, params: at.Params) -> at.Params:
         # We are loading np.ndarray and relying on the training code to properly convert and shard the params.
-        # Normalize "gs://<bucket>/cache/<upstream-bucket>/<path>" to "gs://<upstream-bucket>/<path>".
-        # This avoids restoring from a mirrored cache that might be incomplete.
+        # Preferred logic: use remote cache if present, otherwise mirror upstream into cache and load from there.
         params_path_str = str(self.params_path)
 
         if params_path_str.startswith("gs://"):
-            # Example: gs://v6_east1d/cache/openpi-assets/checkpoints/pi0_base/params
+            # If this is already a cache path, try it; if missing or incomplete, fall back to upstream and mirror.
             if "/cache/" in params_path_str:
-                after_cache = params_path_str.split("/cache/", 1)[1]
-                # If the remainder already starts with gs:// keep it, else prefix gs://
-                upstream_uri = after_cache if after_cache.startswith("gs://") else f"gs://{after_cache}"
-                params_source = upstream_uri
+                cache_candidate = params_path_str
+                upstream = params_path_str.split("/cache/", 1)[1]
+                upstream = upstream if upstream.startswith("gs://") else f"gs://{upstream}"
+                # If cache candidate exists, use it; else mirror upstream into cache and use the mirror.
+                try:
+                    # We don’t have exists() over GCS here; rely on restore to raise and retry.
+                    params_source = cache_candidate
+                    try:
+                        _model.restore_params(params_source, restore_type=np.ndarray)
+                    except Exception:
+                        params_source = download.mirror_checkpoint_to_remote_cache(upstream)
+                except Exception:
+                    params_source = download.mirror_checkpoint_to_remote_cache(upstream)
             else:
-                params_source = params_path_str
+                # Not in cache yet; mirror upstream into cache to standardize layout.
+                params_source = download.mirror_checkpoint_to_remote_cache(params_path_str)
         else:
             params_source = str(download.maybe_download(params_path_str))
 

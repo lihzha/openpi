@@ -299,6 +299,74 @@ def _download_fsspec(url: str, local_path: pathlib.Path | str, **kwargs) -> None
     )
 
 
+def mirror_checkpoint_to_remote_cache(url: str, **kwargs) -> str:
+    """Ensure a checkpoint at `url` (gs://...) is mirrored into the remote cache.
+
+    The mirror location is: gs://<OPENPI_DATA_HOME>/cache/<bucket>/<path>
+
+    Returns the mirror path (as a gs:// string). If OPENPI_DATA_HOME is not a
+    GCS path, returns the original url unchanged.
+    """
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "gs":
+        return url
+
+    cache_dir = get_cache_dir()
+    if not _is_gcs(cache_dir):
+        return url
+
+    cache_root = str(cache_dir)
+    mirror_path = _join(cache_root, "cache", parsed.netloc, parsed.path.lstrip("/"))
+    scratch_path = f"{mirror_path}.partial"
+    complete_marker = _join(mirror_path, ".openpi_cache_complete")
+    scratch_complete_marker = _join(scratch_path, ".openpi_cache_complete")
+    scratch_commit_success = _join(scratch_path, "commit_success.txt")
+    scratch_commit_success_file = _join(scratch_path, "COMMIT_SUCCESS_FILE")
+
+    def _exists(p: str) -> bool:
+        return tf.io.gfile.exists(p)
+
+    # If already complete, return immediately.
+    if _exists(complete_marker):
+        return mirror_path
+
+    # Clean scratch
+    if _exists(scratch_path):
+        if tf.io.gfile.isdir(scratch_path):
+            try:
+                tf.io.gfile.rmtree(scratch_path)
+            except tf.errors.NotFoundError:
+                pass
+        else:
+            try:
+                tf.io.gfile.remove(scratch_path)
+            except tf.errors.NotFoundError:
+                pass
+
+    # Copy upstream → scratch
+    logger.info("Mirroring %s → %s", url, mirror_path)
+    _download_fsspec(url, scratch_path, **kwargs)
+
+    # Add markers for completeness and Orbax compatibility
+    try:
+        if tf.io.gfile.isdir(scratch_path):
+            with tf.io.gfile.GFile(scratch_complete_marker, "w") as f:
+                f.write("ok")
+            with tf.io.gfile.GFile(scratch_commit_success, "w") as f:
+                f.write("ok")
+            with tf.io.gfile.GFile(scratch_commit_success_file, "w") as f:
+                f.write("ok")
+    except Exception:
+        pass
+
+    # Rename into place
+    try:
+        tf.io.gfile.rename(scratch_path, mirror_path, overwrite=True)
+    except Exception:
+        pass
+
+    return mirror_path
+
 # def _download_fsspec(url: str, local_path: pathlib.Path, **kwargs) -> None:
 #     """Download a file from a remote filesystem to the local cache, and return the local path."""
 #     fs, _ = fsspec.core.url_to_fs(url, **kwargs)
