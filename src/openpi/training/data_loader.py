@@ -647,6 +647,18 @@ class RLDSDataLoader:
             data_axis_size = mesh.shape.get("data", None)  # or use your DATA_AXIS constant
             if data_axis_size is None:
                 return  # no data axis; nothing to check
+            
+            # Special case: for cross-host FSDP when data_axis_size == 1,
+            # we don't need data parallelism across hosts - each host gets the same data
+            # and works together on FSDP sharding
+            if data_axis_size == 1 and self._n_proc > 1:
+                # Cross-host FSDP: validate against local device count instead
+                ldc = jax.local_device_count()
+                if b % ldc != 0:
+                    raise ValueError(f"Per-host batch {b} must be divisible by local_device_count {ldc} for cross-host FSDP")
+                return
+            
+            # Standard data parallelism validation
             dp_per_host = data_axis_size // self._n_proc
             if dp_per_host == 0 or data_axis_size % self._n_proc != 0:
                 raise ValueError("Mesh/data axis inconsistent with process_count.")
