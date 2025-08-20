@@ -640,7 +640,7 @@ _CONFIGS = [
         name="pi0_droid_cot_v4",
         model=pi0_cot.Pi0CoTConfig(
             action_horizon=10,
-            max_token_len=115,
+            max_token_len=110,
         ),
         data=RLDSDroidCoTDataConfig(
             repo_id="droid",
@@ -676,7 +676,7 @@ _CONFIGS = [
         name="pi0_droid_cot_v6",
         model=pi0_cot.Pi0CoTConfig(
             action_horizon=10,
-            max_token_len=115,
+            max_token_len=110,
         ),
         data=RLDSDroidCoTDataConfig(
             repo_id="droid",
