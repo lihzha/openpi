@@ -171,7 +171,11 @@ def maybe_download(
             pass
 
         if remote_cache:
-            tf.io.gfile.rename(scratch_path, cache_path, overwrite=True)
+            try:
+                tf.io.gfile.rename(scratch_path, cache_path, overwrite=True)
+            except Exception:
+                # Marker is best-effort; continue even if it fails.
+                pass
         else:
             shutil.move(scratch_path, cache_path)
             _ensure_permissions(pathlib.Path(cache_path))
