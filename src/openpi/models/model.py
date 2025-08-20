@@ -335,16 +335,12 @@ def restore_params(
             fs = ocp.utils.async_utils.async_gfile
         except Exception:
             fs = None
-        commit_success = f"{dir_path}/COMMIT_SUCCESS"
-        commit_success_file = f"{dir_path}/COMMIT_SUCCESS_FILE"
+        commit_success = f"{dir_path}/commit_success.txt"
         metadata_file = f"{dir_path}/_METADATA"
         try:
             if fs and fs.exists(metadata_file):
                 if not fs.exists(commit_success):
                     with fs.GFile(commit_success, "w") as f:
-                        f.write("ok")
-                if not fs.exists(commit_success_file):
-                    with fs.GFile(commit_success_file, "w") as f:
                         f.write("ok")
         except Exception:
             pass
