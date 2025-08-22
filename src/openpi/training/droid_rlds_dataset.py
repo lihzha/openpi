@@ -179,21 +179,26 @@ class DroidRldsDataset:
             }
 
         if DEBUG_TIMING:
+
             def _wrap_timed_map(fn, name):
                 def _inner(x):
                     t0 = tf.timestamp()
                     y = fn(x)
                     t1 = tf.timestamp()
                     ms = (t1 - t0) * 1000.0
+
                     def _log(ms_np):
                         try:
                             logging.info(f"[tf.data] {name} ms={float(ms_np):.1f}")
                         except Exception:
                             pass
                         return np.int64(0)
+
                     _ = tf.py_function(_log, [ms], Tout=tf.int64)
                     return y
+
                 return _inner
+
             dataset = dataset.traj_map(_wrap_timed_map(restructure, "restructure"), num_parallel_calls)
         else:
             dataset = dataset.traj_map(restructure, num_parallel_calls)
@@ -234,19 +239,23 @@ class DroidRldsDataset:
             return tf.reduce_any(tf.abs(traj["actions"][: action_chunk_size // 2]) > 1e-3)
 
         if DEBUG_TIMING:
+
             def _timed_filter(x):
                 t0 = tf.timestamp()
                 out = filter_idle(x)
                 t1 = tf.timestamp()
                 ms = (t1 - t0) * 1000.0
+
                 def _log(ms_np):
                     try:
                         logging.info(f"[tf.data] filter_idle ms={float(ms_np):.1f}")
                     except Exception:
                         pass
                     return np.int64(0)
+
                 _ = tf.py_function(_log, [ms], Tout=tf.int64)
                 return out
+
             dataset = dataset.filter(_timed_filter)
         else:
             dataset = dataset.filter(filter_idle)
@@ -322,6 +331,8 @@ class DroidCoTRldsDataset:
         split: str = "train",  # one of {"train", "val"}
         val_fraction: float = 0.05,
         split_seed: int = 0,
+        # Overfitting support: cap number of flattened samples (after shuffle)
+        max_samples: int | None = None,
     ):
         # Import tensorflow here to not make it mandatory in case RLDS data loader is not used.
         import dlimp as dl
@@ -355,7 +366,7 @@ class DroidCoTRldsDataset:
             shuffle=shuffle,
             num_parallel_reads=num_parallel_reads,
         )
-        
+
         dataset = dataset.shard(jax.process_count(), jax.process_index())
 
         # Enable non-deterministic mapping and other tf.data optimizations for throughput
@@ -368,18 +379,20 @@ class DroidCoTRldsDataset:
         # ---------------------------------------------------------------------
         FEATURES = {
             "episode_id": tf.io.FixedLenFeature([], tf.string),
-            "lang_ser":   tf.io.FixedLenFeature([], tf.string),
+            "lang_ser": tf.io.FixedLenFeature([], tf.string),
         }
+
         def _parse(record):
             ex = tf.io.parse_single_example(record, FEATURES)
             lang = tf.io.parse_tensor(ex["lang_ser"], out_type=tf.string)  # shape: [T+1]
             return ex["episode_id"], lang
 
         files = tf.io.gfile.glob(f"{language_action_dir}/tfds_language_actions-*.tfrecord.gz")
-        ds = tf.data.TFRecordDataset(
-            files, compression_type="GZIP", num_parallel_reads=tf.data.AUTOTUNE
-        ).map(_parse, num_parallel_calls=tf.data.AUTOTUNE
-        ).prefetch(tf.data.AUTOTUNE)
+        ds = (
+            tf.data.TFRecordDataset(files, compression_type="GZIP", num_parallel_reads=tf.data.AUTOTUNE)
+            .map(_parse, num_parallel_calls=tf.data.AUTOTUNE)
+            .prefetch(tf.data.AUTOTUNE)
+        )
         episodes, lang_serialized = [], []
         for ep_id, lang in ds:
             episodes.append(ep_id.numpy().decode())
@@ -394,7 +407,7 @@ class DroidCoTRldsDataset:
         )
 
         print_memory_usage("After building lang_table")
-        
+
         # ---------------------------------------------------------------------
         # 3. Episode-ID table  (valid_eids → True)
         # ---------------------------------------------------------------------
@@ -554,7 +567,7 @@ class DroidCoTRldsDataset:
             # .cache() .shuffle() .prefetch(...)  ↳ whatever else you need
         )
 
-        want_val = (split == "val")
+        want_val = split == "val"
 
         def _split_filter(traj):
             episode_id = _episode_id_from_traj(traj)  # scalar tf.string
@@ -564,13 +577,13 @@ class DroidCoTRldsDataset:
             a1 = tf.debugging.assert_greater(
                 tf.strings.length(episode_id),
                 0,
-                message="[_split_filter] Empty/missing episode_id; expected pre-filtering."
+                message="[_split_filter] Empty/missing episode_id; expected pre-filtering.",
             )
             # 2) episode_id must exist in eid_table (has language actions)
             a2 = tf.debugging.assert_equal(
                 eid_table.lookup(episode_id),
                 True,
-                message="[_split_filter] episode_id not found in eid_table (no lang actions / bad metadata)."
+                message="[_split_filter] episode_id not found in eid_table (no lang actions / bad metadata).",
             )
 
             # Make sure assertions run before we use episode_id.
@@ -578,10 +591,10 @@ class DroidCoTRldsDataset:
                 episode_id = tf.identity(episode_id)
 
             # --- Deterministic hash split ---
-            salt   = tf.strings.as_string(split_seed)
-            key    = tf.strings.join([salt, episode_id])
+            salt = tf.strings.as_string(split_seed)
+            key = tf.strings.join([salt, episode_id])
             bucket = tf.strings.to_hash_bucket_fast(key, 1000)
-            thr    = tf.cast(int(val_fraction * 1000), tf.int64)
+            thr = tf.cast(int(val_fraction * 1000), tf.int64)
             is_val = bucket < thr
 
             return is_val if want_val else tf.logical_not(is_val)
@@ -687,21 +700,26 @@ class DroidCoTRldsDataset:
             return traj
 
         if DEBUG_TIMING:
+
             def _wrap_timed_map(fn, name):
                 def _inner(x):
                     t0 = tf.timestamp()
                     y = fn(x)
                     t1 = tf.timestamp()
                     ms = (t1 - t0) * 1000.0
+
                     def _log(ms_np):
                         try:
                             logging.info(f"[tf.data] {name} ms={float(ms_np):.1f}")
                         except Exception:
                             pass
                         return np.int64(0)
+
                     _ = tf.py_function(_log, [ms], Tout=tf.int64)
                     return y
+
                 return _inner
+
             dataset = dataset.traj_map(_wrap_timed_map(restructure, "restructure"), num_parallel_calls)
             dataset = dataset.traj_map(_wrap_timed_map(chunk_actions, "chunk_actions"), num_parallel_calls)
         else:
@@ -710,39 +728,39 @@ class DroidCoTRldsDataset:
 
         def _sum_language_actions(language_actions_batch):
             """Helper function to sum over a batch of language actions.
-            
+
             Args:
                 language_actions_batch: Tensor of shape [summation_steps] containing language action strings
-                
+
             Returns:
                 A single string representing the summed language action
             """
             # Use py_function to implement the complex string parsing and summation logic
             # This allows us to use Python string operations while keeping the function traceable
-            
+
             def _python_sum_language_actions(actions_np):
                 """Python implementation of language action summation."""
                 import re
-                
+
                 # Dictionary to store summed movements by direction
                 movement_sums = {}
-                
+
                 # Define opposite directions for cancellation
                 opposite_directions = {
-                    'left': 'right',
-                    'right': 'left',
-                    'forward': 'backward',
-                    'backward': 'forward',
-                    'up': 'down',
-                    'down': 'up'
+                    "left": "right",
+                    "right": "left",
+                    "forward": "backward",
+                    "backward": "forward",
+                    "up": "down",
+                    "down": "up",
                 }
-                
+
                 # Convert possible EagerTensor to numpy array of bytes
                 try:
                     actions_arr = actions_np.numpy()
                 except AttributeError:
                     actions_arr = actions_np
-                
+
                 for action_str in actions_arr:
                     # Ensure we operate on a Python string
                     if isinstance(action_str, (bytes, bytearray)):
@@ -751,62 +769,58 @@ class DroidCoTRldsDataset:
                         s = str(action_str)
                     if not s:
                         continue
-                    
+
                     # Split by " and " to get individual movements
                     movements = s.split(" and ")
-                    
+
                     for movement in movements:
                         # Parse movement: "move direction value unit"
                         # Use regex to handle variations in spacing
-                        match = re.match(r'move\s+(\w+)\s+([\d.]+)\s*(\w+)', movement.strip())
+                        match = re.match(r"move\s+(\w+)\s+([\d.]+)\s*(\w+)", movement.strip())
                         if match:
                             direction = match.group(1)
                             value = float(match.group(2))
                             unit = match.group(3)
-                            
+
                             # Check if we have an opposite direction already
                             opposite = opposite_directions.get(direction)
                             if opposite in movement_sums:
                                 # Cancel out opposite movements
-                                opposite_value = movement_sums[opposite]['value']
+                                opposite_value = movement_sums[opposite]["value"]
                                 if value > opposite_value:
                                     # Current direction wins
-                                    movement_sums[direction] = {'value': value - opposite_value, 'unit': unit}
+                                    movement_sums[direction] = {"value": value - opposite_value, "unit": unit}
                                     del movement_sums[opposite]
                                 elif value < opposite_value:
                                     # Opposite direction wins
-                                    movement_sums[opposite]['value'] = opposite_value - value
+                                    movement_sums[opposite]["value"] = opposite_value - value
                                 else:
                                     # Equal values, cancel out completely
                                     del movement_sums[opposite]
                             else:
                                 # Initialize if direction not seen before
                                 if direction not in movement_sums:
-                                    movement_sums[direction] = {'value': 0.0, 'unit': unit}
-                                
+                                    movement_sums[direction] = {"value": 0.0, "unit": unit}
+
                                 # Add the value
-                                movement_sums[direction]['value'] += value
-                
+                                movement_sums[direction]["value"] += value
+
                 # Build the result string
                 if not movement_sums:
                     return ""
-                
+
                 result_parts = []
                 for direction, data in movement_sums.items():
-                    if data['value'] > 0:  # Only include positive values
+                    if data["value"] > 0:  # Only include positive values
                         result_parts.append(f"move {direction} {data['value']:.2f} {data['unit']}")
-                
+
                 return " and ".join(result_parts)
-            
+
             # Convert TensorFlow tensor to numpy and back
-            result = tf.py_function(
-                _python_sum_language_actions,
-                [language_actions_batch],
-                tf.string
-            )
-            
+            result = tf.py_function(_python_sum_language_actions, [language_actions_batch], tf.string)
+
             return result
-        
+
         def group_language_actions(traj):
             """Compute per-timestep summed language actions over future steps.
 
@@ -816,7 +830,7 @@ class DroidCoTRldsDataset:
             have a single language string aligned to its action chunk.
             """
             traj_len = tf.shape(traj["language_actions"])[0]
-            
+
             # First, create indices for summation (current + future steps)
             summation_indices = tf.broadcast_to(
                 tf.range(summation_steps)[None],
@@ -825,15 +839,15 @@ class DroidCoTRldsDataset:
                 tf.range(traj_len)[:, None],
                 [traj_len, summation_steps],
             )
-            
+
             # Cap to length of the sequence (same as chunk_actions)
             summation_indices = tf.minimum(summation_indices, traj_len - 1)
-            
+
             # Gather the language actions for summation
             language_actions_to_sum = tf.gather(traj["language_actions"], summation_indices)
             # Keep unsummed window for debugging: shape [traj_len, summation_steps]
             traj["language_actions"] = language_actions_to_sum
-            
+
             # Sum over the language actions
             # summed_language_actions = tf.map_fn(
             #     _sum_language_actions,
@@ -857,19 +871,23 @@ class DroidCoTRldsDataset:
             return tf.reduce_any(tf.abs(traj["actions"][: action_chunk_size // 2]) > 1e-3)
 
         if DEBUG_TIMING:
+
             def _timed_filter(x):
                 t0 = tf.timestamp()
                 out = filter_idle(x)
                 t1 = tf.timestamp()
                 ms = (t1 - t0) * 1000.0
+
                 def _log(ms_np):
                     try:
                         logging.info(f"[tf.data] filter_idle ms={float(ms_np):.1f}")
                     except Exception:
                         pass
                     return np.int64(0)
+
                 _ = tf.py_function(_log, [ms], Tout=tf.int64)
                 return out
+
             dataset = dataset.filter(_timed_filter)
         else:
             dataset = dataset.filter(filter_idle)
@@ -891,6 +909,11 @@ class DroidCoTRldsDataset:
         if shuffle:
             dataset = dataset.shuffle(shuffle_buffer_size)
 
+        # If requested, cap the number of flattened samples for overfitting tests.
+        # We cache the capped set so repeating yields the same fixed subset.
+        if max_samples is not None:
+            dataset = dataset.take(int(max_samples)).cache().repeat()
+
         if DEBUG_TIMING:
             dataset = dataset.frame_map(_wrap_timed_map(decode_images, "decode_images"), num_parallel_calls)
         else:
@@ -908,7 +931,7 @@ class DroidCoTRldsDataset:
         self.shuffle = shuffle
         self.action_chunk_size = action_chunk_size
         self.summation_steps = summation_steps
-        
+        self.max_samples = max_samples
 
     def __iter__(self):
         it = self.dataset.as_numpy_iterator()

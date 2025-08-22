@@ -54,5 +54,6 @@ def test_pi0_cot_action_expert_lora_freeze():
     assert len(non_embedder) > 0
     assert all("_1" in p for p in non_embedder)
 
+
 if __name__ == "__main__":
     test_pi0_cot_embedder_frozen_no_lora()

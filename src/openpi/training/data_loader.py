@@ -3,7 +3,6 @@ import multiprocessing
 import os
 import typing
 from typing import Protocol, SupportsIndex, TypeVar
-import time
 
 import jax
 import jax.numpy as jnp
@@ -21,19 +20,18 @@ try:
 except:
     pass
 
+
 import openpi.models.model as _model
 import openpi.training.config as _config
 from openpi.training.droid_rlds_dataset import DroidCoTRldsDataset
 from openpi.training.droid_rlds_dataset import DroidRldsDataset
 import openpi.transforms as _transforms
 
-import logging
-
-
 T_co = TypeVar("T_co", covariant=True)
 
 # Enable lightweight timing logs when set to "1"
 DEBUG_TIMING = os.environ.get("OPENPI_TIMING", "0") == "1"
+
 
 class Dataset(Protocol[T_co]):
     """Interface for a dataset with random access."""
@@ -110,7 +108,7 @@ class IterableTransformedDataset(IterableDataset[T_co]):
                 transformed = [self._transform(s) for s in individual_samples]
 
                 out = jax.tree.map(lambda *x: np.stack(x, axis=0), *transformed)
-            
+
                 yield out
             else:
                 out = self._transform(sample)
@@ -250,6 +248,7 @@ def create_rlds_dataset(
             split=split,
             val_fraction=val_fraction,
             split_seed=split_seed,
+            max_samples=getattr(data_config, "max_samples", None),
         )
     return DroidRldsDataset(
         data_dir=data_config.rlds_data_dir,
@@ -620,7 +619,6 @@ class RLDSDataLoader:
                 sharding = jax.sharding.PositionalSharding(jax.devices())
         self._sharding = sharding
 
-        
     def _to_device(self, batch):
         def put(x):
             if not (hasattr(x, "shape") and x.shape):
@@ -628,15 +626,13 @@ class RLDSDataLoader:
             if isinstance(self._sharding, jax.sharding.NamedSharding):
                 # Assemble a global jax.Array across processes.
                 return jax.make_array_from_process_local_data(self._sharding, x)
-            else:
-                # Per-host sharding (PositionalSharding etc.).
-                return jax.device_put(x, self._sharding)
+            # Per-host sharding (PositionalSharding etc.).
+            return jax.device_put(x, self._sharding)
+
         return jax.tree_util.tree_map(put, batch)
 
-
     def _assert_divisible(self, batch):
-        sizes = [x.shape[0] for x in jax.tree_util.tree_leaves(batch)
-                if hasattr(x, "shape") and x.shape]
+        sizes = [x.shape[0] for x in jax.tree_util.tree_leaves(batch) if hasattr(x, "shape") and x.shape]
         if not sizes:
             return
         b = max(sizes)  # this is per-host if dataset was shard(...)’ed
@@ -647,7 +643,7 @@ class RLDSDataLoader:
             data_axis_size = mesh.shape.get("data", None)  # or use your DATA_AXIS constant
             if data_axis_size is None:
                 return  # no data axis; nothing to check
-            
+
             # Special case: for cross-host FSDP when data_axis_size == 1,
             # we don't need data parallelism across hosts - each host gets the same data
             # and works together on FSDP sharding
@@ -655,9 +651,11 @@ class RLDSDataLoader:
                 # Cross-host FSDP: validate against local device count instead
                 ldc = jax.local_device_count()
                 if b % ldc != 0:
-                    raise ValueError(f"Per-host batch {b} must be divisible by local_device_count {ldc} for cross-host FSDP")
+                    raise ValueError(
+                        f"Per-host batch {b} must be divisible by local_device_count {ldc} for cross-host FSDP"
+                    )
                 return
-            
+
             # Standard data parallelism validation
             dp_per_host = data_axis_size // self._n_proc
             if dp_per_host == 0 or data_axis_size % self._n_proc != 0:
@@ -678,8 +676,7 @@ class RLDSDataLoader:
             return batch
 
         # infer global batch size
-        sizes = [x.shape[0] for x in jax.tree_util.tree_leaves(batch)
-                if hasattr(x, "shape") and x.shape]
+        sizes = [x.shape[0] for x in jax.tree_util.tree_leaves(batch) if hasattr(x, "shape") and x.shape]
         if not sizes:
             return batch
         B = max(sizes)
@@ -693,7 +690,6 @@ class RLDSDataLoader:
             return x  # leave non-batch leaves alone
 
         return jax.tree_util.tree_map(_slice, batch)
-
 
     # ──────────────────────────────────────────────────────────────────────────
     def __iter__(self):
@@ -714,7 +710,7 @@ class RLDSDataLoader:
             batch = self._local_slice(batch)
             out = self._to_device(batch)
             seen += 1
-          
+
             yield out
 
 

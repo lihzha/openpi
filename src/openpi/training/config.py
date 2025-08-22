@@ -10,9 +10,9 @@ from typing import Any, Protocol, TypeAlias
 
 import etils.epath as epath
 import flax.nnx as nnx
-from typing_extensions import override, Annotated
+from typing_extensions import override
 import tyro
-from tyro import extras as _tx
+
 import openpi.models.model as _model
 import openpi.models.pi0 as pi0
 import openpi.models.pi0_cot as pi0_cot
@@ -113,6 +113,8 @@ class DataConfig:
     shuffle_buffer_size: int = 250_000
     # For CoT-style datasets (e.g., DROID-CoT): number of future steps to sum over for language actions
     summation_steps: int = 15
+    # Optional cap on number of unique flattened samples for overfitting tests
+    max_samples: int | None = None
 
 
 class GroupFactory(Protocol):
@@ -491,6 +493,7 @@ class RLDSDroidCoTDataConfig(DataConfigFactory):
     shuffle_buffer_size: int = 250_000
     # Number of future steps to sum over for language actions
     summation_steps: int = 15
+    max_samples: int | None = None
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
@@ -542,6 +545,7 @@ class RLDSDroidCoTDataConfig(DataConfigFactory):
             language_action_dir=self.language_action_dir,
             shuffle_buffer_size=self.shuffle_buffer_size,
             summation_steps=self.summation_steps,
+            max_samples=self.max_samples,
         )
 
 
@@ -564,7 +568,6 @@ class TrainConfig:
     weight_loader: weight_loaders.WeightLoaderChoice = dataclasses.field(
         default_factory=weight_loaders.WeightLoaderChoice
     )
-    
 
     lr_schedule: _optimizer.LRScheduleConfig = dataclasses.field(default_factory=_optimizer.CosineDecaySchedule)
     optimizer: _optimizer.OptimizerConfig = dataclasses.field(default_factory=_optimizer.AdamW)
@@ -694,14 +697,54 @@ _CONFIGS = [
                 assets_dir="gs://v6_east1d/assets/pi0_droid_cot_v4",
                 asset_id="droid",
             ),
+            max_samples=150,
         ),
         num_train_steps=100_000,
         fsdp_devices=8,
-        batch_size=256,
+        batch_size=1,
         weight_loader=weight_loaders.WeightLoaderChoice(kind="paligemma"),
         # weight_loader=weight_loaders.WeightLoaderChoice(kind="checkpoint", params_path="gs://openpi-assets/checkpoints/pi0_base/params"),
         assets_base_dir="gs://v6_east1d/assets",
         checkpoint_base_dir="gs://v6_east1d/checkpoints",
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=1e-4,
+            decay_steps=1_000_000,
+            decay_lr=1e-4,
+        ),
+        save_interval=1000,
+        log_interval=50,
+        # keep_period=20_000,
+    ),
+    TrainConfig(
+        name="pi0_droid_cot_local",
+        model=pi0_cot.Pi0CoTConfig(
+            action_horizon=10,
+            max_token_len=110,
+        ),
+        data=RLDSDroidCoTDataConfig(
+            repo_id="droid",
+            rlds_data_dir="/n/fs/robot-data/data/",
+            language_action_dir="/n/fs/robot-data/vlm-syn/droid-lang-actions",
+            action_space=droid_rlds_dataset.DroidActionSpace.CARTESIAN_POSITION,
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+            shuffle_buffer_size=250_000,
+            assets=AssetsConfig(
+                assets_dir="/n/fs/robot-data/pi0-cot/assets/pi0_droid_cot_v4",
+                asset_id="droid",
+            ),
+            max_samples=150,
+        ),
+        num_train_steps=100_000,
+        fsdp_devices=8,
+        batch_size=1,
+        weight_loader=weight_loaders.WeightLoaderChoice(
+            kind="checkpoint", params_path="/n/fs/robot-data/cache/openpi/openpi-assets/checkpoints/pi0_base/params"
+        ),
+        assets_base_dir="/n/fs/robot-data/pi0-cot/assets",
+        checkpoint_base_dir="/n/fs/robot-data/pi0-cot/checkpoints",
         lr_schedule=_optimizer.CosineDecaySchedule(
             warmup_steps=1_000,
             peak_lr=1e-4,
@@ -801,7 +844,9 @@ _CONFIGS = [
         ),
         # Here you define which pre-trained checkpoint you want to load to initialize the model.
         # This should match the model config you chose above -- i.e. in this case we use the pi0 base model.
-        weight_loader=weight_loaders.WeightLoaderChoice(kind="checkpoint", params_path="gs://openpi-assets/checkpoints/pi0_base/params"),
+        weight_loader=weight_loaders.WeightLoaderChoice(
+            kind="checkpoint", params_path="gs://openpi-assets/checkpoints/pi0_base/params"
+        ),
         # Below you can define other hyperparameters like the learning rate, number of training steps, etc.
         # Check the base TrainConfig class for a full list of available hyperparameters.
         num_train_steps=30_000,
@@ -814,7 +859,9 @@ _CONFIGS = [
             repo_id="physical-intelligence/libero",
             base_config=DataConfig(prompt_from_task=True),
         ),
-        weight_loader=weight_loaders.WeightLoaderChoice(kind="checkpoint", params_path="gs://openpi-assets/checkpoints/pi0_base/params"),
+        weight_loader=weight_loaders.WeightLoaderChoice(
+            kind="checkpoint", params_path="gs://openpi-assets/checkpoints/pi0_base/params"
+        ),
         num_train_steps=30_000,
         # The freeze filter defines which parameters should be frozen during training.
         # We have a convenience function in the model config that returns the default freeze filter
@@ -844,7 +891,9 @@ _CONFIGS = [
             base_config=DataConfig(prompt_from_task=True),
         ),
         # Note that we load the pi0-FAST base model checkpoint here.
-        weight_loader=weight_loaders.WeightLoaderChoice(kind="checkpoint", params_path="gs://openpi-assets/checkpoints/pi0_fast_base/params"),
+        weight_loader=weight_loaders.WeightLoaderChoice(
+            kind="checkpoint", params_path="gs://openpi-assets/checkpoints/pi0_fast_base/params"
+        ),
         num_train_steps=30_000,
     ),
     TrainConfig(
@@ -858,7 +907,9 @@ _CONFIGS = [
             repo_id="physical-intelligence/libero",
             base_config=DataConfig(prompt_from_task=True),
         ),
-        weight_loader=weight_loaders.WeightLoaderChoice(kind="checkpoint", params_path="gs://openpi-assets/checkpoints/pi0_fast_base/params"),
+        weight_loader=weight_loaders.WeightLoaderChoice(
+            kind="checkpoint", params_path="gs://openpi-assets/checkpoints/pi0_fast_base/params"
+        ),
         num_train_steps=30_000,
         # Again, make sure to match the model config above when extracting the freeze filter
         # that specifies which parameters should be frozen during LoRA finetuning.
@@ -899,7 +950,9 @@ _CONFIGS = [
                 ]
             ),
         ),
-        weight_loader=weight_loaders.WeightLoaderChoice(kind="checkpoint", params_path="gs://openpi-assets/checkpoints/pi0_base/params"),
+        weight_loader=weight_loaders.WeightLoaderChoice(
+            kind="checkpoint", params_path="gs://openpi-assets/checkpoints/pi0_base/params"
+        ),
         num_train_steps=20_000,
     ),
     #
@@ -918,7 +971,9 @@ _CONFIGS = [
             rlds_data_dir="<path_to_droid_rlds_dataset>",
             action_space=droid_rlds_dataset.DroidActionSpace.JOINT_POSITION,
         ),
-        weight_loader=weight_loaders.WeightLoaderChoice(kind="checkpoint", params_path="gs://openpi-assets/checkpoints/pi0_fast_base/params"),
+        weight_loader=weight_loaders.WeightLoaderChoice(
+            kind="checkpoint", params_path="gs://openpi-assets/checkpoints/pi0_fast_base/params"
+        ),
         lr_schedule=_optimizer.CosineDecaySchedule(
             warmup_steps=1_000,
             peak_lr=5e-5,
@@ -943,7 +998,9 @@ _CONFIGS = [
             default_prompt="Transfer cube",
             use_delta_joint_actions=False,
         ),
-        weight_loader=weight_loaders.WeightLoaderChoice(kind="checkpoint", params_path="gs://openpi-assets/checkpoints/pi0_base/params"),
+        weight_loader=weight_loaders.WeightLoaderChoice(
+            kind="checkpoint", params_path="gs://openpi-assets/checkpoints/pi0_base/params"
+        ),
         num_train_steps=20_000,
     ),
     #
@@ -965,7 +1022,9 @@ _CONFIGS = [
         data=FakeDataConfig(),
         batch_size=2,
         model=pi0.Pi0Config(paligemma_variant="dummy", action_expert_variant="dummy"),
-        weight_loader=weight_loaders.WeightLoaderChoice(kind="checkpoint", params_path="./checkpoints/debug/debug/9/params"),
+        weight_loader=weight_loaders.WeightLoaderChoice(
+            kind="checkpoint", params_path="./checkpoints/debug/debug/9/params"
+        ),
         overwrite=True,
         exp_name="debug",
         num_train_steps=10,
@@ -980,6 +1039,7 @@ _CONFIGS_DICT = {config.name: config for config in _CONFIGS}
 
 def cli() -> TrainConfig:
     return tyro.extras.overridable_config_cli({k: (k, v) for k, v in _CONFIGS_DICT.items()})
+
 
 # def cli() -> TrainConfig:
 #     # Build a real subcommand type from your default instances by name.

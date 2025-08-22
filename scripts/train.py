@@ -1,6 +1,7 @@
 import dataclasses
 import functools
 import logging
+import os
 import platform
 from typing import Any
 
@@ -16,6 +17,7 @@ import optax
 from rail_tpu_utils import prevent_cross_region
 import tqdm_loggable.auto as tqdm
 import wandb
+
 import openpi.models.model as _model
 import openpi.shared.array_typing as at
 import openpi.shared.nnx_utils as nnx_utils
@@ -26,7 +28,6 @@ import openpi.training.optimizer as _optimizer
 import openpi.training.sharding as sharding
 import openpi.training.utils as training_utils
 import openpi.training.weight_loaders as _weight_loaders
-
 
 
 def init_logging():
@@ -87,6 +88,7 @@ def log_mesh_and_sharding_header(mesh: jax.sharding.Mesh, *, title: str):
     mesh_desc = ", ".join(f"{k}={v}" for k, v in mesh.shape.items())
     try:
         import numpy as _np
+
         total = int(_np.prod(list(mesh.shape.values())))
     except Exception:
         total = "?"
@@ -96,6 +98,7 @@ def log_mesh_and_sharding_header(mesh: jax.sharding.Mesh, *, title: str):
 def log_batch_sharding(batch):
     def fmt_path(path):
         return jax.tree_util.keystr(path)
+
     lines = []
     for path, arr in _pytree_array_leaves(batch):
         try:
@@ -116,6 +119,7 @@ def log_batch_sharding(batch):
 
 def log_param_sharding_planned(state_sharding):
     from openpi.training import sharding as _sh
+
     planned = state_sharding.params
     entries = []
     sharded = replicated = 0
@@ -184,6 +188,50 @@ def init_wandb(config: _config.TrainConfig, *, resuming: bool, log_code: bool = 
 
     if log_code:
         wandb.run.log_code(epath.Path(__file__).parent.parent)
+
+
+def _maybe_initialize_jax_distributed():
+    """Initialize JAX distributed only when multi-process is configured.
+
+    This allows single-process GPU/CPU runs without requiring coordination service.
+    """
+    # Already initialized → nothing to do
+    try:
+        if getattr(jax.distributed, "is_initialized", lambda: False)():
+            return
+    except Exception:
+        # Older JAX versions may not have is_initialized
+        pass
+
+    env = os.environ
+    should_init = False
+    # Common envs signaling multi-process setups
+    if env.get("JAX_COORDINATION_SERVICE_ADDR"):
+        should_init = True
+    try:
+        if int(env.get("JAX_PROCESS_COUNT", "1")) > 1:
+            should_init = True
+        if int(env.get("COORDINATOR_NUM_PROCESSES", "1")) > 1:
+            should_init = True
+    except Exception:
+        pass
+
+    if not should_init:
+        logging.info("Single-process run detected; skipping jax.distributed.initialize().")
+        return
+
+    try:
+        jax.distributed.initialize()
+        logging.info("Initialized JAX distributed runtime.")
+    except Exception as e:
+        logging.info("Failed to initialize jax.distributed (continuing single-process): %s", e)
+
+
+def _is_tpu_runtime() -> bool:
+    try:
+        return any(d.platform == "tpu" for d in jax.devices())
+    except Exception:
+        return False
 
 
 def _load_weights_and_validate(loader: _weight_loaders.WeightLoader, params_shape: at.Params) -> at.Params:
@@ -336,13 +384,34 @@ def eval_step(
 
 
 def main(config: _config.TrainConfig):
-    jax.distributed.initialize()
+    _maybe_initialize_jax_distributed()
     data_dir = save_dir = config.data.rlds_data_dir
-    prevent_cross_region(data_dir, save_dir)
+    if _is_tpu_runtime() and (str(data_dir).startswith("gs://") or str(save_dir).startswith("gs://")):
+        prevent_cross_region(data_dir, save_dir)
 
-    assert jax.device_count() % config.fsdp_devices == 0
-    # Prefer intra-host FSDP:
-    # assert jax.local_device_count() % config.fsdp_devices == 0  # holds for 1,2,4 on v4 2x2x2
+    # Determine effective FSDP devices for single-process GPU/CPU runs.
+    process_count = getattr(jax, "process_count", lambda: 1)()
+    local_devices = getattr(jax, "local_device_count", lambda: 1)()
+    global_devices = getattr(jax, "device_count", lambda: local_devices)()
+    if process_count == 1:
+        # Choose the largest divisor of available devices not exceeding configured fsdp_devices
+        target = min(config.fsdp_devices, max(1, local_devices))
+        effective_fsdp_devices = 1
+        for d in range(target, 0, -1):
+            if global_devices % d == 0:
+                effective_fsdp_devices = d
+                break
+        if effective_fsdp_devices != config.fsdp_devices:
+            logging.info(
+                "Using fsdp_devices=%d for single-process run (available devices=%d)",
+                effective_fsdp_devices,
+                global_devices,
+            )
+    else:
+        effective_fsdp_devices = config.fsdp_devices
+        assert global_devices % effective_fsdp_devices == 0
+    # Prefer intra-host FSDP when single process.
+    # assert jax.local_device_count() % effective_fsdp_devices == 0
 
     init_logging()
     logging.info(config.data.summation_steps)
@@ -358,21 +427,13 @@ def main(config: _config.TrainConfig):
     rng = jax.random.key(config.seed)
     train_rng, init_rng = jax.random.split(rng)
 
-    mesh = sharding.make_mesh(config.fsdp_devices)
+    mesh = sharding.make_mesh(effective_fsdp_devices)
     data_sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec(sharding.DATA_AXIS))
     replicated_sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec())
     # Human-readable mesh overview
     log_mesh_and_sharding_header(mesh, title="Device mesh")
     logging.info("Data sharding spec: %s", _format_sharding(data_sharding))
     logging.info("Replicated sharding spec: %s", _format_sharding(replicated_sharding))
-
-    checkpoint_manager, resuming = _checkpoints.initialize_checkpoint_dir(
-        config.checkpoint_dir,
-        keep_period=config.keep_period,
-        overwrite=config.overwrite,
-        resume=config.resume,
-    )
-    init_wandb(config, resuming=resuming, enabled=config.wandb_enabled)
 
     data_loader = _data_loader.create_data_loader(
         config,
@@ -388,7 +449,7 @@ def main(config: _config.TrainConfig):
         shuffle=False,
         split="val",
     )
-    
+
     val_iter = iter(val_loader)
     logging.info("Before getting batch")
     batch = next(data_iter)
@@ -397,6 +458,69 @@ def main(config: _config.TrainConfig):
     # Sharding details for the first batch
     log_batch_sharding(batch)
 
+    # # Optional sanity check: exhaust data_iter until a repeated sample is seen
+    # # when training with a capped sample set (e.g., max_samples in RLDS CoT).
+    # tok = data_loader._data_loader._dataset._transform.transforms[-1].tokenizer
+
+    # max_samples_cfg = getattr(config.data, "max_samples", None)
+    # logging.info("Running capped-samples sanity check (expect repeat after ~%s samples)", max_samples_cfg)
+    # seen = set()
+    # total = 0
+    # repeated = False
+    # test_iter = iter(data_loader)
+    # while not repeated:
+    #     test_batch = next(test_iter)
+    #     # test_batch is (Observation, Actions)
+    #     obs = test_batch[0]
+    #     lang_actions_encoded = obs.tokenized_prompt
+    #     # Use the first available camera stream as a stable fingerprint basis
+    #     first_cam = next(iter(obs.images.values()))
+    #     B = first_cam.shape[0]
+    #     for i in range(B):
+    #         img_bytes = bytes(memoryview(jax.device_get(first_cam[i, 0]).astype("uint8").tobytes()))
+    #         h = hashlib.sha1(img_bytes).hexdigest()
+    #         if h in seen:
+    #             repeated = True
+    #             break
+    #         lang_action = jax.device_get(tok.decode(lang_actions_encoded[i]))
+    #         images = jax.device_get(first_cam[i])
+    #         images = (images + 1) / 2
+    #         img0 = images[0]
+    #         img1 = images[-1]
+
+    #         fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+    #         axes[0].imshow(img0)
+    #         axes[0].axis("off")
+    #         axes[0].set_title("t=0s")
+    #         # Write language action on t=0s image
+    #         _action_text = str(lang_action)
+    #         axes[0].text(
+    #             0.01,
+    #             0.99,
+    #             _action_text,
+    #             transform=axes[0].transAxes,
+    #             va="top",
+    #             ha="left",
+    #             fontsize=10,
+    #             color="white",
+    #             bbox=dict(facecolor="black", alpha=0.5, pad=3),
+    #         )
+    #         axes[1].imshow(img1)
+    #         axes[1].axis("off")
+    #         axes[1].set_title("t≈+1s")
+    #         plt.suptitle("Initial vs +1s")
+    #         plt.savefig(f"initial_vs_1s_{total}.png")
+    #         seen.add(h)
+    #         total += 1
+    # logging.info("Capped-samples sanity: unique before repeat=%d (configured max_samples=%s)", total, max_samples_cfg)
+
+    checkpoint_manager, resuming = _checkpoints.initialize_checkpoint_dir(
+        config.checkpoint_dir,
+        keep_period=config.keep_period,
+        overwrite=config.overwrite,
+        resume=config.resume,
+    )
+    init_wandb(config, resuming=resuming, enabled=config.wandb_enabled)
     # Log images from first batch to sanity check.
     images_to_log = [
         wandb.Image(np.concatenate([np.array(img[i]) for img in batch[0].images.values()], axis=1))
@@ -410,7 +534,6 @@ def main(config: _config.TrainConfig):
     # Planned vs actual parameter sharding
     log_param_sharding_planned(train_state_sharding)
     log_param_sharding_actual(train_state.params)
-
     if resuming:
         train_state = _checkpoints.restore_state(checkpoint_manager, train_state, data_loader)
 
@@ -488,6 +611,7 @@ def main(config: _config.TrainConfig):
 
     logging.info("Waiting for checkpoint manager to finish")
     checkpoint_manager.wait_until_finished()
+
 
 if __name__ == "__main__":
     main(_config.cli())
