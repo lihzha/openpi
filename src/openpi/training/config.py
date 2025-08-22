@@ -701,7 +701,7 @@ _CONFIGS = [
         ),
         num_train_steps=100_000,
         fsdp_devices=8,
-        batch_size=1,
+        batch_size=256,
         weight_loader=weight_loaders.WeightLoaderChoice(kind="paligemma"),
         # weight_loader=weight_loaders.WeightLoaderChoice(kind="checkpoint", params_path="gs://openpi-assets/checkpoints/pi0_base/params"),
         assets_base_dir="gs://v6_east1d/assets",
