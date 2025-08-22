@@ -697,7 +697,6 @@ _CONFIGS = [
                 assets_dir="gs://v6_east1d/assets/pi0_droid_cot_v4",
                 asset_id="droid",
             ),
-            max_samples=150,
         ),
         num_train_steps=100_000,
         fsdp_devices=8,
