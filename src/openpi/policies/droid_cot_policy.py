@@ -26,6 +26,7 @@ def _parse_image(image) -> np.ndarray:
         image = einops.rearrange(image, "c h w -> h w c")
     return image
 
+
 def _to_str_list(x):
     if isinstance(x, (list, tuple)):
         seq = x
@@ -41,8 +42,24 @@ def _to_str_list(x):
             out.append(str(item))
     return out
 
-def _sum_language_actions(actions_list):
+
+def _sum_language_actions(actions_list, sum_method):
     import re
+
+    # Determine rounding/formatting behavior from sum_method
+    decimals = 0
+    no_number = False
+    if isinstance(sum_method, str):
+        if sum_method == "no_number":
+            no_number = True
+        else:
+            m = re.fullmatch(r"(\d+)f", sum_method)
+            if m:
+                try:
+                    decimals = int(m.group(1))
+                except Exception:
+                    decimals = 0
+
     # Accumulate per-direction totals
     totals = {
         "left": 0.0,
@@ -52,7 +69,7 @@ def _sum_language_actions(actions_list):
         "up": 0.0,
         "down": 0.0,
     }
-    units = {k: "cm" for k in totals.keys()}
+    units = dict.fromkeys(totals.keys(), "cm")
     last_gripper_value_str = None
     if actions_list is None:
         return None
@@ -77,29 +94,62 @@ def _sum_language_actions(actions_list):
             if direction in totals:
                 totals[direction] += value
                 units[direction] = unit
+
+    # Helper to format a magnitude with configured decimals
+    def _fmt_mag(x: float) -> str:
+        return f"{x:.{decimals}f}"
+
     # Compute axis-wise nets
     result = []
     # X axis: right/left
     net = totals["right"] - totals["left"]
-    if net > 0:
-        result.append(f"move right {net:.2f} {units['right']}")
-    elif net < 0:
-        result.append(f"move left {abs(net):.2f} {units['left']}")
+    if no_number:
+        if net > 0:
+            result.append("move right")
+        elif net < 0:
+            result.append("move left")
+    else:
+        mag = round(abs(net), decimals)
+        if net > 0 and mag > 0:
+            result.append(f"move right {_fmt_mag(mag)} {units['right']}")
+        elif net < 0 and mag > 0:
+            result.append(f"move left {_fmt_mag(mag)} {units['left']}")
     # Y axis: forward/backward
     net = totals["forward"] - totals["backward"]
-    if net > 0:
-        result.append(f"move forward {net:.2f} {units['forward']}")
-    elif net < 0:
-        result.append(f"move backward {abs(net):.2f} {units['backward']}")
+    if no_number:
+        if net > 0:
+            result.append("move forward")
+        elif net < 0:
+            result.append("move backward")
+    else:
+        mag = round(abs(net), decimals)
+        if net > 0 and mag > 0:
+            result.append(f"move forward {_fmt_mag(mag)} {units['forward']}")
+        elif net < 0 and mag > 0:
+            result.append(f"move backward {_fmt_mag(mag)} {units['backward']}")
     # Z axis: up/down
     net = totals["up"] - totals["down"]
-    if net > 0:
-        result.append(f"move up {net:.2f} {units['up']}")
-    elif net < 0:
-        result.append(f"move down {abs(net):.2f} {units['down']}")
-    # Append the final gripper setting if present
+    if no_number:
+        if net > 0:
+            result.append("move up")
+        elif net < 0:
+            result.append("move down")
+    else:
+        mag = round(abs(net), decimals)
+        if net > 0 and mag > 0:
+            result.append(f"move up {_fmt_mag(mag)} {units['up']}")
+        elif net < 0 and mag > 0:
+            result.append(f"move down {_fmt_mag(mag)} {units['down']}")
+
+    # Append the final gripper setting if present (rounded to 1 decimal place)
     if last_gripper_value_str is not None:
-        result.append(f"set gripper to {last_gripper_value_str}")
+        try:
+            gv = float(last_gripper_value_str)
+            result.append(f"set gripper to {gv:.1f}")
+        except Exception:
+            # Fallback to raw string if parsing fails
+            result.append(f"set gripper to {last_gripper_value_str}")
+
     return " and ".join(result)
 
 
@@ -107,6 +157,7 @@ def _sum_language_actions(actions_list):
 class DroidCoTInputs(transforms.DataTransformFn):
     # The action dimension of the model. Will be used to pad state and actions.
     action_dim: int
+    sum_decimal: str = "1f"
 
     # Determines which model will be used.
     model_type: _model.ModelType = _model.ModelType.PI0CoT
@@ -146,8 +197,9 @@ class DroidCoTInputs(transforms.DataTransformFn):
 
         if "language_actions" in data:
             seq = _to_str_list(data["language_actions"])
+            breakpoint()
             if seq is not None:
-                summed = _sum_language_actions(seq)
+                summed = _sum_language_actions(seq, self.sum_decimal)
                 if summed is not None and len(summed) > 0:
                     inputs["language_actions"] = summed
             else:
@@ -158,6 +210,7 @@ class DroidCoTInputs(transforms.DataTransformFn):
                 else:
                     raise ValueError(f"Language actions is not a bytes string: {la}")
                 inputs["language_actions"] = la
+            breakpoint()
         return inputs
 
 

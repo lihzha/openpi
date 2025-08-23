@@ -494,6 +494,7 @@ class RLDSDroidCoTDataConfig(DataConfigFactory):
     # Number of future steps to sum over for language actions
     summation_steps: int = 15
     max_samples: int | None = None
+    sum_decimal: str = "no_number"
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
@@ -516,7 +517,9 @@ class RLDSDroidCoTDataConfig(DataConfigFactory):
 
         data_transforms = _transforms.Group(
             inputs=[
-                droid_cot_policy.DroidCoTInputs(action_dim=model_config.action_dim, model_type=model_config.model_type)
+                droid_cot_policy.DroidCoTInputs(
+                    action_dim=model_config.action_dim, model_type=model_config.model_type, sum_decimal=self.sum_decimal
+                )
             ],
             outputs=[droid_cot_policy.DroidCoTOutputs()],
         )
