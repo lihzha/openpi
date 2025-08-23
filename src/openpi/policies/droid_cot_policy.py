@@ -197,7 +197,6 @@ class DroidCoTInputs(transforms.DataTransformFn):
 
         if "language_actions" in data:
             seq = _to_str_list(data["language_actions"])
-            breakpoint()
             if seq is not None:
                 summed = _sum_language_actions(seq, self.sum_decimal)
                 if summed is not None and len(summed) > 0:
@@ -210,7 +209,6 @@ class DroidCoTInputs(transforms.DataTransformFn):
                 else:
                     raise ValueError(f"Language actions is not a bytes string: {la}")
                 inputs["language_actions"] = la
-            breakpoint()
         return inputs
 
 
