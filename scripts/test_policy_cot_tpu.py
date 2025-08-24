@@ -8,6 +8,7 @@ import warnings
 import numpy as np
 from openpi_client import image_tools
 import tyro
+from tyro import extras as _tyro_extras
 
 from openpi.policies import policy as _policy
 from openpi.policies import policy_config as _policy_config
@@ -149,16 +150,14 @@ class Args:
 
 def create_policy(args: Args, policy_config: _policy_config.PolicyConfig) -> _policy.Policy:
     """Create a policy from the given arguments."""
-    match args.policy:
-        case Checkpoint():
-            return _policy_config.create_trained_policy(
-                policy_config,
-                _config.get_config(args.policy.config),
-                args.policy.dir,
-                default_prompt=args.default_prompt,
-            )
-        case _:
-            raise ValueError(f"Invalid policy type. Expected Checkpoint, got: {type(args.policy)}")
+    if isinstance(args.policy, Checkpoint):
+        return _policy_config.create_trained_policy(
+            policy_config,
+            _config.get_config(args.policy.config),
+            args.policy.dir,
+            default_prompt=args.default_prompt,
+        )
+    raise ValueError(f"Invalid policy type. Expected Checkpoint, got: {type(args.policy)}")
 
 
 def main(args: Args, config: _config.TrainConfig):
@@ -252,4 +251,16 @@ def main(args: Args, config: _config.TrainConfig):
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, force=True)
-    main(tyro.cli(Args), _config.cli())
+    # Build a single combined CLI so both policy Args and TrainConfig can be overridden together.
+    SubConfigType = _tyro_extras.subcommand_type_from_defaults(
+        {cfg.name: cfg for cfg in _config._CONFIGS},  # reuse config subcommands by name
+        prefix_names=False,
+    )
+
+    @dataclasses.dataclass
+    class CLI:
+        policy: Args
+        config: SubConfigType
+
+    parsed = tyro.cli(CLI)
+    main(parsed.policy, parsed.config)

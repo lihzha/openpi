@@ -702,7 +702,6 @@ _CONFIGS = [
             ),
             summation_steps=15,
             sum_decimal="2f",
-            max_samples=150,
         ),
         num_train_steps=100_000,
         fsdp_devices=8,
