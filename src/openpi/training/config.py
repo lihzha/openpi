@@ -494,7 +494,7 @@ class RLDSDroidCoTDataConfig(DataConfigFactory):
     # Number of future steps to sum over for language actions
     summation_steps: int = 15
     max_samples: int | None = None
-    sum_decimal: str = "no_number"
+    sum_decimal: str = "2f"
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:

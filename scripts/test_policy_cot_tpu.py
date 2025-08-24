@@ -8,7 +8,6 @@ import warnings
 import numpy as np
 from openpi_client import image_tools
 import tyro
-from tyro import extras as _tyro_extras
 
 from openpi.policies import policy as _policy
 from openpi.policies import policy_config as _policy_config
@@ -160,12 +159,15 @@ def create_policy(args: Args, policy_config: _policy_config.PolicyConfig) -> _po
     raise ValueError(f"Invalid policy type. Expected Checkpoint, got: {type(args.policy)}")
 
 
-def main(args: Args, config: _config.TrainConfig):
+def main(args: Args):
     policy_config = _policy_config.PolicyConfig(
         policy_type=_policy.PolicyType.CoTPolicy,
         use_norm_stats=False,  # We don't use norm stats in this script.
     )
     policy = create_policy(args, policy_config=policy_config)
+
+    config = _config.get_config(args.policy.config)
+    config.data.max_samples = 150
 
     data_loader = _data_loader.create_data_loader(
         config,
@@ -251,16 +253,4 @@ def main(args: Args, config: _config.TrainConfig):
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, force=True)
-    # Build a single combined CLI so both policy Args and TrainConfig can be overridden together.
-    SubConfigType = _tyro_extras.subcommand_type_from_defaults(
-        {cfg.name: cfg for cfg in _config._CONFIGS},  # reuse config subcommands by name
-        prefix_names=False,
-    )
-
-    @dataclasses.dataclass
-    class CLI:
-        policy: Args
-        config: SubConfigType
-
-    parsed = tyro.cli(CLI)
-    main(parsed.policy, parsed.config)
+    main(tyro.cli(Args))
