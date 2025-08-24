@@ -17,8 +17,6 @@ import openpi.training.data_loader as _data_loader
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
-warnings.filterwarnings("ignore", category=FutureWarning)
-
 
 # ───────────────────────── helpers ─────────────────────────
 
