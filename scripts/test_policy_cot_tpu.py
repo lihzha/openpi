@@ -1,19 +1,18 @@
 import dataclasses
 import dataclasses as dc
-import hashlib
 import logging
 from math import acos
 from math import pi
 import re
 import warnings
 
-import jax
+import jax.numpy as jnp
 import numpy as np
+from openpi_client import image_tools
 import tyro
 
 from openpi.policies import policy as _policy
 from openpi.policies import policy_config as _policy_config
-from openpi.policies.droid_cot_policy import _sum_language_actions
 import openpi.training.config as _config
 import openpi.training.data_loader as _data_loader
 
@@ -178,28 +177,28 @@ def main(args: Args):
     )
     ds = iter(data_loader)
 
-    max_samples_cfg = getattr(config.data, "max_samples", None)
+    # max_samples_cfg = getattr(config.data, "max_samples", None)
     tok = data_loader._data_loader._dataset._transform.transforms[-1].tokenizer
-    logging.info("Running capped-samples sanity check (expect repeat after ~%s samples)", max_samples_cfg)
-    seen = set()
-    total = 0
-    repeated = False
-    test_iter = iter(data_loader)
-    while not repeated:
-        test_batch = next(test_iter)
-        # test_batch is (Observation, Actions)
-        obs = test_batch[0]
-        # Use the first available camera stream as a stable fingerprint basis
-        first_cam = next(iter(obs.images.values()))
-        for i in range(first_cam.shape[0]):
-            img_bytes = bytes(memoryview(jax.device_get(first_cam[i, 0]).astype("uint8").tobytes()))
-            h = hashlib.sha1(img_bytes).hexdigest()
-            if h in seen:
-                repeated = True
-                break
-            seen.add(h)
-            total += 1
-    logging.info("Capped-samples sanity: unique before repeat=%d (configured max_samples=%s)", total, max_samples_cfg)
+    # logging.info("Running capped-samples sanity check (expect repeat after ~%s samples)", max_samples_cfg)
+    # seen = set()
+    # total = 0
+    # repeated = False
+    # test_iter = iter(data_loader)
+    # while not repeated:
+    #     test_batch = next(test_iter)
+    #     # test_batch is (Observation, Actions)
+    #     obs = test_batch[0]
+    #     # Use the first available camera stream as a stable fingerprint basis
+    #     first_cam = next(iter(obs.images.values()))
+    #     for i in range(first_cam.shape[0]):
+    #         img_bytes = bytes(memoryview(jax.device_get(first_cam[i]).astype("uint8").tobytes()))
+    #         h = hashlib.sha1(img_bytes).hexdigest()
+    #         if h in seen:
+    #             repeated = True
+    #             break
+    #         seen.add(h)
+    #         total += 1
+    # logging.info("Capped-samples sanity: unique before repeat=%d (configured max_samples=%s)", total, max_samples_cfg)
 
     totals = {
         "num_batches": 0,
@@ -211,13 +210,27 @@ def main(args: Args):
         "total_loss": 0.0,
     }
     for idx, batch in enumerate(ds):
-        outputs = policy.infer_reasoning(batch[0])["reasoning"]  # predicted string
-        seq = [s.decode() for s in tok.decode(batch[0].tokenized_prompt.tolist())]
-        assert seq is not None
-        summed = _sum_language_actions(
-            seq,
-            sum_decimal="2f",
-        )  # ground-truth string
+        curr_obs = batch[0]
+        arr = curr_obs.tokenized_prompt[0]
+        pos_2 = jnp.where(arr == 2, size=1, fill_value=-1)[0]
+        pos_108 = jnp.where(arr == 108, size=1, fill_value=-1)[0]
+        pos_1 = jnp.where(arr == 1, size=1, fill_value=-1)[0]
+        prompt = tok.decode(arr[pos_2.item() + 1 : pos_108.item()])
+        gt_lang_action = tok.decode(arr[pos_108.item() + 1 : pos_1.item()])
+        data = {
+            "observation/exterior_image_1_left": image_tools.resize_with_pad(
+                curr_obs.images["base_0_rgb"][0], 224, 224
+            ),
+            "observation/cartesian_position": curr_obs.state[0, :6],
+            "observation/gripper_position": curr_obs.state[0, 6:7],
+            "prompt": prompt,
+        }
+        outputs = policy.infer_reasoning(data)["reasoning"]  # predicted string
+        assert outputs is not None
+        # summed = _sum_language_actions(
+        #     seq,
+        #     sum_decimal="2f",
+        # )  # ground-truth string
 
         # compute losses
         # comp = losses_from_strings(outputs, summed)
@@ -230,7 +243,7 @@ def main(args: Args):
         # (optional) per-batch logging
         print(f"Batch {idx}")
         print("  Pred:", outputs)
-        print("  GT:  ", summed)
+        print("  GT:  ", gt_lang_action)
         # print("  vec_pred:", comp["vec_pred"], "vec_gt:", comp["vec_gt"])
         # print(
         #     "  l2:",
