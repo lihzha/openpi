@@ -8,9 +8,7 @@ import re
 import warnings
 
 import jax
-import matplotlib.pyplot as plt
 import numpy as np
-from openpi_client import image_tools
 import tyro
 
 from openpi.policies import policy as _policy
@@ -176,7 +174,7 @@ def main(args: Args):
     data_loader = _data_loader.create_data_loader(
         config,
         sharding=None,
-        shuffle=False,
+        shuffle=True,
     )
     ds = iter(data_loader)
 
@@ -191,44 +189,14 @@ def main(args: Args):
         test_batch = next(test_iter)
         # test_batch is (Observation, Actions)
         obs = test_batch[0]
-        lang_actions_encoded = obs.tokenized_prompt
         # Use the first available camera stream as a stable fingerprint basis
         first_cam = next(iter(obs.images.values()))
-        B = first_cam.shape[0]
-        for i in range(B):
+        for i in range(first_cam.shape[0]):
             img_bytes = bytes(memoryview(jax.device_get(first_cam[i, 0]).astype("uint8").tobytes()))
             h = hashlib.sha1(img_bytes).hexdigest()
             if h in seen:
                 repeated = True
                 break
-            lang_action = jax.device_get(tok.decode(lang_actions_encoded[i]))
-            images = jax.device_get(first_cam[i])
-            images = (images + 1) / 2
-            img0 = images[0]
-            img1 = images[-1]
-
-            fig, axes = plt.subplots(1, 2, figsize=(10, 4))
-            axes[0].imshow(img0)
-            axes[0].axis("off")
-            axes[0].set_title("t=0s")
-            # Write language action on t=0s image
-            _action_text = str(lang_action)
-            axes[0].text(
-                0.01,
-                0.99,
-                _action_text,
-                transform=axes[0].transAxes,
-                va="top",
-                ha="left",
-                fontsize=10,
-                color="white",
-                bbox=dict(facecolor="black", alpha=0.5, pad=3),
-            )
-            axes[1].imshow(img1)
-            axes[1].axis("off")
-            axes[1].set_title("t≈+1s")
-            plt.suptitle("Initial vs +1s")
-            plt.savefig(f"initial_vs_1s_{total}.png")
             seen.add(h)
             total += 1
     logging.info("Capped-samples sanity: unique before repeat=%d (configured max_samples=%s)", total, max_samples_cfg)
@@ -242,17 +210,9 @@ def main(args: Args):
         "gripper_l1": 0.0,
         "total_loss": 0.0,
     }
-    # tok = policy._input_transform.transforms[-1].tokenizer
     for idx, batch in enumerate(ds):
-        curr_obs = batch["observation"]
-        data = {
-            "observation/exterior_image_1_left": image_tools.resize_with_pad(curr_obs["image"][0], 224, 224),
-            "observation/cartesian_position": curr_obs["cartesian_position"].squeeze(0),
-            "observation/gripper_position": curr_obs["gripper_position"].squeeze(0),
-            "prompt": batch["prompt"].squeeze(0).item().decode(),
-        }
-        outputs = policy.infer_reasoning(data)["reasoning"]  # predicted string
-        seq = [s.decode() for s in batch["language_actions"].tolist()[0]]
+        outputs = policy.infer_reasoning(batch[0])["reasoning"]  # predicted string
+        seq = [s.decode() for s in tok.decode(batch[0].tokenized_prompt.tolist())]
         assert seq is not None
         summed = _sum_language_actions(
             seq,
@@ -260,52 +220,52 @@ def main(args: Args):
         )  # ground-truth string
 
         # compute losses
-        comp = losses_from_strings(outputs, summed)
+        # comp = losses_from_strings(outputs, summed)
 
         # accumulate
         totals["num_batches"] += 1
-        for k in ["l2", "angle_rad", "length_abs_diff", "scale_inv_residual", "gripper_l1", "total_loss"]:
-            totals[k] += comp[k]
+        # for k in ["l2", "angle_rad", "length_abs_diff", "scale_inv_residual", "gripper_l1", "total_loss"]:
+        #     totals[k] += comp[k]
 
         # (optional) per-batch logging
         print(f"Batch {idx}")
         print("  Pred:", outputs)
         print("  GT:  ", summed)
-        print("  vec_pred:", comp["vec_pred"], "vec_gt:", comp["vec_gt"])
-        print(
-            "  l2:",
-            comp["l2"],
-            "angle(rad):",
-            comp["angle_rad"],
-            "len|Δ|:",
-            comp["length_abs_diff"],
-            "residual:",
-            comp["scale_inv_residual"],
-            "grip|Δ|:",
-            comp["gripper_l1"],
-            "total:",
-            comp["total_loss"],
-        )
+        # print("  vec_pred:", comp["vec_pred"], "vec_gt:", comp["vec_gt"])
+        # print(
+        #     "  l2:",
+        #     comp["l2"],
+        #     "angle(rad):",
+        #     comp["angle_rad"],
+        #     "len|Δ|:",
+        #     comp["length_abs_diff"],
+        #     "residual:",
+        #     comp["scale_inv_residual"],
+        #     "grip|Δ|:",
+        #     comp["gripper_l1"],
+        #     "total:",
+        #     comp["total_loss"],
+        # )
 
-        if idx % 10 == 0:
-            # final totals and (optional) averages
-            N = max(1, totals["num_batches"])
-            print("\n=== Totals ===")
-            print(f"batches: {totals['num_batches']}")
-            print(f"L2 sum: {totals['l2']:.6f}")
-            print(f"Angle(rad) sum: {totals['angle_rad']:.6f}")
-            print(f"Length |Δ| sum: {totals['length_abs_diff']:.6f}")
-            print(f"Scale-invariant residual sum: {totals['scale_inv_residual']:.6f}")
-            print(f"Gripper L1 sum: {totals['gripper_l1']:.6f}")
-            print(f"TOTAL loss sum: {totals['total_loss']:.6f}")
+        # if idx % 10 == 0:
+        #     # final totals and (optional) averages
+        #     N = max(1, totals["num_batches"])
+        #     print("\n=== Totals ===")
+        #     print(f"batches: {totals['num_batches']}")
+        #     print(f"L2 sum: {totals['l2']:.6f}")
+        #     print(f"Angle(rad) sum: {totals['angle_rad']:.6f}")
+        #     print(f"Length |Δ| sum: {totals['length_abs_diff']:.6f}")
+        #     print(f"Scale-invariant residual sum: {totals['scale_inv_residual']:.6f}")
+        #     print(f"Gripper L1 sum: {totals['gripper_l1']:.6f}")
+        #     print(f"TOTAL loss sum: {totals['total_loss']:.6f}")
 
-            print("\n=== Averages per batch ===")
-            print(f"L2 avg: {totals['l2'] / N:.6f}")
-            print(f"Angle(rad) avg: {totals['angle_rad'] / N:.6f}")
-            print(f"Length |Δ| avg: {totals['length_abs_diff'] / N:.6f}")
-            print(f"Scale-invariant residual avg: {totals['scale_inv_residual'] / N:.6f}")
-            print(f"Gripper L1 avg: {totals['gripper_l1'] / N:.6f}")
-            print(f"TOTAL loss avg: {totals['total_loss'] / N:.6f}")
+        #     print("\n=== Averages per batch ===")
+        #     print(f"L2 avg: {totals['l2'] / N:.6f}")
+        #     print(f"Angle(rad) avg: {totals['angle_rad'] / N:.6f}")
+        #     print(f"Length |Δ| avg: {totals['length_abs_diff'] / N:.6f}")
+        #     print(f"Scale-invariant residual avg: {totals['scale_inv_residual'] / N:.6f}")
+        #     print(f"Gripper L1 avg: {totals['gripper_l1'] / N:.6f}")
+        #     print(f"TOTAL loss avg: {totals['total_loss'] / N:.6f}")
 
 
 if __name__ == "__main__":
