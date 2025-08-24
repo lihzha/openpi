@@ -8,8 +8,9 @@ import openpi.shared.download as download
 
 
 class PaligemmaTokenizer:
-    def __init__(self, max_len: int = 48):
+    def __init__(self, max_len: int = 48, left_pad: bool = False):
         self._max_len = max_len
+        self._left_pad = left_pad
 
         path = download.maybe_download("gs://big_vision/paligemma_tokenizer.model", gs={"token": "anon"})
         with path.open("rb") as f:
@@ -37,9 +38,7 @@ class PaligemmaTokenizer:
 
         return np.asarray(tokens), np.asarray(mask)
 
-    def tokenize_cot(
-        self, prompt: str, reasoning: str | None = None, left_pad: bool = True
-    ) -> tuple[np.ndarray, np.ndarray]:
+    def tokenize_cot(self, prompt: str, reasoning: str | None = None) -> tuple[np.ndarray, np.ndarray]:
         cleaned_prompt = prompt.strip().replace("_", " ").replace("\n", " ")
         # eos_id = self._tokenizer.eos_id()
         pad_id = self._tokenizer.pad_id()
@@ -64,7 +63,7 @@ class PaligemmaTokenizer:
         attn_mask = np.zeros(self._max_len, dtype=bool)
         reasoning_mask = np.zeros(self._max_len, dtype=bool)
 
-        if left_pad:
+        if self._left_pad:
             # Left pad to max length for generation/training
             pad_count = self._max_len - len(tokens)
             if pad_count > 0:

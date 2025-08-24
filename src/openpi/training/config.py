@@ -166,6 +166,7 @@ class CoTModelTransformFactory(GroupFactory):
 
     # If provided, will determine the default prompt that be used by the model.
     default_prompt: str | None = None
+    left_pad: bool = False
 
     def __call__(self, model_config: _model.BaseModelConfig) -> _transforms.Group:
         match model_config.model_type:
@@ -175,11 +176,13 @@ class CoTModelTransformFactory(GroupFactory):
                         _transforms.InjectDefaultPrompt(self.default_prompt),
                         _transforms.ResizeImages(224, 224),
                         _transforms.TokenizePromptAndReasoning(
-                            _tokenizer.PaligemmaTokenizer(model_config.max_token_len)
+                            _tokenizer.PaligemmaTokenizer(model_config.max_token_len, left_pad=self.left_pad)
                         ),
                     ],
                     outputs=[
-                        _transforms.DetokenizeReasoning(_tokenizer.PaligemmaTokenizer(model_config.max_token_len))
+                        _transforms.DetokenizeReasoning(
+                            _tokenizer.PaligemmaTokenizer(model_config.max_token_len, left_pad=self.left_pad)
+                        )
                     ],
                 )
             case _:
@@ -495,6 +498,7 @@ class RLDSDroidCoTDataConfig(DataConfigFactory):
     summation_steps: int = 15
     max_samples: int | None = None
     sum_decimal: str = "2f"
+    left_pad: bool = False
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
@@ -532,7 +536,7 @@ class RLDSDroidCoTDataConfig(DataConfigFactory):
             outputs=[_transforms.AbsoluteActions(delta_action_mask)],
         )
 
-        model_transforms = CoTModelTransformFactory()(model_config)
+        model_transforms = CoTModelTransformFactory(left_pad=self.left_pad)(model_config)
 
         assert self.rlds_data_dir is not None, "Need to set rlds data dir for RLDS data loader."
 
@@ -702,6 +706,7 @@ _CONFIGS = [
             ),
             summation_steps=15,
             sum_decimal="2f",
+            left_pad=False,
         ),
         num_train_steps=100_000,
         fsdp_devices=8,
