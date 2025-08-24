@@ -1,4 +1,5 @@
 import dataclasses
+import dataclasses as dc
 import hashlib
 import logging
 from math import acos
@@ -170,7 +171,7 @@ def main(args: Args):
     policy = create_policy(args, policy_config=policy_config)
 
     config = _config.get_config(args.policy.config)
-    config.data.max_samples = 150
+    config = dc.replace(config, data=dc.replace(config.data, max_samples=150))
 
     data_loader = _data_loader.create_data_loader(
         config,
