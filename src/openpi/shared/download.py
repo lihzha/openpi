@@ -10,8 +10,6 @@ import urllib.parse
 
 from etils import epath  # optional, but handy
 import filelock
-import fsspec
-import fsspec.generic
 import tensorflow as tf  # new
 
 # Environment variable to control cache directory path, ~/.cache/openpi will be used by default.
@@ -74,8 +72,21 @@ def maybe_download(
             raise FileNotFoundError(f"File not found at {url}")
         return p.resolve()
 
-    if parsed.scheme == "gs" and parsed.netloc in ("pi0-cot", "droid-cot"):
-        return url
+    # ── 1b. Short-circuit for gs:// already in remote cache bucket ────────────
+    # If OPENPI_DATA_HOME is a GCS bucket and the source URL is in the same
+    # bucket, don't mirror/copy; just return the original URL.
+    # This prevents redundant copies and avoids 404s when a checkpoint is a
+    # directory prefix (e.g., step number) without an object at that exact key.
+    cache_dir_probe = os.getenv(_OPENPI_DATA_HOME)
+    if parsed.scheme == "gs" and cache_dir_probe and cache_dir_probe.startswith("gs://"):
+        cache_bucket = urllib.parse.urlparse(cache_dir_probe).netloc
+        if parsed.netloc == cache_bucket:
+            try:
+                if tf.io.gfile.isdir(url) or tf.io.gfile.exists(url):
+                    return epath.Path(url)
+            except Exception:
+                # Fall through to normal download path if any errors occur.
+                pass
 
     # ── 2. Build cache path ────────────────────────────────────────────────────
     cache_dir = get_cache_dir()  # could be local or gs://
@@ -110,13 +121,12 @@ def maybe_download(
                 # Remote file exists → cache hit
                 print(f"Cache hit: {cache_path}")
                 return epath.Path(cache_path)
+        # Local cache invalidation policy
+        elif _should_invalidate_cache(cache_dir, pathlib.Path(cache_path)):
+            invalidate_cache = True
         else:
-            # Local cache invalidation policy
-            if _should_invalidate_cache(cache_dir, pathlib.Path(cache_path)):
-                invalidate_cache = True
-            else:
-                print(f"Cache hit: {cache_path}")
-                return pathlib.Path(cache_path)
+            print(f"Cache hit: {cache_path}")
+            return pathlib.Path(cache_path)
 
     # Ensure scratch location is clean before starting a new copy
     if _exists(scratch_path):
@@ -289,9 +299,10 @@ def _copy_dir_gcs(src: str, dst: str) -> None:
 def _download_fsspec(url: str, local_path: pathlib.Path | str, **kwargs) -> None:
     # ── Fast-path: src & dst are both gs:// ───────────────────────────────────
     if _is_gcs(url) and _is_gcs(local_path):
-        fs, _ = fsspec.core.url_to_fs(url, **kwargs)
-        info = fs.info(url)
-        if info["type"] == "directory":
+        # Prefer TensorFlow GFile to detect directories reliably in GCS.
+        # `fs.info` can report 404 for directory-like prefixes without marker
+        # objects, which leads to treating directories as files.
+        if tf.io.gfile.isdir(url):
             _copy_dir_gcs(url, str(local_path))
         else:
             dst_dir = os.path.dirname(str(local_path))
@@ -388,6 +399,7 @@ def mirror_checkpoint_to_remote_cache(url: str, **kwargs) -> str:
         pass
 
     return mirror_path
+
 
 # def _download_fsspec(url: str, local_path: pathlib.Path, **kwargs) -> None:
 #     """Download a file from a remote filesystem to the local cache, and return the local path."""
