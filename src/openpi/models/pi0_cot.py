@@ -7,12 +7,16 @@ import flax.nnx.bridge as nnx_bridge
 import jax
 import jax.numpy as jnp
 from typing_extensions import override
-from openpi.models.helpers import make_attn_mask, posemb_sincos, cross_entropy_loss
+
 from openpi.models import model as _model
 import openpi.models.gemma as _gemma
+from openpi.models.helpers import cross_entropy_loss
+from openpi.models.helpers import make_attn_mask
+from openpi.models.helpers import posemb_sincos
 import openpi.models.siglip as _siglip
 from openpi.shared import array_typing as at
 import openpi.shared.nnx_utils as nnx_utils
+
 logger = logging.getLogger("openpi")
 
 
@@ -345,67 +349,101 @@ class Pi0CoT(_model.BaseModel):
         x_0, _ = jax.lax.while_loop(cond, step, (noise, 1.0))
         return x_0
 
-    # TODO: assert bs=1, i.e. assuming only used for inference.
+    ### left padding
     def _sample_reasoning_tokens(self, observation: _model.Observation) -> _model.Actions:
-        # ───────────────── 1. Prefix pass ─────────────────
+        # ───────────────── 0. Shapes ─────────────────
+        observation = _model.preprocess_observation(None, observation, train=False)
         p_tokens, p_mask0, p_ar_mask0 = self.embed_prefix(observation)  # (B,Tp,D) + (B,Tp)
         b, tp, d = *p_tokens.shape[:2], p_tokens.shape[-1]
-        gen_len = observation.tokenized_prompt.shape[1]  # generation length
-        max_len = gen_len + tp  # generation budget
+        gen_len = observation.tokenized_prompt.shape[1]
+        max_len = gen_len + tp
 
-        # Full-length (static-shape) buffers
-        p_mask = jnp.zeros((b, max_len), dtype=bool).at[:, :tp].set(p_mask0)
-        p_ar_mask = jnp.zeros((b, max_len), dtype=bool).at[:, :tp].set(p_ar_mask0)
+        # For left padding, the prefix occupies the tail window [start, start+tp)
+        start = max_len - tp  # <-- NEW
 
-        # prefix attention & positions
-        pref_attn = make_attn_mask(p_mask[:, :tp], p_ar_mask[:, :tp])  # (B,Tp,Tp)
-        pos_pref = jnp.cumsum(p_mask[:, :tp], axis=1) - 1
+        # ───────────────── 1. Full-length (static-shape) buffers ─────────────────
+        # NOTE: we keep the extra +1 column as your "query row" scratch space.
+        p_mask = jnp.zeros((b, max_len + 1), dtype=bool)
+        p_ar_mask = jnp.zeros((b, max_len + 1), dtype=bool)
 
+        # Place prefix masks into the tail instead of the head
+        p_mask = p_mask.at[:, start : start + tp].set(p_mask0)  # <-- CHANGED
+        p_ar_mask = p_ar_mask.at[:, start : start + tp].set(p_ar_mask0)  # <-- CHANGED
+
+        # Keep your “query slot” convention
+        p_mask = p_mask.at[:, -1].set(1)
+        p_ar_mask = p_ar_mask.at[:, -1].set(1)
+
+        # ───────────────── 2. Prefix attention & positions ─────────────────
+        # Positions must be contiguous over *real* tokens (ignoring pads).
+        # Compute over the full mask, then slice the tail segment used for the prefix call.
+        pos_full = jnp.cumsum(p_mask[:, :max_len], axis=1) - 1  # [B, max_len]
+        pos_pref = pos_full[:, start : start + tp]  # <-- CHANGED
+
+        # Build an attention mask for just the prefix window
+        pref_attn = make_attn_mask(
+            p_mask[:, start : start + tp],  # <-- CHANGED
+            p_ar_mask[:, start : start + tp],
+        )  #     (B,Tp,Tp)
+
+        # Forward the prefix at the tail
         (hs, _), kv0 = self.PaliGemma.llm([p_tokens, None], mask=pref_attn, positions=pos_pref)
-        curr_h = hs[:, -1:, :]  # (B,1,D)
+
+        curr_h = hs[:, -1:, :]
         curr_id = jnp.argmax(self.PaliGemma.llm(curr_h, method="decode"), axis=-1)  # (B,1)
+        curr_h = self.PaliGemma.llm(curr_id, method="embed")
 
-        # ───────────────── 2. Static KV cache ─────────────
-        nl, _, _, k, h = kv0[0].shape  # num_kv_heads, head_dim
-        k_cache = jnp.zeros((nl, b, max_len, k, h), dtype=kv0[0].dtype).at[:, :, :tp].set(kv0[0])
-        v_cache = jnp.zeros_like(k_cache).at[:, :, :tp].set(kv0[1])
+        # ───────────────── 3. Static KV cache aligned to tail ─────────────────
+        nl, _, _, k, h = kv0[0].shape
+        k_cache = jnp.zeros((nl, b, max_len, k, h), dtype=kv0[0].dtype)
+        v_cache = jnp.zeros_like(k_cache)
 
-        # ───────────────── 3. Output buffers ──────────────
+        # Write the prefix keys/values into [start:start+tp]
+        k_cache = k_cache.at[:, :, start : start + tp].set(kv0[0])  # <-- CHANGED
+        v_cache = v_cache.at[:, :, start : start + tp].set(kv0[1])  # <-- CHANGED
+
+        # ───────────────── 4. Output buffers (unchanged shapes) ─────────────────
         h_buf = jnp.zeros((b, gen_len, d), dtype=hs.dtype).at[:, 0].set(curr_h.squeeze(1))
         id_buf = jnp.zeros((b, gen_len, 1), dtype=jnp.int32).at[:, 0].set(curr_id)
-
         t0 = 0
 
-        # ───────────────── 4. Body / Cond ────────────────
+        # ───────────────── 5. Body / Cond (only t_abs changes) ─────────────────
         def step(carry):
             (curr_h, curr_id, k_cache, v_cache, p_mask, p_ar_mask, h_buf, id_buf, _t) = carry
 
-            t_abs = _t + tp  # tp is the (static) prefix length
-            jax.debug.print("t:{t}", t=_t)
+            # Sliding window: shift caches and masks left by 1 to free the last slot
+            k_cache = jnp.concatenate([k_cache[:, :, 1:], jnp.zeros_like(k_cache[:, :, :1])], axis=2)
+            v_cache = jnp.concatenate([v_cache[:, :, 1:], jnp.zeros_like(v_cache[:, :, :1])], axis=2)
+            p_mask = jnp.concatenate([p_mask[:, 1:], jnp.zeros_like(p_mask[:, :1])], axis=1)
+            p_ar_mask = jnp.concatenate([p_ar_mask[:, 1:], jnp.zeros_like(p_ar_mask[:, :1])], axis=1)
 
-            p_mask = p_mask.at[:, t_abs].set(True)
-            p_ar_mask = p_ar_mask.at[:, t_abs].set(True)
+            # Maintain the scratch query column at the end
+            p_mask = p_mask.at[:, -1].set(True)
+            p_ar_mask = p_ar_mask.at[:, -1].set(True)
 
-            attn_row = make_attn_mask(p_mask, p_ar_mask)[:, -1:, :]  # (B,1,MAX)
-            attn_row = jax.lax.dynamic_update_slice(
-                jnp.zeros((p_mask.shape[0], 1, p_mask.shape[1] + 1), dtype=bool),  # STATIC big tensor
-                attn_row,  # STATIC window
-                (0, 0, 0),  # start indices can vary
-            )
-            pos = jnp.full((p_mask.shape[0], 1), t_abs, dtype=jnp.int32)
+            # Build attention for the single query row over the window + scratch
+            attn_row = make_attn_mask(p_mask, p_ar_mask)[:, -1:, :]  # (B,1,MAX+1)
+
+            # RoPE position for the query: include scratch column in the count
+            pos = jnp.sum(p_mask, axis=1, keepdims=True).astype(jnp.int32) - 1
 
             (next_h, _), kv_new = self.PaliGemma.llm(
                 [curr_h, None],
                 positions=pos,  # (B,1)
-                mask=attn_row,  # (B,1,MAX)
+                mask=attn_row,  # (B,1,MAX+1)
                 kv_cache=(k_cache, v_cache),
             )
 
-            next_id = jnp.argmax(self.PaliGemma.llm(next_h, method="decode"), axis=-1)
-            jax.debug.print("next_id:{next_id}", next_id=next_id)
+            # Decode → id for next step
+            logits = self.PaliGemma.llm(next_h, method="decode")
+            next_id = jnp.argmax(logits, axis=-1)
+            next_h = self.PaliGemma.llm(next_id, method="embed")  # (batch, 1, D)
 
-            k_cache = k_cache.at[:, :, t_abs].set(kv_new[0][:, :, -1])
-            v_cache = v_cache.at[:, :, t_abs].set(kv_new[1][:, :, -1])
+            # Write new KV into the last real slot and mark it as real (keep scratch True)
+            k_cache = k_cache.at[:, :, -1].set(kv_new[0][:, :, -1])
+            v_cache = v_cache.at[:, :, -1].set(kv_new[1][:, :, -1])
+            p_mask = p_mask.at[:, -2].set(True)
+            p_ar_mask = p_ar_mask.at[:, -2].set(True)
 
             _t += 1
             h_buf = h_buf.at[:, _t].set(next_h.squeeze(1))
@@ -414,23 +452,17 @@ class Pi0CoT(_model.BaseModel):
             return (next_h, next_id, k_cache, v_cache, p_mask, p_ar_mask, h_buf, id_buf, _t)
 
         def cond(carry):
-            _, curr_id, _, _, _, _, _, _, t = carry
+            _, curr_id, *_, t = carry
             unfinished = jnp.any(curr_id != self.EOS_ID)
             return jnp.logical_and(unfinished, t < gen_len - 1)
 
         # ───────────────── 5. While-loop ─────────────────
+
         carry = (curr_h, curr_id, k_cache, v_cache, p_mask, p_ar_mask, h_buf, id_buf, t0)
         curr_h, curr_id, k_cache, v_cache, p_mask, p_ar_mask, h_buf, id_buf, t = jax.lax.while_loop(cond, step, carry)
 
-        # ───────────────── 6. Pack outputs ───────────────
-        # final_len = t
-        # final_mask = make_attn_mask(p_mask[:, : final_len + tp], p_ar_mask[:, : final_len + tp])
-        # final_tokens = jnp.concatenate([p_tokens, h_buf[:, :final_len]], axis=1)
-        # out_ids = id_buf[:, :final_len, 0]
-
         return p_mask, p_ar_mask, h_buf, id_buf, t, k_cache, v_cache
 
-    @override
     def sample_reasoning(self, observation: _model.Observation):
         p_mask, p_ar_mask, h_buf, logits, t, k_cache, v_cache = self._sample_reasoning_tokens(observation)
         # return self.PaliGemma.llm(reasoning_tokens, method="decode")  # logits

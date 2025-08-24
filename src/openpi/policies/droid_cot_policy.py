@@ -43,17 +43,17 @@ def _to_str_list(x):
     return out
 
 
-def _sum_language_actions(actions_list, sum_method):
+def _sum_language_actions(actions_list, sum_decimal):
     import re
 
-    # Determine rounding/formatting behavior from sum_method
+    # Determine rounding/formatting behavior from sum_decimal
     decimals = 0
     no_number = False
-    if isinstance(sum_method, str):
-        if sum_method == "no_number":
+    if isinstance(sum_decimal, str):
+        if sum_decimal == "no_number":
             no_number = True
         else:
-            m = re.fullmatch(r"(\d+)f", sum_method)
+            m = re.fullmatch(r"(\d+)f", sum_decimal)
             if m:
                 try:
                     decimals = int(m.group(1))

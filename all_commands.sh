@@ -7,6 +7,7 @@ gsutil -m cp -r droid-language-actions gs://v6_east1d/droid-lang-actions
 gsutil -m cp -r metadata gs://v6_east1d/metadata
 gsutil -m cp -r assets gs://v6_east1d/assets
 
+uv run --group rlds scripts/test_policy_cot.py --policy.config=pi0_droid_cot --policy.dir=/n/fs/robot-data/pi0/checkpoints/pi0_droid_cot/only_vlm/5000
 
 # setup tpu environment
 

@@ -37,7 +37,9 @@ class PaligemmaTokenizer:
 
         return np.asarray(tokens), np.asarray(mask)
 
-    def tokenize_cot(self, prompt: str, reasoning: str | None = None) -> tuple[np.ndarray, np.ndarray]:
+    def tokenize_cot(
+        self, prompt: str, reasoning: str | None = None, left_pad: bool = True
+    ) -> tuple[np.ndarray, np.ndarray]:
         cleaned_prompt = prompt.strip().replace("_", " ").replace("\n", " ")
         # eos_id = self._tokenizer.eos_id()
         pad_id = self._tokenizer.pad_id()
@@ -61,10 +63,25 @@ class PaligemmaTokenizer:
 
         attn_mask = np.zeros(self._max_len, dtype=bool)
         reasoning_mask = np.zeros(self._max_len, dtype=bool)
-        attn_mask[: len(tokens)] = True
-        reasoning_mask[reasoning_start:reasoning_end] = True
 
-        tokens += [pad_id] * (self._max_len - len(tokens))
+        if left_pad:
+            # Left pad to max length for generation/training
+            pad_count = self._max_len - len(tokens)
+            if pad_count > 0:
+                tokens = [pad_id] * pad_count + tokens
+
+            attn_mask = np.zeros(self._max_len, dtype=bool)
+            reasoning_mask = np.zeros(self._max_len, dtype=bool)
+            attn_mask[pad_count:] = True
+            # Shift reasoning indices by pad_count after left padding
+            rs = max(0, min(self._max_len, reasoning_start + pad_count))
+            re = max(0, min(self._max_len, reasoning_end + pad_count))
+            if re > rs:
+                reasoning_mask[rs:re] = True
+        else:
+            attn_mask[: len(tokens)] = True
+            reasoning_mask[reasoning_start:reasoning_end] = True
+            tokens += [pad_id] * (self._max_len - len(tokens))
 
         return (
             np.asarray(tokens, dtype=np.int32),

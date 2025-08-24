@@ -121,7 +121,8 @@ class CoTPolicy(Policy):
             sample_kwargs=sample_kwargs,
             metadata=metadata,
         )
-        self._sample_reasoning = nnx_utils.module_jit(model.sample_reasoning)
+        # self._sample_reasoning = nnx_utils.module_jit(model.sample_reasoning)
+        self._sample_reasoning = model.sample_reasoning
 
     @override
     def infer_reasoning(self, obs: dict) -> dict:  # type: ignore[misc]
@@ -133,7 +134,6 @@ class CoTPolicy(Policy):
 
         start_time = time.monotonic()
         self._rng, sample_rng = jax.random.split(self._rng)
-        print(self._sample_kwargs)
         logits, t, k_cache, p_mask, p_ar_mask = self._sample_reasoning(_model.Observation.from_dict(inputs))
         outputs = {
             "state": inputs["state"],
