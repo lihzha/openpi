@@ -1,10 +1,13 @@
 import dataclasses
+import hashlib
 import logging
 from math import acos
 from math import pi
 import re
 import warnings
 
+import jax
+import matplotlib.pyplot as plt
 import numpy as np
 from openpi_client import image_tools
 import tyro
@@ -175,6 +178,59 @@ def main(args: Args):
         shuffle=False,
     )
     ds = iter(data_loader)
+
+    max_samples_cfg = getattr(config.data, "max_samples", None)
+    tok = data_loader._data_loader._dataset._transform.transforms[-1].tokenizer
+    logging.info("Running capped-samples sanity check (expect repeat after ~%s samples)", max_samples_cfg)
+    seen = set()
+    total = 0
+    repeated = False
+    test_iter = iter(data_loader)
+    while not repeated:
+        test_batch = next(test_iter)
+        # test_batch is (Observation, Actions)
+        obs = test_batch[0]
+        lang_actions_encoded = obs.tokenized_prompt
+        # Use the first available camera stream as a stable fingerprint basis
+        first_cam = next(iter(obs.images.values()))
+        B = first_cam.shape[0]
+        for i in range(B):
+            img_bytes = bytes(memoryview(jax.device_get(first_cam[i, 0]).astype("uint8").tobytes()))
+            h = hashlib.sha1(img_bytes).hexdigest()
+            if h in seen:
+                repeated = True
+                break
+            lang_action = jax.device_get(tok.decode(lang_actions_encoded[i]))
+            images = jax.device_get(first_cam[i])
+            images = (images + 1) / 2
+            img0 = images[0]
+            img1 = images[-1]
+
+            fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+            axes[0].imshow(img0)
+            axes[0].axis("off")
+            axes[0].set_title("t=0s")
+            # Write language action on t=0s image
+            _action_text = str(lang_action)
+            axes[0].text(
+                0.01,
+                0.99,
+                _action_text,
+                transform=axes[0].transAxes,
+                va="top",
+                ha="left",
+                fontsize=10,
+                color="white",
+                bbox=dict(facecolor="black", alpha=0.5, pad=3),
+            )
+            axes[1].imshow(img1)
+            axes[1].axis("off")
+            axes[1].set_title("t≈+1s")
+            plt.suptitle("Initial vs +1s")
+            plt.savefig(f"initial_vs_1s_{total}.png")
+            seen.add(h)
+            total += 1
+    logging.info("Capped-samples sanity: unique before repeat=%d (configured max_samples=%s)", total, max_samples_cfg)
 
     totals = {
         "num_batches": 0,
