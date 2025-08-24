@@ -145,7 +145,7 @@ def _sum_language_actions(actions_list, sum_decimal):
     if last_gripper_value_str is not None:
         try:
             gv = float(last_gripper_value_str)
-            result.append(f"set gripper to {gv:.1f}")
+            result.append(f"set gripper to {gv:.2f}")
         except Exception:
             # Fallback to raw string if parsing fails
             result.append(f"set gripper to {last_gripper_value_str}")

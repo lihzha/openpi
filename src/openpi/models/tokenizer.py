@@ -38,7 +38,7 @@ class PaligemmaTokenizer:
         return np.asarray(tokens), np.asarray(mask)
 
     def tokenize_cot(
-        self, prompt: str, reasoning: str | None = None, left_pad: bool = False
+        self, prompt: str, reasoning: str | None = None, left_pad: bool = True
     ) -> tuple[np.ndarray, np.ndarray]:
         cleaned_prompt = prompt.strip().replace("_", " ").replace("\n", " ")
         # eos_id = self._tokenizer.eos_id()
