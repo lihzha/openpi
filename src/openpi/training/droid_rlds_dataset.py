@@ -911,6 +911,7 @@ class DroidCoTRldsDataset:
 
         # If requested, cap the number of flattened samples for overfitting tests.
         # We cache the capped set so repeating yields the same fixed subset.
+        logging.info(f"max_samples: {max_samples}")
         if max_samples is not None:
             dataset = dataset.take(int(max_samples)).cache().repeat()
 
