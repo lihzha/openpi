@@ -584,6 +584,7 @@ def main(config: _config.TrainConfig):
         infos = []
 
         if step % config.log_interval == 0:
+            infos.append(info)
             stacked_infos = common_utils.stack_forest(infos)
             reduced_info = jax.device_get(jax.tree.map(jnp.mean, stacked_infos))
             info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_info.items())
