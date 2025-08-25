@@ -611,7 +611,7 @@ class DroidCoTRldsDataset:
         dataset = dataset.filter(_split_filter)
 
         # Repeat dataset so we never run out of data.
-        dataset = dataset.repeat()
+        # dataset = dataset.repeat()
 
         def restructure(traj):
             """Reformat observation and action keys, sample language instruction."""
@@ -925,6 +925,8 @@ class DroidCoTRldsDataset:
         logging.info(f"max_samples: {max_samples}")
         if max_samples is not None:
             dataset = dataset.take(int(max_samples)).cache().repeat()
+        else:
+            dataset = dataset.repeat()
 
         if DEBUG_TIMING:
             dataset = dataset.frame_map(_wrap_timed_map(decode_images, "decode_images"), num_parallel_calls)
