@@ -414,7 +414,9 @@ def main(config: _config.TrainConfig):
     # assert jax.local_device_count() % effective_fsdp_devices == 0
 
     init_logging()
-    logging.info(config.data.summation_steps)
+    logging.info(
+        f"Summation steps: {config.data.summation_steps}, left_pad: {config.data.left_pad}, sum_decimal: {config.data.sum_decimal}"
+    )
     logging.info(f"Running on: {platform.node()}")
 
     # if config.batch_size % jax.device_count() != 0:
