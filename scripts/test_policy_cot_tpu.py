@@ -168,7 +168,11 @@ def main(args: Args):
     policy = create_policy(args, policy_config=policy_config)
 
     config = _config.get_config(args.policy.config)
-    config = dc.replace(config, data=dc.replace(config.data, max_samples=150))
+    config = dc.replace(config, data=dc.replace(config.data, max_samples=150, left_pad=True, batch_size=8))
+
+    logging.info(
+        f"Summation steps: {config.data.summation_steps}, left_pad: {config.data.left_pad}, sum_decimal: {config.data.sum_decimal}, ema_decay: {config.ema_decay}"
+    )
 
     data_loader = _data_loader.create_data_loader(
         config,
