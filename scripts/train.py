@@ -518,7 +518,6 @@ def main(config: _config.TrainConfig):
             plt.savefig(f"initial_vs_1s_{total}.png")
             seen.add(h)
             total += 1
-    breakpoint()
     logging.info("Capped-samples sanity: unique before repeat=%d (configured max_samples=%s)", total, max_samples_cfg)
 
     checkpoint_manager, resuming = _checkpoints.initialize_checkpoint_dir(
