@@ -723,6 +723,7 @@ _CONFIGS = [
         ),
         save_interval=1000,
         log_interval=50,
+        ema_decay=None,
         # keep_period=20_000,
     ),
     TrainConfig(
