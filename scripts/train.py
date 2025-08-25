@@ -484,8 +484,10 @@ def main(config: _config.TrainConfig):
     #         lang_action = jax.device_get(tok.decode(lang_actions_encoded[i]))
     #         images = jax.device_get(first_cam[i])
     #         images = (images + 1) / 2
-    #         img0 = images[0]
-    #         img1 = images[-1]
+    #         # img0 = images[0]
+    #         # img1 = images[-1]
+    #         img0 = images
+    #         img1 = images
 
     #         fig, axes = plt.subplots(1, 2, figsize=(10, 4))
     #         axes[0].imshow(img0)
@@ -512,6 +514,11 @@ def main(config: _config.TrainConfig):
     #         seen.add(h)
     #         total += 1
     # logging.info("Capped-samples sanity: unique before repeat=%d (configured max_samples=%s)", total, max_samples_cfg)
+
+    # # save the hash list to a file, which is easliy loaded in the future
+    # with open("hash3.txt", "w") as f:
+    #     for h in seen:
+    #         f.write(h + "\n")
 
     checkpoint_manager, resuming = _checkpoints.initialize_checkpoint_dir(
         config.checkpoint_dir,

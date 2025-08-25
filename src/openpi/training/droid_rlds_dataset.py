@@ -347,6 +347,11 @@ class DroidCoTRldsDataset:
         # Global seeding for reproducibility across dataset ops
         # ------------------------------------------------------------------
         tf.random.set_seed(seed)
+        try:
+            # TF 2.12+: enable deterministic kernels where available
+            tf.config.experimental.enable_op_determinism()
+        except Exception:
+            pass
 
         # Configure Tensorflow with no GPU/TPU devices to avoid clobbering JAX/TPU runtime
         tf.config.set_visible_devices([], "GPU")
@@ -609,7 +614,7 @@ class DroidCoTRldsDataset:
         dataset = dataset.filter(_split_filter)
 
         # Repeat dataset so we never run out of data.
-        # dataset = dataset.repeat()
+        dataset = dataset.repeat()
 
         def restructure(traj):
             """Reformat observation and action keys, sample language instruction."""
@@ -915,7 +920,7 @@ class DroidCoTRldsDataset:
             return traj
 
         # Only shuffle during training; validation should be deterministic and cheaper
-        if shuffle:
+        if shuffle and max_samples is None:
             dataset = dataset.shuffle(shuffle_buffer_size, seed=seed)
 
         # If requested, cap the number of flattened samples for overfitting tests.
@@ -923,8 +928,6 @@ class DroidCoTRldsDataset:
         logging.info(f"max_samples: {max_samples}")
         if max_samples is not None:
             dataset = dataset.take(int(max_samples)).cache().repeat()
-        else:
-            dataset = dataset.repeat()
 
         if DEBUG_TIMING:
             dataset = dataset.frame_map(_wrap_timed_map(decode_images, "decode_images"), num_parallel_calls)
