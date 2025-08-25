@@ -181,6 +181,7 @@ def main(args: Args):
         config,
         sharding=None,
         shuffle=True,
+        seed=config.seed,
     )
     ds = iter(data_loader)
 
