@@ -205,7 +205,7 @@ def main(args: Args) -> None:
         assert seq is not None
         summed = _sum_language_actions(
             seq,
-            sum_decimal="2f",
+            sum_decimal="1f",
         )  # ground-truth string
 
         # compute losses
