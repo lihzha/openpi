@@ -548,14 +548,15 @@ def main(config: _config.TrainConfig):
         donate_argnums=(1,),
     )
 
-    peval_step = jax.jit(
-        functools.partial(eval_step, config),
-        in_shardings=(replicated_sharding, train_state_sharding, data_sharding),
-    )
+    if do_val:
+        peval_step = jax.jit(
+            functools.partial(eval_step, config),
+            in_shardings=(replicated_sharding, train_state_sharding, data_sharding),
+        )
 
-    # Warm up eval compilation to avoid first-iteration latency during validation
-    with sharding.set_mesh(mesh):
-        _warm_val = peval_step(train_rng, train_state, batch)
+        # Warm up eval compilation to avoid first-iteration latency during validation
+        with sharding.set_mesh(mesh):
+            _warm_val = peval_step(train_rng, train_state, batch)
     # Block on one leaf to ensure compile completes before timing-sensitive loops
     try:
         jax.tree_util.tree_leaves(_warm_val)[0].block_until_ready()
