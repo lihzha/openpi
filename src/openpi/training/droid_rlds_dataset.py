@@ -50,7 +50,6 @@ import json
 import logging
 import os
 from pathlib import Path
-import random
 import time
 
 import jax
@@ -347,9 +346,9 @@ class DroidCoTRldsDataset:
         # ------------------------------------------------------------------
         # Global seeding for reproducibility across dataset ops
         # ------------------------------------------------------------------
-        random.seed(seed)
-        np.random.seed(seed)
-        tf.random.set_seed(seed)
+        # random.seed(seed)
+        # np.random.seed(seed)
+        # tf.random.set_seed(seed)
 
         # Configure Tensorflow with no GPU/TPU devices to avoid clobbering JAX/TPU runtime
         tf.config.set_visible_devices([], "GPU")
@@ -373,16 +372,16 @@ class DroidCoTRldsDataset:
         dataset = dl.DLataset.from_rlds(
             builder,
             split="train",
-            shuffle=shuffle,
+            # shuffle=shuffle,
             num_parallel_reads=num_parallel_reads,
         )
 
         dataset = dataset.shard(jax.process_count(), jax.process_index())
 
         # Enforce deterministic mapping/order for reproducibility
-        opts = tf.data.Options()
-        opts.experimental_deterministic = True
-        dataset = dataset.with_options(opts)
+        # opts = tf.data.Options()
+        # opts.experimental_deterministic = True
+        # dataset = dataset.with_options(opts)
 
         # ---------------------------------------------------------------------
         # 2. Language-action table (episode_id → serialized tensor)
