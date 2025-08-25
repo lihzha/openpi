@@ -455,13 +455,8 @@ def main(config: _config.TrainConfig):
             split="val",
         )
         val_iter = iter(val_loader)
-    logging.info("Before getting batch")
-    batch = next(data_iter)
-    logging.info("After getting batch")
-    logging.info(f"Initialized data loader (shapes):\n{training_utils.array_tree_to_info(batch)}")
-    logging.info(f"Batch[0].tokenized_prompt: {batch[0].tokenized_prompt}")
-    # Sharding details for the first batch
-    log_batch_sharding(batch)
+    # Defer fetching the first batch until after (potential) checkpoint restore
+    # so we can fast-forward the iterator on resume for deterministic continuity.
 
     # # Optional sanity check: exhaust data_iter until a repeated sample is seen
     # # when training with a capped sample set (e.g., max_samples in RLDS CoT).
@@ -525,12 +520,6 @@ def main(config: _config.TrainConfig):
         resume=config.resume,
     )
     init_wandb(config, resuming=resuming, enabled=config.wandb_enabled)
-    # Log images from first batch to sanity check.
-    images_to_log = [
-        wandb.Image(np.concatenate([np.array(img[i]) for img in batch[0].images.values()], axis=1))
-        for i in range(min(5, len(next(iter(batch[0].images.values())))))
-    ]
-    wandb.log({"camera_views": images_to_log}, step=0)
 
     train_state, train_state_sharding = init_train_state(config, init_rng, mesh, resume=resuming)
     jax.block_until_ready(train_state)
@@ -554,16 +543,39 @@ def main(config: _config.TrainConfig):
             in_shardings=(replicated_sharding, train_state_sharding, data_sharding),
         )
 
-        # Warm up eval compilation to avoid first-iteration latency during validation
-        with sharding.set_mesh(mesh):
-            _warm_val = peval_step(train_rng, train_state, batch)
-    # Block on one leaf to ensure compile completes before timing-sensitive loops
+    # Fetch the correct first batch, advancing the iterator on resume
+    start_step = int(train_state.step)
+    logging.info("Before getting batch (start_step=%d, resuming=%s)", start_step, resuming)
+    if resuming and start_step > 0:
+        # Fast-forward the iterator so that step `start_step` uses batch index `start_step`.
+        for _ in range(start_step):
+            _ = next(data_iter)
+    batch = next(data_iter)
+    logging.info("After getting batch")
+    logging.info(f"Initialized data loader (shapes):\n{training_utils.array_tree_to_info(batch)}")
+    logging.info(f"Batch[0].tokenized_prompt: {batch[0].tokenized_prompt}")
+    # Sharding details for the first batch
+    log_batch_sharding(batch)
+
+    # Log images from first batch to sanity check.
     try:
-        jax.tree_util.tree_leaves(_warm_val)[0].block_until_ready()
+        images_to_log = [
+            wandb.Image(np.concatenate([np.array(img[i]) for img in batch[0].images.values()], axis=1))
+            for i in range(min(5, len(next(iter(batch[0].images.values())))))
+        ]
+        wandb.log({"camera_views": images_to_log}, step=start_step)
     except Exception:
         pass
 
-    start_step = int(train_state.step)
+    # Optional: warm up eval after batch is available
+    if do_val:
+        with sharding.set_mesh(mesh):
+            _warm_val = peval_step(train_rng, train_state, batch)
+        # Block on one leaf to ensure compile completes before timing-sensitive loops
+        try:
+            jax.tree_util.tree_leaves(_warm_val)[0].block_until_ready()
+        except Exception:
+            pass
     pbar = tqdm.tqdm(
         range(start_step, config.num_train_steps),
         initial=start_step,
