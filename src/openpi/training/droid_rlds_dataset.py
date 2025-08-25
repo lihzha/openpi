@@ -50,6 +50,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import random
 import time
 
 import jax
@@ -333,6 +334,8 @@ class DroidCoTRldsDataset:
         split_seed: int = 0,
         # Overfitting support: cap number of flattened samples (after shuffle)
         max_samples: int | None = None,
+        # Global seed for all dataset-related randomness
+        seed: int = 0,
     ):
         # Import tensorflow here to not make it mandatory in case RLDS data loader is not used.
         import dlimp as dl
@@ -340,6 +343,13 @@ class DroidCoTRldsDataset:
         import tensorflow_datasets as tfds
 
         assert action_space == DroidActionSpace.CARTESIAN_POSITION, "CoT only supports EEF actions for now"
+
+        # ------------------------------------------------------------------
+        # Global seeding for reproducibility across dataset ops
+        # ------------------------------------------------------------------
+        random.seed(seed)
+        np.random.seed(seed)
+        tf.random.set_seed(seed)
 
         # Configure Tensorflow with no GPU/TPU devices to avoid clobbering JAX/TPU runtime
         tf.config.set_visible_devices([], "GPU")
@@ -369,9 +379,9 @@ class DroidCoTRldsDataset:
 
         dataset = dataset.shard(jax.process_count(), jax.process_index())
 
-        # Enable non-deterministic mapping and other tf.data optimizations for throughput
+        # Enforce deterministic mapping/order for reproducibility
         opts = tf.data.Options()
-        opts.experimental_deterministic = False
+        opts.experimental_deterministic = True
         dataset = dataset.with_options(opts)
 
         # ---------------------------------------------------------------------
@@ -631,11 +641,13 @@ class DroidCoTRldsDataset:
             non_empty = tf.boolean_mask(instructions, mask)
             num_valid = tf.shape(non_empty)[0]
 
-            fallback_index = tf.random.uniform((), minval=0, maxval=tf.shape(fallback_instructions)[0], dtype=tf.int32)
+            fallback_index = tf.random.uniform(
+                (), minval=0, maxval=tf.shape(fallback_instructions)[0], dtype=tf.int32, seed=seed
+            )
             fallback_instruction = fallback_instructions[fallback_index]
             instruction = tf.cond(
                 num_valid > 0,
-                lambda: tf.random.shuffle(non_empty)[0],
+                lambda: tf.random.shuffle(non_empty, seed=seed)[0],
                 lambda: fallback_instruction,
             )
 
@@ -654,7 +666,7 @@ class DroidCoTRldsDataset:
             # # Randomly samples one of the two exterior images in DROID during training (we only train with one at a time).
             # # Note: the "left" refers to the left camera in the stereo pair, we only train on the left camera.
             # exterior_img = tf.cond(
-            #     tf.random.uniform(shape=[]) > 0.5,
+            #     tf.random.uniform(shape=[], seed=seed) > 0.5,
             #     lambda: traj["observation"]["exterior_image_1_left"],
             #     lambda: traj["observation"]["exterior_image_2_left"],
             # )
@@ -907,7 +919,7 @@ class DroidCoTRldsDataset:
 
         # Only shuffle during training; validation should be deterministic and cheaper
         if shuffle:
-            dataset = dataset.shuffle(shuffle_buffer_size)
+            dataset = dataset.shuffle(shuffle_buffer_size, seed=seed, reshuffle_each_iteration=True)
 
         # If requested, cap the number of flattened samples for overfitting tests.
         # We cache the capped set so repeating yields the same fixed subset.

@@ -230,6 +230,7 @@ def create_rlds_dataset(
     split: str = "train",
     val_fraction: float = 0.05,
     split_seed: int = 0,
+    seed: int = 0,
 ) -> Dataset:
     # At the moment, we only support DROID for RLDS datasets.
     # Use per-host batching to avoid duplicative slicing work in the loader
@@ -249,6 +250,7 @@ def create_rlds_dataset(
             val_fraction=val_fraction,
             split_seed=split_seed,
             max_samples=getattr(data_config, "max_samples", None),
+            seed=seed,
         )
     return DroidRldsDataset(
         data_dir=data_config.rlds_data_dir,
@@ -319,6 +321,7 @@ def create_data_loader(
     num_batches: int | None = None,
     skip_norm_stats: bool = False,
     split: str = "train",
+    seed: int = 0,
 ) -> DataLoader[tuple[_model.Observation, _model.Actions]]:
     """Create a data loader for training."""
     data_config = config.data.create(config.assets_dirs, config.model)
@@ -344,7 +347,8 @@ def create_data_loader(
             skip_norm_stats=skip_norm_stats,
             split=split,
             val_fraction=getattr(config, "val_fraction", 0.05),
-            split_seed=config.seed,
+            split_seed=seed,
+            seed=seed,
         )
     return create_torch_data_loader(
         data_config,
@@ -418,6 +422,7 @@ def create_rlds_data_loader(
     split: str = "train",
     val_fraction: float = 0.05,
     split_seed: int = 0,
+    seed: int = 0,
 ) -> DataLoader[tuple[_model.Observation, _model.Actions]]:
     """Create an RLDS data loader for training.
 
@@ -443,6 +448,7 @@ def create_rlds_data_loader(
         split=split,
         val_fraction=val_fraction,
         split_seed=split_seed,
+        seed=seed,
     )
     dataset = transform_iterable_dataset(dataset, data_config, skip_norm_stats=skip_norm_stats, is_batched=True)
 

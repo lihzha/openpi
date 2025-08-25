@@ -441,6 +441,7 @@ def main(config: _config.TrainConfig):
         config,
         sharding=data_sharding,
         shuffle=True,
+        seed=config.seed,
     )
     data_iter = iter(data_loader)
 
