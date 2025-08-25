@@ -25,9 +25,7 @@ def _delete_gcs_prefix_with_gsutil(uri: str) -> None:
     Raises a CalledProcessError if deletion fails.
     """
     cmd = ["gsutil", "-m", "rm", "-r", uri]
-    result = subprocess.run(
-        cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
-    )
+    result = subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     logging.info("gsutil deletion output for %s:\n%s", uri, result.stdout)
 
 
@@ -126,7 +124,7 @@ def restore_state(
     data_loader: _data_loader.DataLoader,
     step: int | None = None,
 ) -> training_utils.TrainState:
-    del data_loader
+    # del data_loader
 
     with at.disable_typechecking():
         # Split params that can be used for inference into a separate item.
