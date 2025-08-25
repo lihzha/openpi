@@ -918,7 +918,7 @@ class DroidCoTRldsDataset:
 
         # Only shuffle during training; validation should be deterministic and cheaper
         if shuffle:
-            dataset = dataset.shuffle(shuffle_buffer_size, seed=seed, reshuffle_each_iteration=True)
+            dataset = dataset.shuffle(shuffle_buffer_size, seed=seed)
 
         # If requested, cap the number of flattened samples for overfitting tests.
         # We cache the capped set so repeating yields the same fixed subset.
