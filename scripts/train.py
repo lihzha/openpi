@@ -415,7 +415,7 @@ def main(config: _config.TrainConfig):
 
     init_logging()
     logging.info(
-        f"Summation steps: {config.data.summation_steps}, left_pad: {config.data.left_pad}, sum_decimal: {config.data.sum_decimal}"
+        f"Summation steps: {config.data.summation_steps}, left_pad: {config.data.left_pad}, sum_decimal: {config.data.sum_decimal}, ema_decay: {config.ema_decay}"
     )
     logging.info(f"Running on: {platform.node()}")
 
@@ -546,10 +546,10 @@ def main(config: _config.TrainConfig):
     # Fetch the correct first batch, advancing the iterator on resume
     start_step = int(train_state.step)
     logging.info("Before getting batch (start_step=%d, resuming=%s)", start_step, resuming)
-    if resuming and start_step > 0:
-        # Fast-forward the iterator so that step `start_step` uses batch index `start_step`.
-        for _ in range(start_step):
-            _ = next(data_iter)
+    # if resuming and start_step > 0:
+    #     # Fast-forward the iterator so that step `start_step` uses batch index `start_step`.
+    #     for _ in range(start_step):
+    #         _ = next(data_iter)
     batch = next(data_iter)
     logging.info("After getting batch")
     logging.info(f"Initialized data loader (shapes):\n{training_utils.array_tree_to_info(batch)}")
