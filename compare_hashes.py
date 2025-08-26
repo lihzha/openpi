@@ -124,8 +124,8 @@ def print_comparison_results(file1: str, file2: str, are_equal: bool, details: d
 def main():
     """Main function to run the hash comparison."""
 
-    file1 = "hash_train1.txt"
-    file2 = "hash_train2.txt"
+    file1 = "hash_train2.txt"
+    file2 = "hash_test3.txt"
     # file2 = "visualizations/hash31.txt"
 
     # Check if files exist
