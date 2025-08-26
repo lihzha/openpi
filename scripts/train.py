@@ -21,6 +21,7 @@ import tqdm_loggable.auto as tqdm
 import wandb
 
 import openpi.models.model as _model
+import openpi.models.tokenizer as _tokenizer
 import openpi.shared.array_typing as at
 import openpi.shared.nnx_utils as nnx_utils
 import openpi.training.checkpoints as _checkpoints
@@ -30,6 +31,7 @@ import openpi.training.optimizer as _optimizer
 import openpi.training.sharding as sharding
 import openpi.training.utils as training_utils
 import openpi.training.weight_loaders as _weight_loaders
+import openpi.transforms as _transforms
 
 
 def init_logging():
@@ -358,7 +360,7 @@ def train_step(
 
 
 @at.typecheck
-def eval_step(
+def val_step(
     config: _config.TrainConfig,
     rng: at.KeyArrayLike,
     state: training_utils.TrainState,
@@ -383,6 +385,23 @@ def eval_step(
         return metrics
     loss = loss_fn(model, eval_rng, observation, actions)
     return {"val_loss": loss}
+
+
+@at.typecheck
+def eval_step(
+    decode_func: _transforms.DetokenizeReasoning,
+    state: training_utils.TrainState,
+    batch: tuple[_model.Observation, _model.Actions],
+) -> tuple[training_utils.TrainState, dict[str, at.Array]]:
+    model = nnx.merge(state.model_def, state.params)
+    model.eval()
+    observation = batch[0]
+    logits, t, _, _, _, _, _ = model.sample_reasoning(observation)
+    outputs = {
+        "reasoning_logits": logits,
+        "final_length": t,
+    }
+    return decode_func(outputs)["reasoning"]
 
 
 def main(config: _config.TrainConfig):
@@ -448,6 +467,7 @@ def main(config: _config.TrainConfig):
     data_iter = iter(data_loader)
 
     do_val = False
+    do_eval = False
     if do_val:
         # Validation data loader (non-shuffled, val split)
         val_loader = _data_loader.create_data_loader(
@@ -459,6 +479,18 @@ def main(config: _config.TrainConfig):
         val_iter = iter(val_loader)
     # Defer fetching the first batch until after (potential) checkpoint restore
     # so we can fast-forward the iterator on resume for deterministic continuity.
+
+    if do_eval:
+        eval_loader = _data_loader.create_data_loader(
+            config,
+            sharding=data_sharding,
+            shuffle=False,
+            split="test",
+        )
+        eval_iter = iter(eval_loader)
+        decode_func = _transforms.DetokenizeReasoning(
+            _tokenizer.PaligemmaTokenizer(config.model.max_token_len, left_pad=config.data.left_pad)
+        )
 
     # # Optional sanity check: exhaust data_iter until a repeated sample is seen
     # # when training with a capped sample set (e.g., max_samples in RLDS CoT).
@@ -547,8 +579,13 @@ def main(config: _config.TrainConfig):
     )
 
     if do_val:
+        pval_step = jax.jit(
+            functools.partial(val_step, config),
+            in_shardings=(replicated_sharding, train_state_sharding, data_sharding),
+        )
+    if do_eval:
         peval_step = jax.jit(
-            functools.partial(eval_step, config),
+            functools.partial(eval_step, decode_func),
             in_shardings=(replicated_sharding, train_state_sharding, data_sharding),
         )
 
@@ -579,10 +616,18 @@ def main(config: _config.TrainConfig):
     # Optional: warm up eval after batch is available
     if do_val:
         with sharding.set_mesh(mesh):
-            _warm_val = peval_step(train_rng, train_state, batch)
+            _warm_val = pval_step(train_rng, train_state, batch)
         # Block on one leaf to ensure compile completes before timing-sensitive loops
         try:
             jax.tree_util.tree_leaves(_warm_val)[0].block_until_ready()
+        except Exception:
+            pass
+    if do_eval:
+        with sharding.set_mesh(mesh):
+            _warm_eval = peval_step(train_state, batch)
+        # Block on one leaf to ensure compile completes before timing-sensitive loops
+        try:
+            jax.tree_util.tree_leaves(_warm_eval)[0].block_until_ready()
         except Exception:
             pass
     pbar = tqdm.tqdm(
@@ -594,6 +639,7 @@ def main(config: _config.TrainConfig):
 
     infos = []
     num_val_batches = getattr(config, "num_val_batches", 400)
+    num_eval_batches = getattr(config, "num_eval_batches", 150)
     for step in pbar:
         with sharding.set_mesh(mesh):
             train_state, info = ptrain_step(train_rng, train_state, batch)
@@ -626,7 +672,7 @@ def main(config: _config.TrainConfig):
                 val_infos = []
                 for _ in val_pbar:
                     val_batch = next(val_iter)
-                    val_info = peval_step(train_rng, train_state, val_batch)
+                    val_info = pval_step(train_rng, train_state, val_batch)
                     val_infos.append(val_info)
                 stacked_val = common_utils.stack_forest(val_infos)
                 reduced_val = jax.device_get(jax.tree.map(jnp.mean, stacked_val))
@@ -638,6 +684,29 @@ def main(config: _config.TrainConfig):
                     )
                 )
                 wandb.log({**reduced_val, "split": "val"}, step=step)
+        if do_eval and step % getattr(config, "eval_interval", 5000) == 0:
+            eval_pbar = tqdm.tqdm(
+                range(num_eval_batches),
+                initial=0,
+                total=num_eval_batches,
+                dynamic_ncols=True,
+            )
+            with sharding.set_mesh(mesh):
+                eval_infos = []
+                for _ in eval_pbar:
+                    eval_batch = next(eval_iter)
+                    reasoning = peval_step(train_state, eval_batch)
+                    eval_infos.append(eval_info)
+                stacked_eval = common_utils.stack_forest(eval_infos)
+                reduced_eval = jax.device_get(jax.tree.map(jnp.mean, stacked_eval))
+                eval_pbar.write(
+                    "Step %d (eval): %s"
+                    % (
+                        step,
+                        ", ".join(f"{k}={v:.4f}" for k, v in reduced_eval.items()),
+                    )
+                )
+                wandb.log({**reduced_eval, "split": "eval"}, step=step)
         batch = next(data_iter)
 
         if (step % config.save_interval == 0 and step > start_step) or step == config.num_train_steps - 1:
