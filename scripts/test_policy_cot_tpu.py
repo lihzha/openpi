@@ -18,6 +18,7 @@ from openpi.policies import policy as _policy
 from openpi.policies import policy_config as _policy_config
 import openpi.training.config as _config
 import openpi.training.data_loader as _data_loader
+import openpi.training.sharding as sharding
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
@@ -172,14 +173,37 @@ def main(args: Args):
 
     config = _config.get_config(args.policy.config)
     config = dc.replace(config, data=dc.replace(config.data, max_samples=150, left_pad=True), batch_size=8)
-
+    process_count = getattr(jax, "process_count", lambda: 1)()
+    local_devices = getattr(jax, "local_device_count", lambda: 1)()
+    global_devices = getattr(jax, "device_count", lambda: local_devices)()
+    if process_count == 1:
+        # Choose the largest divisor of available devices not exceeding configured fsdp_devices
+        target = min(config.fsdp_devices, max(1, local_devices))
+        effective_fsdp_devices = 1
+        for d in range(target, 0, -1):
+            if global_devices % d == 0:
+                effective_fsdp_devices = d
+                break
+        if effective_fsdp_devices != config.fsdp_devices:
+            logging.info(
+                "Using fsdp_devices=%d for single-process run (available devices=%d)",
+                effective_fsdp_devices,
+                global_devices,
+            )
+    else:
+        effective_fsdp_devices = config.fsdp_devices
+        assert global_devices % effective_fsdp_devices == 0
     logging.info(
         f"Summation steps: {config.data.summation_steps}, left_pad: {config.data.left_pad}, sum_decimal: {config.data.sum_decimal}, ema_decay: {config.ema_decay}"
     )
+    rng = jax.random.key(config.seed)
+    train_rng, init_rng = jax.random.split(rng)
+    mesh = sharding.make_mesh(effective_fsdp_devices)
+    data_sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec(sharding.DATA_AXIS))
 
     data_loader = _data_loader.create_data_loader(
         config,
-        sharding=None,
+        sharding=data_sharding,
         shuffle=True,
         seed=config.seed,
     )
