@@ -236,6 +236,33 @@ def _maybe_initialize_jax_distributed():
         logging.info("Failed to initialize jax.distributed (continuing single-process): %s", e)
 
 
+def break_into_single_batches(batch: tuple[_model.Observation, _model.Actions]) -> list[tuple[_model.Observation, _model.Actions]]:
+    """Break down a batch into individual single-item batches.
+    
+    Args:
+        batch: A tuple of (Observation, Actions) where both have a leading batch dimension
+        
+    Returns:
+        A list of single-item batches, each with batch size 1
+    """
+    observation, actions = batch
+    
+    # Get the batch size from the observation state (or any other field)
+    batch_size = observation.state.shape[0]
+    
+    single_batches = []
+    for i in range(batch_size):
+        # Extract single item from observation
+        single_obs = jax.tree.map(lambda x: x[i:i+1], observation)
+        
+        # Extract single item from actions
+        single_actions = actions[i:i+1]
+        
+        single_batches.append((single_obs, single_actions))
+    
+    return single_batches
+
+
 def _is_tpu_runtime() -> bool:
     try:
         return any(d.platform == "tpu" for d in jax.devices())
@@ -486,13 +513,6 @@ def main(config: _config.TrainConfig):
     # so we can fast-forward the iterator on resume for deterministic continuity.
 
     if do_eval:
-        eval_loader = _data_loader.create_data_loader(
-            config,
-            sharding=data_sharding,
-            shuffle=False,
-            split="test",
-        )
-        eval_iter = iter(eval_loader)
         decode_func = _transforms.DetokenizeReasoning(
             _tokenizer.PaligemmaTokenizer(config.model.max_token_len, left_pad=config.data.left_pad)
         )
@@ -644,11 +664,27 @@ def main(config: _config.TrainConfig):
     )
 
     infos = []
+    train_batches = []
+    seen = set()
     num_val_batches = getattr(config, "num_val_batches", 400)
-    num_eval_batches = getattr(config, "num_eval_batches", 150)
     for step in pbar:
         with sharding.set_mesh(mesh):
             train_state, info = ptrain_step(train_rng, train_state, batch)
+        obs = batch[0]
+        single_batches = break_into_single_batches(batch)
+        for single_batch in single_batches:
+            first_cam = next(iter(single_batch[0].images.values()))
+            B = first_cam.shape[0]
+            assert B == 1
+            for i in range(B):
+                img_bytes = bytes(memoryview(jax.device_get(first_cam[i]).astype("uint8").tobytes()))
+                h = hashlib.sha1(img_bytes).hexdigest()
+                if h not in seen:
+                    train_batches.append(single_batch)
+                    seen.add(h)
+            logging.info(f"Seen: {len(seen)}")
+            if len(seen) == config.data.max_samples:
+                break
         infos.append(info)
         stacked_infos = common_utils.stack_forest(infos)
         reduced_info = jax.device_get(jax.tree.map(jnp.mean, stacked_infos))
@@ -692,30 +728,13 @@ def main(config: _config.TrainConfig):
                 )
                 if jax.process_index() == 0:
                     wandb.log({**reduced_val, "split": "val"}, step=step)
-        if do_eval and step % getattr(config, "eval_interval", 5000) == 0:
-            eval_pbar = tqdm.tqdm(
-                range(num_eval_batches),
-                initial=0,
-                total=num_eval_batches,
-                dynamic_ncols=True,
-            )
+        if do_eval and len(train_batches) == config.data.max_samples:
             with sharding.set_mesh(mesh):
-                eval_infos = []
-                for _ in eval_pbar:
-                    eval_batch = next(eval_iter)
-                    reasoning = peval_step(train_state, eval_batch)
-                    eval_infos.append(eval_info)
-                stacked_eval = common_utils.stack_forest(eval_infos)
-                reduced_eval = jax.device_get(jax.tree.map(jnp.mean, stacked_eval))
-                eval_pbar.write(
-                    "Step %d (eval): %s"
-                    % (
-                        step,
-                        ", ".join(f"{k}={v:.4f}" for k, v in reduced_eval.items()),
-                    )
-                )
-                if jax.process_index() == 0:
-                    wandb.log({**reduced_eval, "split": "eval"}, step=step)
+                for batch in train_batches:
+                    reasoning = peval_step(train_state, batch)
+                    gt = tok.decode(batch[0].tokenized_prompt)
+                    logging.info(f"GT: {gt}")
+                    logging.info(f"Pred: {reasoning}")
         batch = next(data_iter)
 
         if (step % config.save_interval == 0 and step > start_step) or step == config.num_train_steps - 1:
