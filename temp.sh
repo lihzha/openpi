@@ -332,10 +332,10 @@ while true; do
     fi
 
     echo "$(ts) - Starting training..."
-    if ! safe_v6_tmux "source ~/.zshrc && cd openpi && \
+    if ! v6 "source ~/.zshrc && cd openpi && \
             git pull origin tpu && \
             XLA_PYTHON_CLIENT_MEM_FRACTION=0.95 \
-            uv run --group rlds scripts/train.py pi0_droid_cot_v6 \
+            uv run --group rlds scripts/train.py pi0_droid_cot_v6 --fsdp-devices=8 --batch-size=64 --exp-name v6_bs256_lr1e4_ss15_pi0_max110_overfit150  --data.summation-steps=15 --data.max_samples=150 --data.sum-decimal=1f  --weight-loader.kind=checkpoint --weight-loader.params-path=gs://openpi-assets/checkpoints/pi0_base/params --save_interval=300 --log-interval=100 --overwrite \
             $( printf ' %q' "${EXTRA_ARGS[@]}" )
     "; then
       echo "$(ts) - Launch failed/SSH timed out. Back to state check."

@@ -7,7 +7,6 @@ gsutil -m cp -r droid-language-actions gs://v6_east1d/droid-lang-actions
 gsutil -m cp -r metadata gs://v6_east1d/metadata
 gsutil -m cp -r assets gs://v6_east1d/assets
 
-uv run --group rlds scripts/test_policy_cot.py --policy.config=pi0_droid_cot --policy.dir=/n/fs/robot-data/pi0/checkpoints/pi0_droid_cot/only_vlm/5000
 
 # setup tpu environment
 
@@ -56,4 +55,6 @@ v4 "source ~/.zshrc && cd openpi && git pull origin tpu && XLA_PYTHON_CLIENT_MEM
 tmux new -s pi0-cot
 source ~/.tpu_env.sh
 export TPU_NAME=pi0-cot
-./watch_and_run.sh --exp-name v6_bs256_lr1e4_ss15_paligemma_max110 --fsdp-devices=8 --batch-size=256 --data.summation-steps=15 --resume --weight-loader.kind=paligemma
+./watch_and_run.sh --exp-name v6_bs256_lr1e4_ss15_paligemma_max110 --fsdp-devices=8 --batch-size=256 --data.summation-steps=15 --weight-loader.kind=paligemma --resume
+./watch_and_run.sh --exp-name v6_bs256_lr1e4_ss15_pi0_max110 --fsdp-devices=8 --batch-size=256 --data.summation-steps=15 --resume
+./watch_and_run.sh --exp-name v6_bs256_lr1e4_ss15_pi0_max110_overfit150 --fsdp-devices=8 --batch-size=256 --data.summation-steps=15 --weight-loader.kind=checkpoint --weight-loader.params-path=gs://openpi-assets/checkpoints/pi0_base/params --data.max_samples=150 --resume

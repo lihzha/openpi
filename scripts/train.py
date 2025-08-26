@@ -176,6 +176,11 @@ def init_wandb(config: _config.TrainConfig, *, resuming: bool, log_code: bool = 
         wandb.init(mode="disabled")
         return
 
+    # Only initialize wandb in the main process
+    if jax.process_index() != 0:
+        wandb.init(mode="disabled")
+        return
+
     ckpt_dir = config.checkpoint_dir
     if not ckpt_dir.exists():
         raise FileNotFoundError(f"Checkpoint directory {ckpt_dir} does not exist.")
@@ -605,11 +610,12 @@ def main(config: _config.TrainConfig):
 
     # Log images from first batch to sanity check.
     try:
-        images_to_log = [
-            wandb.Image(np.concatenate([np.array(img[i]) for img in batch[0].images.values()], axis=1))
-            for i in range(min(5, len(next(iter(batch[0].images.values())))))
-        ]
-        wandb.log({"camera_views": images_to_log}, step=start_step)
+        if jax.process_index() == 0:
+            images_to_log = [
+                wandb.Image(np.concatenate([np.array(img[i]) for img in batch[0].images.values()], axis=1))
+                for i in range(min(5, len(next(iter(batch[0].images.values())))))
+            ]
+            wandb.log({"camera_views": images_to_log}, step=0)
     except Exception:
         pass
 
@@ -657,7 +663,8 @@ def main(config: _config.TrainConfig):
             info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_info.items())
             pbar.write(f"Step {step}: {info_str}")
             logging.info(f"Step {step}: {info_str}")
-            wandb.log(reduced_info, step=step)
+            if jax.process_index() == 0:
+                wandb.log(reduced_info, step=step)
             infos = []
         # Periodic validation
         if do_val and step % getattr(config, "val_interval", 5000) == 0:
@@ -683,7 +690,8 @@ def main(config: _config.TrainConfig):
                         ", ".join(f"{k}={v:.4f}" for k, v in reduced_val.items()),
                     )
                 )
-                wandb.log({**reduced_val, "split": "val"}, step=step)
+                if jax.process_index() == 0:
+                    wandb.log({**reduced_val, "split": "val"}, step=step)
         if do_eval and step % getattr(config, "eval_interval", 5000) == 0:
             eval_pbar = tqdm.tqdm(
                 range(num_eval_batches),
@@ -706,7 +714,8 @@ def main(config: _config.TrainConfig):
                         ", ".join(f"{k}={v:.4f}" for k, v in reduced_eval.items()),
                     )
                 )
-                wandb.log({**reduced_eval, "split": "eval"}, step=step)
+                if jax.process_index() == 0:
+                    wandb.log({**reduced_eval, "split": "eval"}, step=step)
         batch = next(data_iter)
 
         if (step % config.save_interval == 0 and step > start_step) or step == config.num_train_steps - 1:
