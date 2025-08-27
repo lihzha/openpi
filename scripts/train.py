@@ -592,13 +592,13 @@ def main(config: _config.TrainConfig):
     if resuming:
         train_state = _checkpoints.restore_state(checkpoint_manager, train_state, data_loader)
 
-    ptrain_step = jax.jit(
-        functools.partial(train_step, config, tok),
-        in_shardings=(replicated_sharding, train_state_sharding, data_sharding),
-        out_shardings=(train_state_sharding, replicated_sharding),
-        donate_argnums=(1,),
-    )
-    # ptrain_step = functools.partial(train_step, config, tok)
+    # ptrain_step = jax.jit(
+    #     functools.partial(train_step, config, tok),
+    #     in_shardings=(replicated_sharding, train_state_sharding, data_sharding),
+    #     out_shardings=(train_state_sharding, replicated_sharding),
+    #     donate_argnums=(1,),
+    # )
+    ptrain_step = functools.partial(train_step, config, tok)
 
     if do_val:
         pval_step = jax.jit(
