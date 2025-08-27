@@ -421,7 +421,7 @@ def val_step(
 
 @at.typecheck
 def eval_step(
-    decode_func: _transforms.DetokenizeReasoning,
+    tok: _tokenizer.PaligemmaTokenizer,
     state: training_utils.TrainState,
     batch: tuple[_model.Observation, _model.Actions],
 ) -> tuple[training_utils.TrainState, dict[str, at.Array]]:
@@ -433,7 +433,9 @@ def eval_step(
         "reasoning_logits": logits,
         "final_length": t,
     }
-    return decode_func(outputs)["reasoning"]
+    logging.info(f"Logits: {logits.shape}")
+    tokenized_reasoning = tok.decode(logits)
+    return tokenized_reasoning
 
 
 def main(config: _config.TrainConfig):
@@ -511,11 +513,6 @@ def main(config: _config.TrainConfig):
         val_iter = iter(val_loader)
     # Defer fetching the first batch until after (potential) checkpoint restore
     # so we can fast-forward the iterator on resume for deterministic continuity.
-
-    if do_eval:
-        decode_func = _transforms.DetokenizeReasoning(
-            _tokenizer.PaligemmaTokenizer(config.model.max_token_len, left_pad=config.data.left_pad)
-        )
 
     # # Optional sanity check: exhaust data_iter until a repeated sample is seen
     # # when training with a capped sample set (e.g., max_samples in RLDS CoT).
@@ -610,7 +607,7 @@ def main(config: _config.TrainConfig):
         )
     if do_eval:
         peval_step = jax.jit(
-            functools.partial(eval_step, decode_func),
+            functools.partial(eval_step, tok),
         )
 
     # Fetch the correct first batch, advancing the iterator on resume
