@@ -724,7 +724,13 @@ def main(config: _config.TrainConfig):
                 )
                 if jax.process_index() == 0:
                     wandb.log({**reduced_val, "split": "val"}, step=step)
-        if do_eval and len(seen) == 149 and step % config.save_interval == 0:
+
+        batch = next(data_iter)
+
+        if (step % config.save_interval == 0 and step > start_step) or step == config.num_train_steps:
+            _checkpoints.save_state(checkpoint_manager, train_state, data_loader, step)
+
+        if do_eval and len(seen) == 150 and step % config.save_interval == 0:
             with sharding.set_mesh(mesh):
                 for batch in train_batches:
                     # Process the batch to remove reasoning and update masks
@@ -740,7 +746,12 @@ def main(config: _config.TrainConfig):
                         prompt_tokens = obs.tokenized_prompt[i]
                         
                         # Find position of token 108 (start of reasoning)
-                        pos_108 = jnp.where(prompt_tokens == 108, size=1, fill_value=-1)[0]
+                        # Ensure prompt_tokens is int32 for the comparison
+                        prompt_tokens_int32 = prompt_tokens.astype(jnp.int32)
+                        pos_108 = jnp.where(prompt_tokens_int32 == 108, size=1, fill_value=-1)[0]
+                        
+                        # Log tensor types for debugging
+                        logging.info(f"Batch {i}: prompt_tokens dtype: {prompt_tokens.dtype}, prompt_tokens_int32 dtype: {prompt_tokens_int32.dtype}, pos_108: {pos_108}")
                         
                         if pos_108[0] >= 0:
                             # Remove everything after token 108 (inclusive)
@@ -749,15 +760,15 @@ def main(config: _config.TrainConfig):
                             
                             # Left pad to maintain the same length
                             padding_length = original_length - prompt_without_reasoning.shape[0]
-                            padded_prompt = jnp.concatenate([
-                                jnp.zeros(padding_length, dtype=prompt_tokens.dtype),
-                                prompt_without_reasoning
-                            ])
+                            # Ensure consistent dtype for concatenation
+                            padding_zeros = jnp.zeros(padding_length, dtype=prompt_tokens.dtype)
+                            prompt_without_reasoning = prompt_without_reasoning.astype(prompt_tokens.dtype)
+                            padded_prompt = jnp.concatenate([padding_zeros, prompt_without_reasoning])
                             
                             # Create new mask: True for non-zero tokens, False for padding
-                            new_mask = padded_prompt != 0
+                            new_mask = (padded_prompt != 0).astype(jnp.bool_)
                             
-                            # Create reasoning mask: all False
+                            # Create reasoning mask: all False - ensure consistent dtype
                             reasoning_mask = jnp.zeros(original_length, dtype=jnp.bool_)
                             
                             # Log the processing for debugging
@@ -765,19 +776,37 @@ def main(config: _config.TrainConfig):
                         else:
                             # No token 108 found, keep original
                             padded_prompt = prompt_tokens
-                            new_mask = obs.tokenized_prompt_mask[i] if obs.tokenized_prompt_mask is not None else jnp.ones_like(prompt_tokens, dtype=jnp.bool_)
-                            reasoning_mask = jnp.zeros_like(prompt_tokens, dtype=jnp.bool_)
+                            # Ensure consistent dtype for the mask
+                            if obs.tokenized_prompt_mask is not None:
+                                new_mask = obs.tokenized_prompt_mask[i].astype(jnp.bool_)
+                            else:
+                                # Create a boolean mask of the same length as prompt_tokens
+                                new_mask = jnp.ones(prompt_tokens.shape[0], dtype=jnp.bool_)
+                            # Create reasoning mask with consistent dtype - use original length instead of zeros_like
+                            reasoning_mask = jnp.zeros(prompt_tokens.shape[0], dtype=jnp.bool_)
                             
                             logging.info(f"Batch {i}: No token 108 found, keeping original prompt")
+                        
+                        # Log mask types for debugging
+                        logging.info(f"Batch {i}: new_mask dtype: {new_mask.dtype}, reasoning_mask dtype: {reasoning_mask.dtype}")
                         
                         new_tokenized_prompts.append(padded_prompt)
                         new_tokenized_prompt_masks.append(new_mask)
                         new_tokenized_reasoning_masks.append(reasoning_mask)
                     
+                    # Ensure all tensors have consistent types before stacking
+                    # All masks should be boolean, all prompts should be int32
+                    new_tokenized_prompts = [p.astype(jnp.int32) for p in new_tokenized_prompts]
+                    new_tokenized_prompt_masks = [m.astype(jnp.bool_) for m in new_tokenized_prompt_masks]
+                    new_tokenized_reasoning_masks = [r.astype(jnp.bool_) for r in new_tokenized_reasoning_masks]
+                    
                     # Stack the processed tensors
                     new_tokenized_prompt = jnp.stack(new_tokenized_prompts)
                     new_tokenized_prompt_mask = jnp.stack(new_tokenized_prompt_masks)
                     new_tokenized_reasoning_mask = jnp.stack(new_tokenized_reasoning_masks)
+                    
+                    # Log tensor types for debugging
+                    logging.info(f"Stacked tensor types - prompt: {new_tokenized_prompt.dtype}, prompt_mask: {new_tokenized_prompt_mask.dtype}, reasoning_mask: {new_tokenized_reasoning_mask.dtype}")
                     
                     # Create new observation with modified prompts and masks
                     new_obs = _model.Observation(
@@ -800,14 +829,10 @@ def main(config: _config.TrainConfig):
                     gt = tok.decode(new_batch[0].tokenized_prompt)[0]
                     
                     # Log original vs modified prompt for comparison
-                    original_gt = tok.decode(obs.tokenized_prompt[0])[0] if obs.tokenized_prompt is not None else "No prompt"
+                    original_gt = tok.decode(obs.tokenized_prompt[0]) if obs.tokenized_prompt is not None else "No prompt"
                     logging.info(f"Original GT: {original_gt}")
                     logging.info(f"Modified GT: {gt}")
                     logging.info(f"Pred: {reasoning}")
-        batch = next(data_iter)
-
-        if (step % config.save_interval == 0 and step > start_step) or step == config.num_train_steps - 1:
-            _checkpoints.save_state(checkpoint_manager, train_state, data_loader, step)
 
     logging.info("Waiting for checkpoint manager to finish")
     checkpoint_manager.wait_until_finished()
