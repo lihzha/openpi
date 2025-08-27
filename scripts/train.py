@@ -755,7 +755,7 @@ def main(config: _config.TrainConfig):
                         
                         if pos_108[0] >= 0:
                             # Remove everything after token 108 (inclusive)
-                            prompt_without_reasoning = prompt_tokens[:pos_108[0]]
+                            prompt_without_reasoning = prompt_tokens[:pos_108[0]+1]
                             original_length = prompt_tokens.shape[0]
                             
                             # Left pad to maintain the same length
