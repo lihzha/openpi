@@ -261,7 +261,7 @@ class Pi0CoT(_model.BaseModel):
         else:
             token_mask = reasoning_and_pad_mask
             
-        breakpoint()
+        # breakpoint()
 
         loss = cross_entropy_loss(shift_logits, shift_labels, mask=token_mask, axis=-1, train=True)
 
