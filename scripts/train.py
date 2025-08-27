@@ -520,64 +520,64 @@ def main(config: _config.TrainConfig):
     # # Optional sanity check: exhaust data_iter until a repeated sample is seen
     # # when training with a capped sample set (e.g., max_samples in RLDS CoT).
     tok = data_loader._data_loader._dataset._transform.transforms[-1].tokenizer
-    max_samples_cfg = getattr(config.data, "max_samples", None)
-    logging.info("Running capped-samples sanity check (expect repeat after ~%s samples)", max_samples_cfg)
-    seen = set()
-    total = 0
-    repeated = False
-    test_iter = iter(data_loader)
-    while not repeated:
-        test_batch = next(test_iter)
-        # test_batch is (Observation, Actions)
-        obs = test_batch[0]
-        lang_actions_encoded = obs.tokenized_prompt
-        # Use the first available camera stream as a stable fingerprint basis
-        first_cam = next(iter(obs.images.values()))
-        B = first_cam.shape[0]
-        for i in range(B):
-            img_bytes = bytes(memoryview(jax.device_get(first_cam[i]).astype("uint8").tobytes()))
-            h = hashlib.sha1(img_bytes).hexdigest()
-            if h in seen:
-                repeated = True
-                break
-            lang_action = jax.device_get(tok.decode(lang_actions_encoded[i]))
-            images = jax.device_get(first_cam[i])
-            images = (images + 1) / 2
-            # img0 = images[0]
-            # img1 = images[-1]
-            img0 = images
-            img1 = images
+    # max_samples_cfg = getattr(config.data, "max_samples", None)
+    # logging.info("Running capped-samples sanity check (expect repeat after ~%s samples)", max_samples_cfg)
+    # seen = set()
+    # total = 0
+    # repeated = False
+    # test_iter = iter(data_loader)
+    # while not repeated:
+    #     test_batch = next(test_iter)
+    #     # test_batch is (Observation, Actions)
+    #     obs = test_batch[0]
+    #     lang_actions_encoded = obs.tokenized_prompt
+    #     # Use the first available camera stream as a stable fingerprint basis
+    #     first_cam = next(iter(obs.images.values()))
+    #     B = first_cam.shape[0]
+    #     for i in range(B):
+    #         img_bytes = bytes(memoryview(jax.device_get(first_cam[i]).astype("uint8").tobytes()))
+    #         h = hashlib.sha1(img_bytes).hexdigest()
+    #         if h in seen:
+    #             repeated = True
+    #             break
+    #         lang_action = jax.device_get(tok.decode(lang_actions_encoded[i]))
+    #         images = jax.device_get(first_cam[i])
+    #         images = (images + 1) / 2
+    #         # img0 = images[0]
+    #         # img1 = images[-1]
+    #         img0 = images
+    #         img1 = images
 
-            fig, axes = plt.subplots(1, 2, figsize=(10, 4))
-            axes[0].imshow(img0)
-            axes[0].axis("off")
-            axes[0].set_title("t=0s")
-            # Write language action on t=0s image
-            _action_text = str(lang_action)
-            axes[0].text(
-                0.01,
-                0.99,
-                _action_text,
-                transform=axes[0].transAxes,
-                va="top",
-                ha="left",
-                fontsize=10,
-                color="white",
-                bbox=dict(facecolor="black", alpha=0.5, pad=3),
-            )
-            axes[1].imshow(img1)
-            axes[1].axis("off")
-            axes[1].set_title("t≈+1s")
-            plt.suptitle("Initial vs +1s")
-            plt.savefig(f"initial_vs_1s_{total}.png")
-            seen.add(h)
-            total += 1
-    logging.info("Capped-samples sanity: unique before repeat=%d (configured max_samples=%s)", total, max_samples_cfg)
+    #         fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+    #         axes[0].imshow(img0)
+    #         axes[0].axis("off")
+    #         axes[0].set_title("t=0s")
+    #         # Write language action on t=0s image
+    #         _action_text = str(lang_action)
+    #         axes[0].text(
+    #             0.01,
+    #             0.99,
+    #             _action_text,
+    #             transform=axes[0].transAxes,
+    #             va="top",
+    #             ha="left",
+    #             fontsize=10,
+    #             color="white",
+    #             bbox=dict(facecolor="black", alpha=0.5, pad=3),
+    #         )
+    #         axes[1].imshow(img1)
+    #         axes[1].axis("off")
+    #         axes[1].set_title("t≈+1s")
+    #         plt.suptitle("Initial vs +1s")
+    #         plt.savefig(f"initial_vs_1s_{total}.png")
+    #         seen.add(h)
+    #         total += 1
+    # logging.info("Capped-samples sanity: unique before repeat=%d (configured max_samples=%s)", total, max_samples_cfg)
 
-    # save the hash list to a file, which is easliy loaded in the future
-    with open("hash4.txt", "w") as f:
-        for h in seen:
-            f.write(h + "\n")
+    # # save the hash list to a file, which is easliy loaded in the future
+    # with open("hash4.txt", "w") as f:
+    #     for h in seen:
+    #         f.write(h + "\n")
 
     checkpoint_manager, resuming = _checkpoints.initialize_checkpoint_dir(
         config.checkpoint_dir,
@@ -648,14 +648,14 @@ def main(config: _config.TrainConfig):
             jax.tree_util.tree_leaves(_warm_val)[0].block_until_ready()
         except Exception:
             pass
-    if do_eval:
-        with sharding.set_mesh(mesh):
-            _warm_eval = peval_step(train_state, batch)
-        # Block on one leaf to ensure compile completes before timing-sensitive loops
-        try:
-            jax.tree_util.tree_leaves(_warm_eval)[0].block_until_ready()
-        except Exception:
-            pass
+    # if do_eval:
+    #     with sharding.set_mesh(mesh):
+    #         _warm_eval = peval_step(train_state, batch)
+    #     # Block on one leaf to ensure compile completes before timing-sensitive loops
+    #     try:
+    #         jax.tree_util.tree_leaves(_warm_eval)[0].block_until_ready()
+    #     except Exception:
+    #         pass
     pbar = tqdm.tqdm(
         range(start_step, config.num_train_steps),
         initial=start_step,
@@ -728,7 +728,7 @@ def main(config: _config.TrainConfig):
                 )
                 if jax.process_index() == 0:
                     wandb.log({**reduced_val, "split": "val"}, step=step)
-        if do_eval and len(train_batches) == config.data.max_samples and step % 50 == 0:
+        if do_eval and len(train_batches) == config.data.max_samples == 0:
             with sharding.set_mesh(mesh):
                 for batch in train_batches:
                     reasoning = peval_step(train_state, batch)
