@@ -256,9 +256,6 @@ def main(args: Args) -> None:
             print(f"Gripper L1 avg: {totals['gripper_l1'] / N:.6f}")
             print(f"TOTAL loss avg: {totals['total_loss'] / N:.6f}")
 
-    # bb = policy._input_transform.transforms[-1](data)
-    # breakpoint()
-
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, force=True)
