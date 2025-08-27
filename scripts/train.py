@@ -667,7 +667,6 @@ def main(config: _config.TrainConfig):
     for step in pbar:
         with sharding.set_mesh(mesh):
             train_state, info = ptrain_step(train_rng, train_state, batch)
-        obs = batch[0]
         single_batches = break_into_single_batches(batch)
         for single_batch in single_batches:
             first_cam = next(iter(single_batch[0].images.values()))
@@ -680,7 +679,7 @@ def main(config: _config.TrainConfig):
                     train_batches.append(single_batch)
                     seen.add(h)
             logging.info(f"Seen: {len(seen)}")
-            if len(seen) >= config.data.max_samples:
+            if len(seen) >= config.data.max_samples - 1:
                 break
         infos.append(info)
         stacked_infos = common_utils.stack_forest(infos)
@@ -725,7 +724,7 @@ def main(config: _config.TrainConfig):
                 )
                 if jax.process_index() == 0:
                     wandb.log({**reduced_val, "split": "val"}, step=step)
-        if do_eval and len(seen) == 150 and step % config.save_interval == 0:
+        if do_eval and len(seen) == 149 and step % config.save_interval == 0:
             with sharding.set_mesh(mesh):
                 for batch in train_batches:
                     # Process the batch to remove reasoning and update masks
