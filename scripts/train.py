@@ -499,7 +499,7 @@ def main(config: _config.TrainConfig):
     data_iter = iter(data_loader)
 
     do_val = False
-    do_eval = False
+    do_eval = True
     if do_val:
         # Validation data loader (non-shuffled, val split)
         val_loader = _data_loader.create_data_loader(
