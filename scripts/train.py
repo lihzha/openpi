@@ -231,6 +231,8 @@ def _maybe_initialize_jax_distributed():
     if not should_init:
         logging.info("Single-process run detected; skipping jax.distributed.initialize().")
         return
+    
+    breakpoint()
 
     try:
         jax.distributed.initialize()
@@ -439,6 +441,8 @@ def eval_step(
 
 
 def main(config: _config.TrainConfig):
+    init_logging()
+
     _maybe_initialize_jax_distributed()
     data_dir = save_dir = config.data.rlds_data_dir
     if _is_tpu_runtime() and (str(data_dir).startswith("gs://") or str(save_dir).startswith("gs://")):
@@ -468,7 +472,6 @@ def main(config: _config.TrainConfig):
     # Prefer intra-host FSDP when single process.
     # assert jax.local_device_count() % effective_fsdp_devices == 0
 
-    init_logging()
     logging.info(
         f"Summation steps: {config.data.summation_steps}, left_pad: {config.data.left_pad}, sum_decimal: {config.data.sum_decimal}, ema_decay: {config.ema_decay}"
     )
