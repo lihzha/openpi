@@ -207,9 +207,12 @@ def _maybe_initialize_jax_distributed():
     # Already initialized → nothing to do
     try:
         if getattr(jax.distributed, "is_initialized", lambda: False)():
+            logging.info("JAX distributed runtime already initialized.")
             return
+        logging.info("JAX distributed runtime not yet initialized.")
     except Exception:
         # Older JAX versions may not have is_initialized
+        logging.info("JAX distributed runtime not yet initialized.")
         pass
 
     env = os.environ
