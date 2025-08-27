@@ -499,7 +499,7 @@ def main(config: _config.TrainConfig):
     data_iter = iter(data_loader)
 
     do_val = False
-    do_eval = False
+    do_eval = True
     if do_val:
         # Validation data loader (non-shuffled, val split)
         val_loader = _data_loader.create_data_loader(
@@ -728,7 +728,7 @@ def main(config: _config.TrainConfig):
                 )
                 if jax.process_index() == 0:
                     wandb.log({**reduced_val, "split": "val"}, step=step)
-        if do_eval and len(train_batches) == config.data.max_samples:
+        if do_eval and len(train_batches) == config.data.max_samples and step % 50 == 0:
             with sharding.set_mesh(mesh):
                 for batch in train_batches:
                     reasoning = peval_step(train_state, batch)
