@@ -723,12 +723,11 @@ def main(config: _config.TrainConfig):
                 )
                 if jax.process_index() == 0:
                     wandb.log({**reduced_val, "split": "val"}, step=step)
-        if do_eval and len(seen) == 150:
+        if do_eval and len(seen) == 150 and step % config.save_interval == 0:
             with sharding.set_mesh(mesh):
                 for batch in train_batches:
                     reasoning = peval_step(train_state, batch)
-                    breakpoint()
-                    gt = tok.decode(batch[0].tokenized_prompt)
+                    gt = tok.decode(batch[0].tokenized_prompt)[0]
                     logging.info(f"GT: {gt}")
                     logging.info(f"Pred: {reasoning}")
         batch = next(data_iter)
