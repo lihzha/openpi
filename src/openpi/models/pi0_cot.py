@@ -16,9 +16,9 @@ from openpi.models.helpers import posemb_sincos
 import openpi.models.siglip as _siglip
 from openpi.shared import array_typing as at
 import openpi.shared.nnx_utils as nnx_utils
+import openpi.models.tokenizer as _tokenizer
 
 logger = logging.getLogger("openpi")
-
 
 @dataclasses.dataclass(frozen=True)
 class Pi0CoTConfig(_model.BaseModelConfig):
@@ -213,7 +213,7 @@ class Pi0CoT(_model.BaseModel):
 
     @override
     def compute_loss(
-        self, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions, *, train: bool = False
+        self, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions, *, tok: _tokenizer.PaligemmaTokenizer, train: bool = False
     ) -> at.Float[at.Array, "*b ah"]:
         preprocess_rng, noise_rng, time_rng = jax.random.split(rng, 3)
         # TODO: assume reasoning is already tokenized for compute_loss. Need to tokenize reasoning on-the-fly for inference.
@@ -260,6 +260,8 @@ class Pi0CoT(_model.BaseModel):
             token_mask = reasoning_and_pad_mask * ex_mask
         else:
             token_mask = reasoning_and_pad_mask
+            
+        breakpoint()
 
         loss = cross_entropy_loss(shift_logits, shift_labels, mask=token_mask, axis=-1, train=True)
 
@@ -406,6 +408,8 @@ class Pi0CoT(_model.BaseModel):
         h_buf = jnp.zeros((b, gen_len, d), dtype=hs.dtype).at[:, 0].set(curr_h.squeeze(1))
         id_buf = jnp.zeros((b, gen_len, 1), dtype=jnp.int32).at[:, 0].set(curr_id)
         t0 = 0
+        
+        breakpoint()
 
         # ───────────────── 5. Body / Cond (only t_abs changes) ─────────────────
         def step(carry):
@@ -433,6 +437,8 @@ class Pi0CoT(_model.BaseModel):
                 mask=attn_row,  # (B,1,MAX+1)
                 kv_cache=(k_cache, v_cache),
             )
+            
+            breakpoint()
 
             # Decode → id for next step
             logits = self.PaliGemma.llm(next_h, method="decode")

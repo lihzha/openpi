@@ -339,6 +339,7 @@ def init_train_state(
 @at.typecheck
 def train_step(
     config: _config.TrainConfig,
+    tok: _tokenizer.PaligemmaTokenizer,
     rng: at.KeyArrayLike,
     state: training_utils.TrainState,
     batch: tuple[_model.Observation, _model.Actions],
@@ -350,7 +351,7 @@ def train_step(
     def loss_fn(
         model: _model.BaseModel, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions
     ):
-        chunked_loss = model.compute_loss(rng, observation, actions, train=True)
+        chunked_loss = model.compute_loss(rng, observation, actions, tok=tok, train=True)
         return jnp.mean(chunked_loss)
 
     train_rng = jax.random.fold_in(rng, state.step)
@@ -591,12 +592,13 @@ def main(config: _config.TrainConfig):
     if resuming:
         train_state = _checkpoints.restore_state(checkpoint_manager, train_state, data_loader)
 
-    ptrain_step = jax.jit(
-        functools.partial(train_step, config),
-        in_shardings=(replicated_sharding, train_state_sharding, data_sharding),
-        out_shardings=(train_state_sharding, replicated_sharding),
-        donate_argnums=(1,),
-    )
+    # ptrain_step = jax.jit(
+    #     functools.partial(train_step, config),
+    #     in_shardings=(replicated_sharding, train_state_sharding, data_sharding),
+    #     out_shardings=(train_state_sharding, replicated_sharding),
+    #     donate_argnums=(1,),
+    # )
+    ptrain_step = functools.partial(train_step, config, tok)
 
     if do_val:
         pval_step = jax.jit(
@@ -723,7 +725,7 @@ def main(config: _config.TrainConfig):
                 )
                 if jax.process_index() == 0:
                     wandb.log({**reduced_val, "split": "val"}, step=step)
-        if do_eval and len(seen) == 150 and step % config.save_interval == 0:
+        if do_eval and len(seen) == 150:
             with sharding.set_mesh(mesh):
                 for batch in train_batches:
                     reasoning = peval_step(train_state, batch)
