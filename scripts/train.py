@@ -665,8 +665,8 @@ def main(config: _config.TrainConfig):
     seen = set()
     num_val_batches = getattr(config, "num_val_batches", 400)
     for step in pbar:
-        with sharding.set_mesh(mesh):
-            train_state, info = ptrain_step(train_rng, train_state, batch)
+        # with sharding.set_mesh(mesh):
+        #     train_state, info = ptrain_step(train_rng, train_state, batch)
         single_batches = break_into_single_batches(batch)
         for single_batch in single_batches:
             first_cam = next(iter(single_batch[0].images.values()))
