@@ -428,7 +428,7 @@ def eval_step(
     model = nnx.merge(state.model_def, state.params)
     model.eval()
     observation = batch[0]
-    logits, t, _, _, _, _, _ = model.sample_reasoning(observation)
+    logits, t, _, _, _ = model.sample_reasoning(observation)
     outputs = {
         "reasoning_logits": logits,
         "final_length": t,
