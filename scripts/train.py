@@ -221,14 +221,12 @@ def _maybe_initialize_jax_distributed():
     if env.get("JAX_COORDINATION_SERVICE_ADDR"):
         should_init = True
     try:
-        if int(env.get("JAX_PROCESS_COUNT", "1")) > 1:
+        if int(getattr(jax, "process_count", lambda: 1)()) > 1:
             should_init = True
         if int(env.get("COORDINATOR_NUM_PROCESSES", "1")) > 1:
             should_init = True
     except Exception:
         pass
-
-    breakpoint()
 
     if not should_init:
         logging.info("Single-process run detected; skipping jax.distributed.initialize().")
