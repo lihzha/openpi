@@ -268,7 +268,7 @@ class Pi0CoT(_model.BaseModel):
             v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
             loss += jnp.mean(jnp.square(v_t - u_t))
 
-        return loss
+        return loss, shift_logits, shift_labels, token_mask
 
     # # Optional eval metrics for validation
     # def compute_eval_metrics(

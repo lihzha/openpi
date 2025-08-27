@@ -823,9 +823,12 @@ def main(config: _config.TrainConfig):
                     new_batch = (new_obs, actions)
                     
                     # Run evaluation on modified batch
-                    breakpoint()
+                    #  model = nnx.merge(train_state.model_def, train_state.params) 
+                    # model.train() 
+                    # model.compute_loss(train_rng, new_batch[0], new_batch[1], train=True)
                     reasoning = peval_step(train_state, new_batch)
                     gt = tok.decode(new_batch[0].tokenized_prompt)[0]
+                    breakpoint() 
                     
                     # Log original vs modified prompt for comparison
                     original_gt = tok.decode(obs.tokenized_prompt[0]) if obs.tokenized_prompt is not None else "No prompt"
