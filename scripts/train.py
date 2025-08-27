@@ -433,6 +433,7 @@ def eval_step(
     observation = batch[0]
     logits, t, _, _, _ = model.sample_reasoning(observation)
     logging.info(f"Logits: {logits.shape}, t: {jax.device_get(t)}")
+    breakpoint()
     tokenized_reasoning = tok.decode(jax.device_get(logits).squeeze()[:jax.device_get(t)])
     return tokenized_reasoning
 
