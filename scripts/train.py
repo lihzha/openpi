@@ -444,7 +444,6 @@ def main(config: _config.TrainConfig):
     data_dir = save_dir = config.data.rlds_data_dir
     if _is_tpu_runtime() and (str(data_dir).startswith("gs://") or str(save_dir).startswith("gs://")):
         prevent_cross_region(data_dir, save_dir)
-
     # Determine effective FSDP devices for single-process GPU/CPU runs.
     process_count = getattr(jax, "process_count", lambda: 1)()
     local_devices = getattr(jax, "local_device_count", lambda: 1)()
@@ -607,9 +606,10 @@ def main(config: _config.TrainConfig):
             in_shardings=(replicated_sharding, train_state_sharding, data_sharding),
         )
     if do_eval:
-        peval_step = jax.jit(
-            functools.partial(eval_step, tok),
-        )
+        # peval_step = jax.jit(
+        #     functools.partial(eval_step, tok),
+        # )
+        peval_step = functools.partial(eval_step, tok)
 
     # Fetch the correct first batch, advancing the iterator on resume
     start_step = int(train_state.step)
