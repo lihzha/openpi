@@ -611,7 +611,6 @@ def main(config: _config.TrainConfig):
     if do_eval:
         peval_step = jax.jit(
             functools.partial(eval_step, decode_func),
-            in_shardings=(replicated_sharding, train_state_sharding, data_sharding),
         )
 
     # Fetch the correct first batch, advancing the iterator on resume
