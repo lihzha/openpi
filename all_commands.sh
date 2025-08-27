@@ -18,6 +18,10 @@ v6 "curl -LsSf https://astral.sh/uv/install.sh | sh && echo 'export WANDB_API_KE
 v4 "source ~/.zshrc && cd openpi && git pull origin tpu && XLA_PYTHON_CLIENT_MEM_FRACTION=0.95 uv run --group rlds scripts/train.py pi0_droid_cot_v4 --exp-name=v4_fsdp4_bs256 --overwrite"
 v6 "source ~/.zshrc && cd openpi && git pull origin tpu && XLA_PYTHON_CLIENT_MEM_FRACTION=0.95 uv run --group rlds scripts/train.py pi0_droid_cot_v6 --exp-name=v6_fsdp4_bs256 --resume"
 
+v4_one "source ~/.zshrc && cd openpi && \
+            git pull origin tpu && \
+            XLA_PYTHON_CLIENT_MEM_FRACTION=0.95 TPU_VISIBLE_CHIPS=0,1,2,3 TPU_PROCESS_BOUNDS=1,1,1 \       
+            uv run --group rlds scripts/train.py pi0_droid_cot_v4 --fsdp-devices=8 --batch-size=64 --exp-name v4_bs256_lr1e4_ss15_pi0_max110_overfit150  --data.summation-steps=15 --data.max_samples=150 --data.sum-decimal=2f  --weight-loader.kind=checkpoint --weight-loader.params-path=gs://openpi-assets/checkpoints/pi0_base/params --save_interval=300 --log-interval=100 --data.left-pad --overwrite"
 
 # Override fsdp_devices, batch_size, data.shuffle_buffer_size, data.summation_steps
 uv run --group rlds scripts/train.py pi0_droid_cot_v6 \

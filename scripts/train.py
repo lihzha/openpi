@@ -728,9 +728,82 @@ def main(config: _config.TrainConfig):
         if do_eval and len(seen) == 150 and step % config.save_interval == 0:
             with sharding.set_mesh(mesh):
                 for batch in train_batches:
-                    reasoning = peval_step(train_state, batch)
-                    gt = tok.decode(batch[0].tokenized_prompt)[0]
-                    logging.info(f"GT: {gt}")
+                    # Process the batch to remove reasoning and update masks
+                    obs, actions = batch
+                    
+                    # Find position 108 (start of reasoning) in each batch item
+                    batch_size = obs.tokenized_prompt.shape[0]
+                    new_tokenized_prompts = []
+                    new_tokenized_prompt_masks = []
+                    new_tokenized_reasoning_masks = []
+                    
+                    for i in range(batch_size):
+                        prompt_tokens = obs.tokenized_prompt[i]
+                        
+                        # Find position of token 108 (start of reasoning)
+                        pos_108 = jnp.where(prompt_tokens == 108, size=1, fill_value=-1)[0]
+                        
+                        if pos_108[0] >= 0:
+                            # Remove everything after token 108 (inclusive)
+                            prompt_without_reasoning = prompt_tokens[:pos_108[0]]
+                            original_length = prompt_tokens.shape[0]
+                            
+                            # Left pad to maintain the same length
+                            padding_length = original_length - prompt_without_reasoning.shape[0]
+                            padded_prompt = jnp.concatenate([
+                                jnp.zeros(padding_length, dtype=prompt_tokens.dtype),
+                                prompt_without_reasoning
+                            ])
+                            
+                            # Create new mask: True for non-zero tokens, False for padding
+                            new_mask = padded_prompt != 0
+                            
+                            # Create reasoning mask: all False
+                            reasoning_mask = jnp.zeros(original_length, dtype=jnp.bool_)
+                            
+                            # Log the processing for debugging
+                            logging.info(f"Batch {i}: Removed reasoning after position {pos_108[0]}, original length: {original_length}, new length: {prompt_without_reasoning.shape[0]}")
+                        else:
+                            # No token 108 found, keep original
+                            padded_prompt = prompt_tokens
+                            new_mask = obs.tokenized_prompt_mask[i] if obs.tokenized_prompt_mask is not None else jnp.ones_like(prompt_tokens, dtype=jnp.bool_)
+                            reasoning_mask = jnp.zeros_like(prompt_tokens, dtype=jnp.bool_)
+                            
+                            logging.info(f"Batch {i}: No token 108 found, keeping original prompt")
+                        
+                        new_tokenized_prompts.append(padded_prompt)
+                        new_tokenized_prompt_masks.append(new_mask)
+                        new_tokenized_reasoning_masks.append(reasoning_mask)
+                    
+                    # Stack the processed tensors
+                    new_tokenized_prompt = jnp.stack(new_tokenized_prompts)
+                    new_tokenized_prompt_mask = jnp.stack(new_tokenized_prompt_masks)
+                    new_tokenized_reasoning_mask = jnp.stack(new_tokenized_reasoning_masks)
+                    
+                    # Create new observation with modified prompts and masks
+                    new_obs = _model.Observation(
+                        images=obs.images,
+                        image_masks=obs.image_masks,
+                        state=obs.state,
+                        tokenized_prompt=new_tokenized_prompt,
+                        tokenized_prompt_mask=new_tokenized_prompt_mask,
+                        tokenized_reasoning_mask=new_tokenized_reasoning_mask,
+                        token_ar_mask=obs.token_ar_mask,
+                        token_loss_mask=obs.token_loss_mask,
+                        example_mask=obs.example_mask
+                    )
+                    
+                    # Create new batch with modified observation
+                    new_batch = (new_obs, actions)
+                    
+                    # Run evaluation on modified batch
+                    reasoning = peval_step(train_state, new_batch)
+                    gt = tok.decode(new_batch[0].tokenized_prompt)[0]
+                    
+                    # Log original vs modified prompt for comparison
+                    original_gt = tok.decode(obs.tokenized_prompt[0])[0] if obs.tokenized_prompt is not None else "No prompt"
+                    logging.info(f"Original GT: {original_gt}")
+                    logging.info(f"Modified GT: {gt}")
                     logging.info(f"Pred: {reasoning}")
         batch = next(data_iter)
 
