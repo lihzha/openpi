@@ -680,7 +680,7 @@ def main(config: _config.TrainConfig):
                     train_batches.append(single_batch)
                     seen.add(h)
             logging.info(f"Seen: {len(seen)}")
-            if len(seen) == config.data.max_samples:
+            if len(seen) >= config.data.max_samples:
                 break
         infos.append(info)
         stacked_infos = common_utils.stack_forest(infos)
