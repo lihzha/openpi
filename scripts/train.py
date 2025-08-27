@@ -228,6 +228,8 @@ def _maybe_initialize_jax_distributed():
     except Exception:
         pass
 
+    breakpoint()
+
     if not should_init:
         logging.info("Single-process run detected; skipping jax.distributed.initialize().")
         return
