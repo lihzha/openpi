@@ -450,6 +450,7 @@ def main(config: _config.TrainConfig):
     process_count = getattr(jax, "process_count", lambda: 1)()
     local_devices = getattr(jax, "local_device_count", lambda: 1)()
     global_devices = getattr(jax, "device_count", lambda: local_devices)()
+    logging.info(f"Local devices: {local_devices}, Global devices: {global_devices}, Process count: {process_count}")
     if process_count == 1:
         # Choose the largest divisor of available devices not exceeding configured fsdp_devices
         target = min(config.fsdp_devices, max(1, local_devices))
