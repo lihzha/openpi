@@ -668,6 +668,9 @@ _CONFIGS = [
                 assets_dir="gs://pi0-cot/assets/pi0_droid_cot_v4",
                 asset_id="droid",
             ),
+            summation_steps=15,
+            sum_decimal="2f",
+            left_pad=False,
         ),
         num_train_steps=100_000,
         fsdp_devices=4,
@@ -711,6 +714,8 @@ _CONFIGS = [
         num_train_steps=100_000,
         fsdp_devices=8,
         batch_size=256,
+        save_interval=1000,
+        log_interval=50,
         weight_loader=weight_loaders.WeightLoaderChoice(kind="paligemma"),
         # weight_loader=weight_loaders.WeightLoaderChoice(kind="checkpoint", params_path="gs://openpi-assets/checkpoints/pi0_base/params"),
         assets_base_dir="gs://v6_east1d/assets",
@@ -721,9 +726,8 @@ _CONFIGS = [
             decay_steps=1_000_000,
             decay_lr=1e-4,
         ),
-        save_interval=1000,
-        log_interval=50,
-        ema_decay=None,
+
+        # ema_decay=None,
         # keep_period=20_000,
     ),
     TrainConfig(
@@ -750,6 +754,8 @@ _CONFIGS = [
         num_train_steps=100_000,
         fsdp_devices=8,
         batch_size=1,
+        save_interval=1000,
+        log_interval=50,
         weight_loader=weight_loaders.WeightLoaderChoice(
             kind="checkpoint", params_path="/n/fs/robot-data/cache/openpi/openpi-assets/checkpoints/pi0_base/params"
         ),
@@ -761,8 +767,7 @@ _CONFIGS = [
             decay_steps=1_000_000,
             decay_lr=1e-4,
         ),
-        save_interval=1000,
-        log_interval=50,
+
         # keep_period=20_000,
     ),
     #
