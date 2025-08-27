@@ -422,7 +422,6 @@ def val_step(
     return {"val_loss": loss}
 
 
-@at.typecheck
 def eval_step(
     tok: _tokenizer.PaligemmaTokenizer,
     state: training_utils.TrainState,
