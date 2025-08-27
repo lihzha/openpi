@@ -500,7 +500,7 @@ def main(config: _config.TrainConfig):
     data_iter = iter(data_loader)
 
     do_val = False
-    do_eval = True
+    do_eval = False
     if do_val:
         # Validation data loader (non-shuffled, val split)
         val_loader = _data_loader.create_data_loader(
@@ -592,13 +592,13 @@ def main(config: _config.TrainConfig):
     if resuming:
         train_state = _checkpoints.restore_state(checkpoint_manager, train_state, data_loader)
 
-    # ptrain_step = jax.jit(
-    #     functools.partial(train_step, config, tok),
-    #     in_shardings=(replicated_sharding, train_state_sharding, data_sharding),
-    #     out_shardings=(train_state_sharding, replicated_sharding),
-    #     donate_argnums=(1,),
-    # )
-    ptrain_step = functools.partial(train_step, config, tok)
+    ptrain_step = jax.jit(
+        functools.partial(train_step, config, tok),
+        in_shardings=(replicated_sharding, train_state_sharding, data_sharding),
+        out_shardings=(train_state_sharding, replicated_sharding),
+        donate_argnums=(1,),
+    )
+    # ptrain_step = functools.partial(train_step, config, tok)
 
     if do_val:
         pval_step = jax.jit(
@@ -665,39 +665,39 @@ def main(config: _config.TrainConfig):
     seen = set()
     num_val_batches = getattr(config, "num_val_batches", 400)
     for step in pbar:
-        # with sharding.set_mesh(mesh):
-        #     train_state, info = ptrain_step(train_rng, train_state, batch)
-        single_batches = break_into_single_batches(batch)
-        for single_batch in single_batches:
-            first_cam = next(iter(single_batch[0].images.values()))
-            B = first_cam.shape[0]
-            assert B == 1
-            for i in range(B):
-                img_bytes = bytes(memoryview(jax.device_get(first_cam[i]).astype("uint8").tobytes()))
-                h = hashlib.sha1(img_bytes).hexdigest()
-                if h not in seen:
-                    train_batches.append(single_batch)
-                    seen.add(h)
-            logging.info(f"Seen: {len(seen)}")
-            if len(seen) >= config.data.max_samples - 1:
-                break
-        # infos.append(info)
-        # stacked_infos = common_utils.stack_forest(infos)
-        # reduced_info = jax.device_get(jax.tree.map(jnp.mean, stacked_infos))
-        # info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_info.items())
-        # logging.info(f"Step {step}: {info_str}")
-        # infos = []
+        with sharding.set_mesh(mesh):
+            train_state, info = ptrain_step(train_rng, train_state, batch)
+        # single_batches = break_into_single_batches(batch)
+        # for single_batch in single_batches:
+        #     first_cam = next(iter(single_batch[0].images.values()))
+        #     B = first_cam.shape[0]
+        #     assert B == 1
+        #     for i in range(B):
+        #         img_bytes = bytes(memoryview(jax.device_get(first_cam[i]).astype("uint8").tobytes()))
+        #         h = hashlib.sha1(img_bytes).hexdigest()
+        #         if h not in seen:
+        #             train_batches.append(single_batch)
+        #             seen.add(h)
+        #     logging.info(f"Seen: {len(seen)}")
+        #     if len(seen) >= config.data.max_samples - 1:
+        #         break
+        infos.append(info)
+        stacked_infos = common_utils.stack_forest(infos)
+        reduced_info = jax.device_get(jax.tree.map(jnp.mean, stacked_infos))
+        info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_info.items())
+        logging.info(f"Step {step}: {info_str}")
+        infos = []
 
-        # if step % config.log_interval == 0:
-        #     infos.append(info)
-        #     stacked_infos = common_utils.stack_forest(infos)
-        #     reduced_info = jax.device_get(jax.tree.map(jnp.mean, stacked_infos))
-        #     info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_info.items())
-        #     pbar.write(f"Step {step}: {info_str}")
-        #     logging.info(f"Step {step}: {info_str}")
-        #     if jax.process_index() == 0:
-        #         wandb.log(reduced_info, step=step)
-        #     infos = []
+        if step % config.log_interval == 0:
+            infos.append(info)
+            stacked_infos = common_utils.stack_forest(infos)
+            reduced_info = jax.device_get(jax.tree.map(jnp.mean, stacked_infos))
+            info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_info.items())
+            pbar.write(f"Step {step}: {info_str}")
+            logging.info(f"Step {step}: {info_str}")
+            if jax.process_index() == 0:
+                wandb.log(reduced_info, step=step)
+            infos = []
         # Periodic validation
         if do_val and step % getattr(config, "val_interval", 5000) == 0:
             # use a pbar to track the validation progress
@@ -825,7 +825,6 @@ def main(config: _config.TrainConfig):
                     new_batch = (new_obs, actions)
                     
                     # Run evaluation on modified batch
-                    breakpoint()
                     reasoning = peval_step(train_state, new_batch)
                     gt = tok.decode(new_batch[0].tokenized_prompt)[0]
                     

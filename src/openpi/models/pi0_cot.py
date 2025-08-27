@@ -408,8 +408,6 @@ class Pi0CoT(_model.BaseModel):
         id_buf = jnp.zeros((b, gen_len, 1), dtype=jnp.int32).at[:, 0].set(curr_id)
         t0 = 0
         
-        breakpoint()
-        
         # ───────────────── 5. Body / Cond (only t_abs changes) ─────────────────
         def step(carry):
             (curr_h, curr_id, k_cache, v_cache, p_mask, p_ar_mask, h_buf, id_buf, _t) = carry
