@@ -433,9 +433,8 @@ def eval_step(
     observation = batch[0]
     logits, t, _, _, _ = model.sample_reasoning(observation)
     logging.info(f"Logits: {logits.shape}, t: {jax.device_get(t)}")
-    breakpoint()
-    tokenized_reasoning = tok.decode(jax.device_get(logits).squeeze()[:jax.device_get(t)])
-    return tokenized_reasoning
+    reasoning = tok.decode(jax.device_get(logits).squeeze()[:jax.device_get(t)])
+    return reasoning
 
 
 def main(config: _config.TrainConfig):
@@ -729,6 +728,7 @@ def main(config: _config.TrainConfig):
             with sharding.set_mesh(mesh):
                 for batch in train_batches:
                     reasoning = peval_step(train_state, batch)
+                    breakpoint()
                     gt = tok.decode(batch[0].tokenized_prompt)
                     logging.info(f"GT: {gt}")
                     logging.info(f"Pred: {reasoning}")
