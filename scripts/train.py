@@ -440,7 +440,6 @@ def eval_step(
 
 def main(config: _config.TrainConfig):
     init_logging()
-    jax.distributed.initialize()
     _maybe_initialize_jax_distributed()
     data_dir = save_dir = config.data.rlds_data_dir
     if _is_tpu_runtime() and (str(data_dir).startswith("gs://") or str(save_dir).startswith("gs://")):
