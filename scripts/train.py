@@ -730,7 +730,7 @@ def main(config: _config.TrainConfig):
         if (step % config.save_interval == 0 and step > start_step) or step == config.num_train_steps:
             _checkpoints.save_state(checkpoint_manager, train_state, data_loader, step)
 
-        if do_eval and len(seen) == 150 and step % config.save_interval == 0:
+        if do_eval and len(seen) == 149 and step % config.save_interval == 0:
             with sharding.set_mesh(mesh):
                 for batch in train_batches:
                     # Process the batch to remove reasoning and update masks
@@ -825,6 +825,7 @@ def main(config: _config.TrainConfig):
                     new_batch = (new_obs, actions)
                     
                     # Run evaluation on modified batch
+                    breakpoint()
                     reasoning = peval_step(train_state, new_batch)
                     gt = tok.decode(new_batch[0].tokenized_prompt)[0]
                     

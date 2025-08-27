@@ -261,7 +261,7 @@ class Pi0CoT(_model.BaseModel):
         else:
             token_mask = reasoning_and_pad_mask
             
-        # breakpoint()
+        breakpoint()
 
         loss = cross_entropy_loss(shift_logits, shift_labels, mask=token_mask, axis=-1, train=True)
 
@@ -408,6 +408,8 @@ class Pi0CoT(_model.BaseModel):
         h_buf = jnp.zeros((b, gen_len, d), dtype=hs.dtype).at[:, 0].set(curr_h.squeeze(1))
         id_buf = jnp.zeros((b, gen_len, 1), dtype=jnp.int32).at[:, 0].set(curr_id)
         t0 = 0
+        
+        breakpoint()
         
         # ───────────────── 5. Body / Cond (only t_abs changes) ─────────────────
         def step(carry):
