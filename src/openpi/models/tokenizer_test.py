@@ -28,7 +28,7 @@ def test_fast_tokenizer():
 
 
 def test_cot_tokenize():
-    tok = _tokenizer.PaligemmaTokenizer(max_len=200)
+    tok = _tokenizer.PaligemmaTokenizer(max_len=200, include_decimal_point=True, left_pad=True)
     prompt = "Pick up the red block\n"
     reasoning = "Move left 3.10cm and move up 3.12cm and move down 129.3cm and set gripper to 0.1"
     tokens, attn_mask, reasoning_mask, numeric_mask = tok.tokenize_cot(prompt, reasoning)

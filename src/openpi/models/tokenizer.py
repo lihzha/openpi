@@ -9,7 +9,7 @@ import openpi.shared.download as download
 
 
 class PaligemmaTokenizer:
-    def __init__(self, max_len: int = 48, left_pad: bool = False, include_decimal_point: bool = False):
+    def __init__(self, max_len: int = 48, left_pad: bool = True, include_decimal_point: bool = True):
         self._max_len = max_len
         self._left_pad = left_pad
         self._include_decimal_point = include_decimal_point
