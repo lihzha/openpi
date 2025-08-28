@@ -1,7 +1,7 @@
 import numpy as np
 
 from openpi.models import tokenizer as _tokenizer
-
+import jax
 
 def test_tokenize():
     tokenizer = _tokenizer.PaligemmaTokenizer(max_len=10)
@@ -28,6 +28,7 @@ def test_fast_tokenizer():
 
 
 def test_cot_tokenize():
+    jax.distributed.initialize()
     tok = _tokenizer.PaligemmaTokenizer(max_len=200, include_decimal_point=True, left_pad=True)
     prompt = "Pick up the red block\n"
     reasoning = "Move left 3.10cm and move up 3.12cm and move down 129.3cm and set gripper to 0.1"
