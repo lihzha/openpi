@@ -42,7 +42,6 @@ class PaligemmaTokenizer:
 
     def tokenize_cot(self, prompt: str, reasoning: str | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         
-        logging.info(f"Starting tokenization with max_len {self._max_len}")
         cleaned_prompt = prompt.strip().replace("_", " ").replace("\n", " ")
         # eos_id = self._tokenizer.eos_id()
         pad_id = self._tokenizer.pad_id()
@@ -129,7 +128,6 @@ class PaligemmaTokenizer:
                 if idx < len(pieces) and (_has_digit(pieces[idx]) or _is_decimal_point_index(idx)):
                     numeric_mask[i] = True
 
-        logging.info(f"Finish tokenization with max_len {self._max_len}")
 
         return (
             np.asarray(tokens, dtype=np.int32),

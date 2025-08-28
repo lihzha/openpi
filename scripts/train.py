@@ -655,8 +655,10 @@ def main(config: _config.TrainConfig):
     num_val_batches = getattr(config, "num_val_batches", 400)
     for step in pbar:
         if not do_eval:
+            logging.info(f"Step {step}: Starting training step")
             with sharding.set_mesh(mesh):
                 train_state, info = ptrain_step(train_rng, train_state, batch)
+            logging.info(f"Step {step}: Finished training step")
         else:
             single_batches = break_into_single_batches(batch)
             for single_batch in single_batches:
@@ -719,7 +721,9 @@ def main(config: _config.TrainConfig):
                 if jax.process_index() == 0:
                     wandb.log({**reduced_val, "split": "val"}, step=step)
 
+        logging.info(f"Step {step}: Starting to fetch next batch")
         batch = next(data_iter)
+        logging.info(f"Step {step}: Fetched next batch")
 
         if (step % config.save_interval == 0 and step > start_step) or step == config.num_train_steps:
             _checkpoints.save_state(checkpoint_manager, train_state, data_loader, step)
