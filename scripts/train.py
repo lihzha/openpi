@@ -654,7 +654,6 @@ def main(config: _config.TrainConfig):
     seen = set()
     num_val_batches = getattr(config, "num_val_batches", 400)
     for step in pbar:
-        breakpoint()
         if not do_eval:
             with sharding.set_mesh(mesh):
                 train_state, info = ptrain_step(train_rng, train_state, batch)
@@ -680,17 +679,17 @@ def main(config: _config.TrainConfig):
             # info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_info.items())
             # logging.info(f"Step {step}: {info_str}")
             # infos = []
-            if step % config.log_interval == 0:
-                # infos.append(info)
-                stacked_infos = common_utils.stack_forest(infos)
-                reduced_info = jax.device_get(jax.tree.map(jnp.mean, stacked_infos))
-                info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_info.items())
-                if jax.process_index() == 0:
-                    pbar.write(f"Step {step}: {info_str}")
-                logging.info(f"Step {step}: {info_str}")
-                if jax.process_index() == 0:
-                    wandb.log(reduced_info, step=step)
-                infos = []
+            # if step % config.log_interval == 0:
+            #     # infos.append(info)
+            #     stacked_infos = common_utils.stack_forest(infos)
+            #     reduced_info = jax.device_get(jax.tree.map(jnp.mean, stacked_infos))
+            #     info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_info.items())
+            #     if jax.process_index() == 0:
+            #         pbar.write(f"Step {step}: {info_str}")
+            #     logging.info(f"Step {step}: {info_str}")
+            #     if jax.process_index() == 0:
+            #         wandb.log(reduced_info, step=step)
+            #     infos = []
         # Periodic validation
         if do_val and step % getattr(config, "val_interval", 5000) == 0:
             # use a pbar to track the validation progress
