@@ -29,8 +29,8 @@ def test_fast_tokenizer():
 
 def test_cot_tokenize():
     tok = _tokenizer.PaligemmaTokenizer(max_len=200)
-    prompt = "I love cat."
-    reasoning = "because cats are cute!"
+    prompt = "Pick up the red block\n"
+    reasoning = "Move left 3.10cm and move up 3.12cm and move down 129.3cm and set gripper to 0.1"
     tokens, attn_mask, reasoning_mask, numeric_mask = tok.tokenize_cot(prompt, reasoning)
     assert tokens.shape == (200,)
     assert attn_mask.shape == (200,)

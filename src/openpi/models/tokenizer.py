@@ -76,10 +76,10 @@ class PaligemmaTokenizer:
             numeric_mask = np.zeros(self._max_len, dtype=bool)
             attn_mask[pad_count:] = True
             # Shift reasoning indices by pad_count after left padding
-            rs = max(0, min(self._max_len, reasoning_start + pad_count))
-            re = max(0, min(self._max_len, reasoning_end + pad_count))
-            if re > rs:
-                reasoning_mask[rs:re] = True
+            start_idx = max(0, min(self._max_len, reasoning_start + pad_count))
+            end_idx = max(0, min(self._max_len, reasoning_end + pad_count))
+            if end_idx > start_idx:
+                reasoning_mask[start_idx:end_idx] = True
             # Build numeric mask: mark tokens that contain digits within reasoning span only
             try:
                 pieces = [self._tokenizer.id_to_piece(t) for t in tokens]
@@ -87,7 +87,7 @@ class PaligemmaTokenizer:
                 pieces = [""] * len(tokens)
             def _is_numeric_piece(p: str) -> bool:
                 return bool(re.search(r"[0-9]", p))
-            for i in range(rs, re):
+            for i in range(start_idx, end_idx):
                 if i < 0 or i >= len(pieces):
                     continue
                 if _is_numeric_piece(pieces[i]):
