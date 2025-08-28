@@ -675,22 +675,29 @@ def main(config: _config.TrainConfig):
                 if len(seen) >= config.data.max_samples - 1:
                     break
         if not do_eval:
+            logging.info(f"Step {step}: Starting to append info")
             infos.append(info)
             # stacked_infos = common_utils.stack_forest(infos)
             # reduced_info = jax.device_get(jax.tree.map(jnp.mean, stacked_infos))
             # info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_info.items())
             # logging.info(f"Step {step}: {info_str}")
             # infos = []
+            logging.info(f"Step {step}: Finished appending info")
             if step % config.log_interval == 0:
                 # infos.append(info)
+                logging.info(f"Step {step}: Starting to stack infos")
                 stacked_infos = common_utils.stack_forest(infos)
+                logging.info(f"Step {step}: Finished stacking infos")
                 reduced_info = jax.device_get(jax.tree.map(jnp.mean, stacked_infos))
+                logging.info(f"Step {step}: Finished reducing infos")
                 info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_info.items())
-                if jax.process_index() == 0:
-                    pbar.write(f"Step {step}: {info_str}")
                 logging.info(f"Step {step}: {info_str}")
                 if jax.process_index() == 0:
+                    pbar.write(f"Step {step}: {info_str}")
+                logging.info(f"Step {step}: Starting to log to wandb")
+                if jax.process_index() == 0:
                     wandb.log(reduced_info, step=step)
+                logging.info(f"Step {step}: Finished logging to wandb")
                 infos = []
         # Periodic validation
         if do_val and step % getattr(config, "val_interval", 5000) == 0:
