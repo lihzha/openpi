@@ -347,11 +347,11 @@ class DroidCoTRldsDataset:
         # Global seeding for reproducibility across dataset ops
         # ------------------------------------------------------------------
         tf.random.set_seed(seed)
-        try:
-            # TF 2.12+: enable deterministic kernels where available
-            tf.config.experimental.enable_op_determinism()
-        except Exception:
-            pass
+        # try:
+        #     # TF 2.12+: enable deterministic kernels where available
+        #     tf.config.experimental.enable_op_determinism()
+        # except Exception:
+        #     pass
 
         # Configure Tensorflow with no GPU/TPU devices to avoid clobbering JAX/TPU runtime
         tf.config.set_visible_devices([], "GPU")
@@ -381,10 +381,10 @@ class DroidCoTRldsDataset:
 
         dataset = dataset.shard(jax.process_count(), jax.process_index())
 
-        # Enforce deterministic mapping/order for reproducibility
-        opts = tf.data.Options()
-        opts.experimental_deterministic = True
-        dataset = dataset.with_options(opts)
+        # # Enforce deterministic mapping/order for reproducibility
+        # opts = tf.data.Options()
+        # opts.experimental_deterministic = True
+        # dataset = dataset.with_options(opts)
 
         # ---------------------------------------------------------------------
         # 2. Language-action table (episode_id → serialized tensor)
