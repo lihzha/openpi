@@ -275,7 +275,7 @@ while true; do
       if ! with_timeout $((DESCRIBE_TIMEOUT * 20)) -- \
             gcloud alpha compute tpus tpu-vm create "$TPU_NAME" \
               --zone="$TPU_ZONE_v6" --project="$TPU_PROJECT" \
-              --accelerator-type=v6e-8 \
+              --accelerator-type=v6e-32 \
               --version=v2-alpha-tpuv6e \
               --service-account=irom-service-account@mae-irom-lab-guided-data.iam.gserviceaccount.com \
               --spot; then
@@ -334,6 +334,7 @@ while true; do
     echo "$(ts) - Starting training..."
     if ! v6 "source ~/.zshrc && cd openpi && \
             git pull origin tpu && \
+            export JAX_PROCESS_COUNT=4 && \
             XLA_PYTHON_CLIENT_MEM_FRACTION=0.95 \
             uv run --group rlds scripts/train.py pi0_droid_cot_v6 --fsdp-devices=32 --batch-size=1024 --exp-name v6_bs1024_lr1e4_pi0 --data.sum-decimal=1f --weight-loader.kind=checkpoint --weight-loader.params-path=gs://openpi-assets/checkpoints/pi0_base/params --save_interval=500 --log-interval=50 --data.left-pad --data.include_decimal_point --model.number_token_weight=1 --resume \
     "; then

@@ -17,7 +17,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import optax
 from rail_tpu_utils import prevent_cross_region
-import tqdm_loggable.auto as tqdm
+import tqdm.auto as tqdm
 import wandb
 
 import openpi.models.model as _model
@@ -646,6 +646,7 @@ def main(config: _config.TrainConfig):
         initial=start_step,
         total=config.num_train_steps,
         dynamic_ncols=True,
+        disable=(jax.process_index() != 0),
     )
 
     infos = []
@@ -683,7 +684,8 @@ def main(config: _config.TrainConfig):
                 stacked_infos = common_utils.stack_forest(infos)
                 reduced_info = jax.device_get(jax.tree.map(jnp.mean, stacked_infos))
                 info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_info.items())
-                pbar.write(f"Step {step}: {info_str}")
+                if jax.process_index() == 0:
+                    pbar.write(f"Step {step}: {info_str}")
                 logging.info(f"Step {step}: {info_str}")
                 if jax.process_index() == 0:
                     wandb.log(reduced_info, step=step)
@@ -696,6 +698,7 @@ def main(config: _config.TrainConfig):
                 initial=0,
                 total=num_val_batches,
                 dynamic_ncols=True,
+                disable=(jax.process_index() != 0),
             )
             with sharding.set_mesh(mesh):
                 val_infos = []
@@ -705,13 +708,14 @@ def main(config: _config.TrainConfig):
                     val_infos.append(val_info)
                 stacked_val = common_utils.stack_forest(val_infos)
                 reduced_val = jax.device_get(jax.tree.map(jnp.mean, stacked_val))
-                val_pbar.write(
-                    "Step %d (val): %s"
-                    % (
-                        step,
-                        ", ".join(f"{k}={v:.4f}" for k, v in reduced_val.items()),
+                if jax.process_index() == 0:
+                    val_pbar.write(
+                        "Step %d (val): %s"
+                        % (
+                            step,
+                            ", ".join(f"{k}={v:.4f}" for k, v in reduced_val.items()),
+                        )
                     )
-                )
                 if jax.process_index() == 0:
                     wandb.log({**reduced_val, "split": "val"}, step=step)
 
