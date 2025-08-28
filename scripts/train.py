@@ -5,6 +5,9 @@ import logging
 import os
 import platform
 from typing import Any
+import sys
+import traceback
+import signal
 
 import etils.epath as epath
 import flax.nnx as nnx
@@ -228,6 +231,13 @@ def _maybe_initialize_jax_distributed():
     except Exception:
         pass
 
+    logging.info(
+        "JAX distributed env: JAX_PROCESS_COUNT=%s, COORDINATOR_NUM_PROCESSES=%s, JAX_COORDINATION_SERVICE_ADDR=%s",
+        env.get("JAX_PROCESS_COUNT"),
+        env.get("COORDINATOR_NUM_PROCESSES"),
+        env.get("JAX_COORDINATION_SERVICE_ADDR"),
+    )
+
     if not should_init:
         logging.info("Single-process run detected; skipping jax.distributed.initialize().")
         return
@@ -235,8 +245,21 @@ def _maybe_initialize_jax_distributed():
     try:
         jax.distributed.initialize()
         logging.info("Initialized JAX distributed runtime.")
+        # Best-effort global sync to verify connectivity
+        try:
+            from jax.experimental import multihost_utils as _mh
+
+            _mh.sync_global_devices("post-init")
+            logging.info("Synchronized all processes after distributed init.")
+        except Exception as _sync_e:
+            logging.warning("Post-init multihost sync failed (continuing): %s", _sync_e)
     except Exception as e:
-        logging.info("Failed to initialize jax.distributed (continuing single-process): %s", e)
+        logging.error(
+            "Failed to initialize jAX distributed in a multi-process environment; aborting. Error: %s",
+            e,
+            exc_info=True,
+        )
+        raise
 
 
 def break_into_single_batches(batch: tuple[_model.Observation, _model.Actions]) -> list[tuple[_model.Observation, _model.Actions]]:
@@ -438,6 +461,38 @@ def eval_step(
 
 def main(config: _config.TrainConfig):
     init_logging()
+    # Install a global exception hook so uncaught errors aren't swallowed by launcher
+    def _excepthook(exc_type, exc_value, exc_tb):
+        if issubclass(exc_type, KeyboardInterrupt):
+            return
+        logging.critical("Uncaught exception:")
+        logging.critical("".join(traceback.format_exception(exc_type, exc_value, exc_tb)))
+    sys.excepthook = _excepthook
+
+    # Log on termination signals to avoid silent exits
+    def _on_signal(signum, frame):  # noqa: ARG001
+        try:
+            logging.critical("Received signal %s on process %d; aborting", signum, os.getpid())
+        finally:
+            # Re-raise default to ensure proper exit code
+            os._exit(128 + int(signum))
+
+    for _sig in (getattr(signal, "SIGTERM", None), getattr(signal, "SIGINT", None), getattr(signal, "SIGHUP", None)):
+        if _sig is not None:
+            try:
+                signal.signal(_sig, _on_signal)
+            except Exception:
+                pass
+
+    # Optional verbose JAX debugging toggles
+    if os.environ.get("OPENPI_DEBUG", "0") == "1":
+        try:
+            jax.config.update("jax_log_compiles", 1)
+            jax.config.update("jax_debug_nans", True)
+            jax.config.update("jax_debug_infs", True)
+            logging.info("Enabled JAX debug flags (compiles,nans,infs)")
+        except Exception as _cfg_e:
+            logging.warning("Failed to enable JAX debug flags: %s", _cfg_e)
     _maybe_initialize_jax_distributed()
     data_dir = save_dir = config.data.rlds_data_dir
     if _is_tpu_runtime() and (str(data_dir).startswith("gs://") or str(save_dir).startswith("gs://")):
@@ -500,6 +555,7 @@ def main(config: _config.TrainConfig):
 
     do_val = False
     do_eval = False
+    tok: _tokenizer.PaligemmaTokenizer | None = None
     if do_val:
         # Validation data loader (non-shuffled, val split)
         val_loader = _data_loader.create_data_loader(
@@ -602,6 +658,8 @@ def main(config: _config.TrainConfig):
             in_shardings=(replicated_sharding, train_state_sharding, data_sharding),
         )
     if do_eval:
+        # Initialize tokenizer for eval path
+        tok = _tokenizer.PaligemmaTokenizer(max_len=getattr(config.model, "max_token_len", 128), left_pad=True)
         # peval_step = jax.jit(
         #     functools.partial(eval_step, tok),
         # )
@@ -620,6 +678,15 @@ def main(config: _config.TrainConfig):
     # logging.info(f"Batch[0].tokenized_prompt: {batch[0].tokenized_prompt}")
     # Sharding details for the first batch
     log_batch_sharding(batch)
+
+    # Barrier after first batch fetch to catch dataset/desync issues early
+    try:
+        from jax.experimental import multihost_utils as _mh
+        _mh.sync_global_devices("after-first-batch")
+        logging.info("Synchronized all processes after first batch fetch.")
+    except Exception as _first_batch_barrier:
+        logging.exception("Barrier after first batch failed: %s", _first_batch_barrier)
+        raise
 
     # Log images from first batch to sanity check.
     try:
@@ -657,8 +724,29 @@ def main(config: _config.TrainConfig):
         if not do_eval:
             logging.info(f"Step {step}: Starting training step")
             with sharding.set_mesh(mesh):
-                train_state, info = ptrain_step(train_rng, train_state, batch)
+                try:
+                    train_state, info = ptrain_step(train_rng, train_state, batch)
+                    # Force device-side sync to surface TPU errors on this host
+                    try:
+                        info_leaves = jax.tree_util.tree_leaves(info)
+                        if info_leaves:
+                            info_leaves[0].block_until_ready()
+                        # Also touch a param leaf to ensure the update completed
+                        param_leaves = jax.tree_util.tree_leaves(train_state.params)
+                        if param_leaves:
+                            _ = param_leaves[0].block_until_ready()
+                    except Exception as _sync_err:
+                        logging.warning("Non-fatal error while syncing step outputs/params: %s", _sync_err)
+                except Exception:
+                    logging.exception("Exception during ptrain_step at step %d on process %d", step, jax.process_index())
+                    raise
             logging.info(f"Step {step}: Finished training step")
+            # Cross-host barrier to detect desynchronization early (no-op on single host)
+            try:
+                from jax.experimental import multihost_utils as _mh
+                _mh.sync_global_devices(f"after-train-step-{int(step)}")
+            except Exception as _barrier_e:
+                logging.warning("Barrier after step failed (process %d): %s", jax.process_index(), _barrier_e)
         else:
             single_batches = break_into_single_batches(batch)
             for single_batch in single_batches:
@@ -692,6 +780,13 @@ def main(config: _config.TrainConfig):
                 logging.info(f"Step {step}: Finished reducing infos")
                 info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_info.items())
                 logging.info(f"Step {step}: {info_str}")
+                # Global barrier to ensure all hosts reached logging point
+                try:
+                    from jax.experimental import multihost_utils as _mh
+                    _mh.sync_global_devices(f"before-wandb-{int(step)}")
+                except Exception:
+                    logging.exception("Barrier before wandb at step %d failed", step)
+                    raise
                 if jax.process_index() == 0:
                     pbar.write(f"Step {step}: {info_str}")
                 logging.info(f"Step {step}: Starting to log to wandb")
@@ -733,6 +828,11 @@ def main(config: _config.TrainConfig):
         logging.info(f"Step {step}: Fetched next batch")
 
         if (step % config.save_interval == 0 and step > start_step) or step == config.num_train_steps:
+            try:
+                # Make sure state is materialized before save to avoid silent device errors
+                _ = jax.tree_util.tree_map(lambda x: x.block_until_ready() if hasattr(x, "block_until_ready") else x, train_state)
+            except Exception as _save_sync_e:
+                logging.warning("Non-fatal error while syncing state before checkpoint save: %s", _save_sync_e)
             _checkpoints.save_state(checkpoint_manager, train_state, data_loader, step)
 
         if do_eval and len(seen) >= config.data.max_samples - 1:
