@@ -499,7 +499,7 @@ def main(config: _config.TrainConfig):
     data_iter = iter(data_loader)
 
     do_val = False
-    do_eval = True
+    do_eval = False
     if do_val:
         # Validation data loader (non-shuffled, val split)
         val_loader = _data_loader.create_data_loader(
@@ -509,8 +509,6 @@ def main(config: _config.TrainConfig):
             split="val",
         )
         val_iter = iter(val_loader)
-    # Defer fetching the first batch until after (potential) checkpoint restore
-    # so we can fast-forward the iterator on resume for deterministic continuity.
 
     # # Optional sanity check: exhaust data_iter until a repeated sample is seen
     # # when training with a capped sample set (e.g., max_samples in RLDS CoT).
@@ -643,14 +641,6 @@ def main(config: _config.TrainConfig):
             jax.tree_util.tree_leaves(_warm_val)[0].block_until_ready()
         except Exception:
             pass
-    # if do_eval:
-    #     with sharding.set_mesh(mesh):
-    #         _warm_eval = peval_step(train_state, batch)
-    #     # Block on one leaf to ensure compile completes before timing-sensitive loops
-    #     try:
-    #         jax.tree_util.tree_leaves(_warm_eval)[0].block_until_ready()
-    #     except Exception:
-    #         pass
     pbar = tqdm.tqdm(
         range(start_step, config.num_train_steps),
         initial=start_step,
@@ -731,7 +721,7 @@ def main(config: _config.TrainConfig):
         if (step % config.save_interval == 0 and step > start_step) or step == config.num_train_steps:
             _checkpoints.save_state(checkpoint_manager, train_state, data_loader, step)
 
-        if do_eval and len(seen) >= 149:
+        if do_eval and len(seen) >= config.data.max_samples - 1:
             with sharding.set_mesh(mesh):
                 for batch in train_batches:
                     # Process the batch to remove reasoning and update masks

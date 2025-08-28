@@ -33,6 +33,9 @@ class Pi0CoTConfig(_model.BaseModelConfig):
         300  # TODO: Maximum length of the tokenized prompt, including reasoning tokens. Was 48 for prompt-only.
     )
 
+    # Weight multiplier for numeric tokens in reasoning loss (>=1.0). 1.0 disables weighting.
+    number_token_weight: float = 2.0
+
     @property
     @override
     def model_type(self) -> _model.ModelType:
@@ -63,6 +66,7 @@ class Pi0CoTConfig(_model.BaseModelConfig):
                 tokenized_prompt=jax.ShapeDtypeStruct([batch_size, self.max_token_len], jnp.int32),
                 tokenized_prompt_mask=jax.ShapeDtypeStruct([batch_size, self.max_token_len], bool),
                 tokenized_reasoning_mask=jax.ShapeDtypeStruct([batch_size, self.max_token_len], bool),
+                tokenized_numeric_mask=jax.ShapeDtypeStruct([batch_size, self.max_token_len], bool),
             )
         action_spec = jax.ShapeDtypeStruct([batch_size, self.action_horizon, self.action_dim], jnp.float32)
 
@@ -139,6 +143,9 @@ class Pi0CoT(_model.BaseModel):
         self.action_time_mlp_in = nnx.Linear(2 * action_expert_config.width, action_expert_config.width, rngs=rngs)
         self.action_time_mlp_out = nnx.Linear(action_expert_config.width, action_expert_config.width, rngs=rngs)
         self.action_out_proj = nnx.Linear(action_expert_config.width, config.action_dim, rngs=rngs)
+
+        # Store numeric weighting config
+        self.number_token_weight = float(config.number_token_weight)
 
         # self.lang_action_only = config.lang_action_only
 
@@ -262,7 +269,15 @@ class Pi0CoT(_model.BaseModel):
             token_mask = reasoning_and_pad_mask
             
 
-        loss = cross_entropy_loss(shift_logits, shift_labels, mask=token_mask, axis=-1, train=True)
+        # Optionally apply higher weights to numeric tokens within reasoning
+        if getattr(observation, "tokenized_numeric_mask", None) is not None and self.number_token_weight != 1.0:
+            numeric_shift = observation.tokenized_numeric_mask[:, 1:]
+            weights = token_mask.astype(jnp.float32) * (
+                1.0 + (self.number_token_weight - 1.0) * numeric_shift.astype(jnp.float32)
+            )
+            loss = cross_entropy_loss(shift_logits, shift_labels, mask=weights, axis=-1, train=True)
+        else:
+            loss = cross_entropy_loss(shift_logits, shift_labels, mask=token_mask, axis=-1, train=True)
 
         if not self.lang_action_only:
             v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])

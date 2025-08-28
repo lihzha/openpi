@@ -1,4 +1,5 @@
 import logging
+import re
 
 import numpy as np
 import sentencepiece
@@ -38,7 +39,7 @@ class PaligemmaTokenizer:
 
         return np.asarray(tokens), np.asarray(mask)
 
-    def tokenize_cot(self, prompt: str, reasoning: str | None = None) -> tuple[np.ndarray, np.ndarray]:
+    def tokenize_cot(self, prompt: str, reasoning: str | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         cleaned_prompt = prompt.strip().replace("_", " ").replace("\n", " ")
         # eos_id = self._tokenizer.eos_id()
         pad_id = self._tokenizer.pad_id()
@@ -62,6 +63,7 @@ class PaligemmaTokenizer:
 
         attn_mask = np.zeros(self._max_len, dtype=bool)
         reasoning_mask = np.zeros(self._max_len, dtype=bool)
+        numeric_mask = np.zeros(self._max_len, dtype=bool)
 
         if self._left_pad:
             # Left pad to max length for generation/training
@@ -71,21 +73,46 @@ class PaligemmaTokenizer:
 
             attn_mask = np.zeros(self._max_len, dtype=bool)
             reasoning_mask = np.zeros(self._max_len, dtype=bool)
+            numeric_mask = np.zeros(self._max_len, dtype=bool)
             attn_mask[pad_count:] = True
             # Shift reasoning indices by pad_count after left padding
             rs = max(0, min(self._max_len, reasoning_start + pad_count))
             re = max(0, min(self._max_len, reasoning_end + pad_count))
             if re > rs:
                 reasoning_mask[rs:re] = True
+            # Build numeric mask: mark tokens that contain digits within reasoning span only
+            try:
+                pieces = [self._tokenizer.id_to_piece(t) for t in tokens]
+            except Exception:
+                pieces = [""] * len(tokens)
+            def _is_numeric_piece(p: str) -> bool:
+                return bool(re.search(r"[0-9]", p))
+            for i in range(rs, re):
+                if i < 0 or i >= len(pieces):
+                    continue
+                if _is_numeric_piece(pieces[i]):
+                    numeric_mask[i] = True
         else:
             attn_mask[: len(tokens)] = True
             reasoning_mask[reasoning_start:reasoning_end] = True
             tokens += [pad_id] * (self._max_len - len(tokens))
+            # Build numeric mask without left padding
+            try:
+                pieces = [self._tokenizer.id_to_piece(t) for t in tokens[:reasoning_end]]
+            except Exception:
+                pieces = [""] * len(tokens[:reasoning_end])
+            def _is_numeric_piece(p: str) -> bool:
+                return bool(re.search(r"[0-9]", p))
+            for i in range(reasoning_start, reasoning_end):
+                idx = i
+                if idx < len(pieces) and _is_numeric_piece(pieces[idx]):
+                    numeric_mask[i] = True
 
         return (
             np.asarray(tokens, dtype=np.int32),
             attn_mask,
             reasoning_mask,
+            numeric_mask,
         )
 
     def decode(self, tokens: np.ndarray) -> str:

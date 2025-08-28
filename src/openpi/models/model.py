@@ -97,6 +97,9 @@ class Observation(Generic[ArrayT]):
     # Optional reasoning tokens for CoT models.
     tokenized_reasoning_mask: at.Bool[ArrayT, "*b l"] | None = None
 
+    # Optional numeric-token mask (True where token piece contains digits) for CoT models.
+    tokenized_numeric_mask: at.Bool[ArrayT, "*b l"] | None = None
+
     # Optional per-example mask to exclude idle samples from loss.
     example_mask: at.Bool[ArrayT, "*b"] | None = None
 
@@ -126,6 +129,7 @@ class Observation(Generic[ArrayT]):
             token_ar_mask=data.get("token_ar_mask"),
             token_loss_mask=data.get("token_loss_mask"),
             tokenized_reasoning_mask=data.get("tokenized_reasoning_mask"),
+            tokenized_numeric_mask=data.get("tokenized_numeric_mask"),
             example_mask=data.get("example_mask"),
         )
 
@@ -208,6 +212,7 @@ def preprocess_observation(
         token_ar_mask=observation.token_ar_mask,
         token_loss_mask=observation.token_loss_mask,
         tokenized_reasoning_mask=observation.tokenized_reasoning_mask,
+        tokenized_numeric_mask=getattr(observation, "tokenized_numeric_mask", None),
     )
 
 

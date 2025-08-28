@@ -31,4 +31,8 @@ def test_cot_tokenize():
     tok = _tokenizer.PaligemmaTokenizer(max_len=200)
     prompt = "I love cat."
     reasoning = "because cats are cute!"
-    _, _, _ = tok.tokenize_cot(prompt, reasoning)
+    tokens, attn_mask, reasoning_mask, numeric_mask = tok.tokenize_cot(prompt, reasoning)
+    assert tokens.shape == (200,)
+    assert attn_mask.shape == (200,)
+    assert reasoning_mask.shape == (200,)
+    assert numeric_mask.shape == (200,)

@@ -295,13 +295,14 @@ class TokenizePromptAndReasoning(DataTransformFn):
         is_idle = _is_idle_language_action(language_actions)
         example_mask = not is_idle
 
-        tokens, pad_mask, reasoning_mask = self.tokenizer.tokenize_cot(prompt, language_actions)
+        tokens, pad_mask, reasoning_mask, numeric_mask = self.tokenizer.tokenize_cot(prompt, language_actions)
 
         return {
             **data,
             "tokenized_prompt": tokens,  # inaccurate name, but kept for compatibility. Should be `tokenized_text`
             "tokenized_prompt_mask": pad_mask,  # inaccurate name, but kept for compatibility. Should be `tokenized_text_mask`
             "tokenized_reasoning_mask": reasoning_mask,
+            "tokenized_numeric_mask": numeric_mask,
             # Expose example-level mask so loaders/models can skip or mask (True = keep, False = idle)
             "example_mask": np.asarray(example_mask, dtype=bool),
         }
