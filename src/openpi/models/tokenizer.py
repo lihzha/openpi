@@ -18,6 +18,7 @@ class PaligemmaTokenizer:
         with path.open("rb") as f:
             self._tokenizer = sentencepiece.SentencePieceProcessor(model_proto=f.read())
 
+        logging.info("After loading tokeinizer")
         self._stop_token_id = self._tokenizer.eos_id()
 
     def tokenize(self, prompt: str) -> tuple[np.ndarray, np.ndarray]:
@@ -41,6 +42,8 @@ class PaligemmaTokenizer:
         return np.asarray(tokens), np.asarray(mask)
 
     def tokenize_cot(self, prompt: str, reasoning: str | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        
+        logging.info(f"Starting tokenization with max_len {self._max_len}")
         cleaned_prompt = prompt.strip().replace("_", " ").replace("\n", " ")
         # eos_id = self._tokenizer.eos_id()
         pad_id = self._tokenizer.pad_id()
@@ -126,6 +129,8 @@ class PaligemmaTokenizer:
                 idx = i
                 if idx < len(pieces) and (_has_digit(pieces[idx]) or _is_decimal_point_index(idx)):
                     numeric_mask[i] = True
+
+        logging.info(f"Finish tokenization with max_len {self._max_len}")
 
         return (
             np.asarray(tokens, dtype=np.int32),
