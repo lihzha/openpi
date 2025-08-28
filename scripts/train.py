@@ -17,7 +17,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import optax
 from rail_tpu_utils import prevent_cross_region
-import tqdm.auto as tqdm
+import tqdm_loggable.auto as tqdm
 import wandb
 
 import openpi.models.model as _model
