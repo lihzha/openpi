@@ -512,7 +512,7 @@ def main(config: _config.TrainConfig):
 
     # # Optional sanity check: exhaust data_iter until a repeated sample is seen
     # # when training with a capped sample set (e.g., max_samples in RLDS CoT).
-    tok = data_loader._data_loader._dataset._transform.transforms[-1].tokenizer
+    # tok = data_loader._data_loader._dataset._transform.transforms[-1].tokenizer
     # max_samples_cfg = getattr(config.data, "max_samples", None)
     # logging.info("Running capped-samples sanity check (expect repeat after ~%s samples)", max_samples_cfg)
     # seen = set()
@@ -654,6 +654,7 @@ def main(config: _config.TrainConfig):
     seen = set()
     num_val_batches = getattr(config, "num_val_batches", 400)
     for step in pbar:
+        breakpoint()
         if not do_eval:
             with sharding.set_mesh(mesh):
                 train_state, info = ptrain_step(train_rng, train_state, batch)
