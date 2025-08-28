@@ -49,6 +49,8 @@ def init_logging():
 
 def test_cot_tokenize():
     jax.distributed.initialize()
+    init_logging()
+    
     tok = _tokenizer.PaligemmaTokenizer(max_len=200, include_decimal_point=True, left_pad=True)
     prompt = "Pick up the red block\n"
     reasoning = "Move left 3.10cm and move up 3.12cm and move down 129.3cm and set gripper to 0.1"
@@ -60,5 +62,4 @@ def test_cot_tokenize():
     breakpoint()
 
 if __name__ == "__main__":
-    init_logging()
     test_cot_tokenize()
