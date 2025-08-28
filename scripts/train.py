@@ -673,14 +673,13 @@ def main(config: _config.TrainConfig):
                     break
         if not do_eval:
             infos.append(info)
-            stacked_infos = common_utils.stack_forest(infos)
-            reduced_info = jax.device_get(jax.tree.map(jnp.mean, stacked_infos))
-            info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_info.items())
-            logging.info(f"Step {step}: {info_str}")
-            infos = []
-
+            # stacked_infos = common_utils.stack_forest(infos)
+            # reduced_info = jax.device_get(jax.tree.map(jnp.mean, stacked_infos))
+            # info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_info.items())
+            # logging.info(f"Step {step}: {info_str}")
+            # infos = []
             if step % config.log_interval == 0:
-                infos.append(info)
+                # infos.append(info)
                 stacked_infos = common_utils.stack_forest(infos)
                 reduced_info = jax.device_get(jax.tree.map(jnp.mean, stacked_infos))
                 info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_info.items())
