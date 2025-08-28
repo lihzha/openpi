@@ -207,12 +207,9 @@ def _maybe_initialize_jax_distributed():
     # Already initialized → nothing to do
     try:
         if getattr(jax.distributed, "is_initialized", lambda: False)():
-            logging.info("JAX distributed runtime already initialized.")
             return
-        logging.info("JAX distributed runtime not yet initialized.")
     except Exception:
         # Older JAX versions may not have is_initialized
-        logging.info("JAX distributed runtime not yet initialized.")
         pass
 
     env = os.environ
@@ -229,15 +226,12 @@ def _maybe_initialize_jax_distributed():
         pass
 
     if not should_init:
-        logging.info("Single-process run detected; skipping jax.distributed.initialize().")
         return
     
     try:
         jax.distributed.initialize()
-        logging.info("Initialized JAX distributed runtime.")
     except Exception as e:
-        logging.info("Failed to initialize jax.distributed (continuing single-process): %s", e)
-
+        pass
 
 def break_into_single_batches(batch: tuple[_model.Observation, _model.Actions]) -> list[tuple[_model.Observation, _model.Actions]]:
     """Break down a batch into individual single-item batches.
@@ -646,7 +640,7 @@ def main(config: _config.TrainConfig):
         initial=start_step,
         total=config.num_train_steps,
         dynamic_ncols=True,
-        disable=(jax.process_index() != 0),
+        # disable=(jax.process_index() != 0),
     )
 
     infos = []
