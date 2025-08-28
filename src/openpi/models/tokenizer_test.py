@@ -36,3 +36,7 @@ def test_cot_tokenize():
     assert attn_mask.shape == (200,)
     assert reasoning_mask.shape == (200,)
     assert numeric_mask.shape == (200,)
+    breakpoint()
+
+if __name__ == "__main__":
+    test_cot_tokenize()
