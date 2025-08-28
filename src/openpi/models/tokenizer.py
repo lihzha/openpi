@@ -18,8 +18,6 @@ class PaligemmaTokenizer:
         with path.open("rb") as f:
             self._tokenizer = sentencepiece.SentencePieceProcessor(model_proto=f.read())
 
-        logging.info("After loading tokeinizer")
-        breakpoint()
         self._stop_token_id = self._tokenizer.eos_id()
 
     def tokenize(self, prompt: str) -> tuple[np.ndarray, np.ndarray]:
