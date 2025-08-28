@@ -9,9 +9,10 @@ import openpi.shared.download as download
 
 
 class PaligemmaTokenizer:
-    def __init__(self, max_len: int = 48, left_pad: bool = False):
+    def __init__(self, max_len: int = 48, left_pad: bool = False, include_decimal_point: bool = False):
         self._max_len = max_len
         self._left_pad = left_pad
+        self._include_decimal_point = include_decimal_point
 
         path = download.maybe_download("gs://big_vision/paligemma_tokenizer.model", gs={"token": "anon"})
         with path.open("rb") as f:
@@ -85,12 +86,21 @@ class PaligemmaTokenizer:
                 pieces = [self._tokenizer.id_to_piece(t) for t in tokens]
             except Exception:
                 pieces = [""] * len(tokens)
-            def _is_numeric_piece(p: str) -> bool:
+            def _has_digit(p: str) -> bool:
                 return bool(re.search(r"[0-9]", p))
+            def _is_decimal_point_index(i: int) -> bool:
+                if not self._include_decimal_point:
+                    return False
+                p = pieces[i]
+                if "." not in p:
+                    return False
+                prev_has = i - 1 >= 0 and _has_digit(pieces[i - 1])
+                next_has = i + 1 < len(pieces) and _has_digit(pieces[i + 1])
+                return prev_has or next_has
             for i in range(start_idx, end_idx):
                 if i < 0 or i >= len(pieces):
                     continue
-                if _is_numeric_piece(pieces[i]):
+                if _has_digit(pieces[i]) or _is_decimal_point_index(i):
                     numeric_mask[i] = True
         else:
             attn_mask[: len(tokens)] = True
@@ -101,11 +111,20 @@ class PaligemmaTokenizer:
                 pieces = [self._tokenizer.id_to_piece(t) for t in tokens[:reasoning_end]]
             except Exception:
                 pieces = [""] * len(tokens[:reasoning_end])
-            def _is_numeric_piece(p: str) -> bool:
+            def _has_digit(p: str) -> bool:
                 return bool(re.search(r"[0-9]", p))
+            def _is_decimal_point_index(i: int) -> bool:
+                if not self._include_decimal_point:
+                    return False
+                p = pieces[i]
+                if "." not in p:
+                    return False
+                prev_has = i - 1 >= 0 and _has_digit(pieces[i - 1])
+                next_has = i + 1 < len(pieces) and _has_digit(pieces[i + 1])
+                return prev_has or next_has
             for i in range(reasoning_start, reasoning_end):
                 idx = i
-                if idx < len(pieces) and _is_numeric_piece(pieces[idx]):
+                if idx < len(pieces) and (_has_digit(pieces[idx]) or _is_decimal_point_index(idx)):
                     numeric_mask[i] = True
 
         return (
