@@ -680,8 +680,8 @@ def main(config: _config.TrainConfig):
                 info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_info.items())
                 # if jax.process_index() == 0:
                 pbar.write(f"Step {step}: {info_str}")
-                if jax.process_index() == 0:
-                    wandb.log(reduced_info, step=step)
+                # if jax.process_index() == 0:
+                wandb.log(reduced_info, step=step)
                 infos = []
         # Periodic validation
         if do_val and step % getattr(config, "val_interval", 5000) == 0:
