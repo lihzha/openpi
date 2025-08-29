@@ -559,30 +559,30 @@ def main(config: _config.TrainConfig):
             wandb.log(reduced_info, step=step)
             infos = []
         # Periodic validation
-        if step % getattr(config, "val_interval", 5000) == 0:
-            # use a pbar to track the validation progress
-            val_pbar = tqdm.tqdm(
-                range(num_val_batches),
-                initial=0,
-                total=num_val_batches,
-                dynamic_ncols=True,
-            )
-            with sharding.set_mesh(mesh):
-                val_infos = []
-                for _ in val_pbar:
-                    val_batch = next(val_iter)
-                    val_info = peval_step(train_rng, train_state, val_batch)
-                    val_infos.append(val_info)
-                stacked_val = common_utils.stack_forest(val_infos)
-                reduced_val = jax.device_get(jax.tree.map(jnp.mean, stacked_val))
-                val_pbar.write(
-                    "Step %d (val): %s"
-                    % (
-                        step,
-                        ", ".join(f"{k}={v:.4f}" for k, v in reduced_val.items()),
-                    )
-                )
-                wandb.log({**reduced_val, "split": "val"}, step=step)
+        # if step % getattr(config, "val_interval", 5000) == 0:
+        #     # use a pbar to track the validation progress
+        #     val_pbar = tqdm.tqdm(
+        #         range(num_val_batches),
+        #         initial=0,
+        #         total=num_val_batches,
+        #         dynamic_ncols=True,
+        #     )
+        #     with sharding.set_mesh(mesh):
+        #         val_infos = []
+        #         for _ in val_pbar:
+        #             val_batch = next(val_iter)
+        #             val_info = peval_step(train_rng, train_state, val_batch)
+        #             val_infos.append(val_info)
+        #         stacked_val = common_utils.stack_forest(val_infos)
+        #         reduced_val = jax.device_get(jax.tree.map(jnp.mean, stacked_val))
+        #         val_pbar.write(
+        #             "Step %d (val): %s"
+        #             % (
+        #                 step,
+        #                 ", ".join(f"{k}={v:.4f}" for k, v in reduced_val.items()),
+        #             )
+        #         )
+        #         wandb.log({**reduced_val, "split": "val"}, step=step)
         batch = next(data_iter)
 
         if (step % config.save_interval == 0 and step > start_step) or step == config.num_train_steps - 1:
