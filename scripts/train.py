@@ -486,7 +486,8 @@ def main(config: _config.TrainConfig):
     rng = jax.random.key(config.seed)
     train_rng, init_rng = jax.random.split(rng)
 
-    mesh = sharding.make_mesh(effective_fsdp_devices)
+    # mesh = sharding.make_mesh(effective_fsdp_devices)
+    mesh = sharding.make_mesh(config.fsdp_devices)
     data_sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec(sharding.DATA_AXIS))
     replicated_sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec())
     # Human-readable mesh overview
