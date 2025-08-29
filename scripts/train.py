@@ -437,8 +437,8 @@ def eval_step(
 
 
 def main(config: _config.TrainConfig):
-    # _maybe_initialize_jax_distributed()
-    jax.distributed.initialize()
+    _maybe_initialize_jax_distributed()
+    # jax.distributed.initialize()
     data_dir = save_dir = config.data.rlds_data_dir
     cache_dir = os.environ.get("OPENPI_DATA_HOME", None)
     if _is_tpu_runtime() and (str(data_dir).startswith("gs://") or str(save_dir).startswith("gs://")):
@@ -725,9 +725,7 @@ def main(config: _config.TrainConfig):
                 if jax.process_index() == 0:
                     wandb.log({**reduced_val, "split": "val"}, step=step)
 
-        logging.info(f"Step {step}: Starting to fetch next batch")
         batch = next(data_iter)
-        logging.info(f"Step {step}: Fetched next batch")
 
         if (step % config.save_interval == 0 and step > start_step) or step == config.num_train_steps:
             _checkpoints.save_state(checkpoint_manager, train_state, data_loader, step)
