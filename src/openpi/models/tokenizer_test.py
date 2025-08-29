@@ -2,7 +2,6 @@ import numpy as np
 
 from openpi.models import tokenizer as _tokenizer
 import jax
-import logging
 
 def test_tokenize():
     tokenizer = _tokenizer.PaligemmaTokenizer(max_len=10)
@@ -28,28 +27,8 @@ def test_fast_tokenizer():
     assert act.shape == (3, 2)
 
 
-def init_logging():
-    """Custom logging format for better readability."""
-    level_mapping = {"DEBUG": "D", "INFO": "I", "WARNING": "W", "ERROR": "E", "CRITICAL": "C"}
-
-    class CustomFormatter(logging.Formatter):
-        def format(self, record):
-            record.levelname = level_mapping.get(record.levelname, record.levelname)
-            return super().format(record)
-
-    formatter = CustomFormatter(
-        fmt="%(asctime)s.%(msecs)03d [%(levelname)s] %(message)-80s (%(process)d:%(filename)s:%(lineno)s)",
-        datefmt="%H:%M:%S",
-    )
-
-    logger = logging.getLogger()
-    logger.setLevel(logging.INFO)
-    logger.handlers[0].setFormatter(formatter)
-
-
 def test_cot_tokenize():
     jax.distributed.initialize()
-    init_logging()
     
     tok = _tokenizer.PaligemmaTokenizer(max_len=200, include_decimal_point=True, left_pad=True)
     prompt = "Pick up the red block\n"
