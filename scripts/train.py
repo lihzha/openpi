@@ -529,13 +529,13 @@ def main(config: _config.TrainConfig):
     )
 
     # Warm up eval compilation to avoid first-iteration latency during validation
-    with sharding.set_mesh(mesh):
-        _warm_val = peval_step(train_rng, train_state, batch)
-    # Block on one leaf to ensure compile completes before timing-sensitive loops
-    try:
-        jax.tree_util.tree_leaves(_warm_val)[0].block_until_ready()
-    except Exception:
-        pass
+    # with sharding.set_mesh(mesh):
+    #     _warm_val = peval_step(train_rng, train_state, batch)
+    # # Block on one leaf to ensure compile completes before timing-sensitive loops
+    # try:
+    #     jax.tree_util.tree_leaves(_warm_val)[0].block_until_ready()
+    # except Exception:
+    #     pass
 
     start_step = int(train_state.step)
     pbar = tqdm.tqdm(
