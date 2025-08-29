@@ -675,13 +675,12 @@ def main(config: _config.TrainConfig):
             # infos = []
             if step % config.log_interval == 0:
                 # infos.append(info)
-                stacked_infos = common_utils.stack_forest(infos)
-                reduced_info = jax.device_get(jax.tree.map(jnp.mean, stacked_infos))
-                info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_info.items())
-                # if jax.process_index() == 0:
-                pbar.write(f"Step {step}: {info_str}")
-                # if jax.process_index() == 0:
-                wandb.log(reduced_info, step=step)
+                if jax.process_index() == 0:
+                    stacked_infos = common_utils.stack_forest(infos)
+                    reduced_info = jax.device_get(jax.tree.map(jnp.mean, stacked_infos))
+                    info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_info.items())
+                    pbar.write(f"Step {step}: {info_str}")
+                    wandb.log(reduced_info, step=step)
                 infos = []
         # Periodic validation
         if do_val and step % getattr(config, "val_interval", 5000) == 0:
