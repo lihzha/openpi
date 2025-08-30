@@ -1,5 +1,6 @@
 import dataclasses
 import functools
+import hashlib
 import logging
 import os
 import platform
@@ -10,7 +11,9 @@ import flax.nnx as nnx
 from flax.training import common_utils
 import flax.traverse_util as traverse_util
 import jax
+import jax.experimental
 import jax.numpy as jnp
+import matplotlib.pyplot as plt
 import numpy as np
 import optax
 from rail_tpu_utils import prevent_cross_region
@@ -18,6 +21,7 @@ import tqdm_loggable.auto as tqdm
 import wandb
 
 import openpi.models.model as _model
+import openpi.models.tokenizer as _tokenizer
 import openpi.shared.array_typing as at
 import openpi.shared.nnx_utils as nnx_utils
 import openpi.training.checkpoints as _checkpoints
@@ -27,6 +31,7 @@ import openpi.training.optimizer as _optimizer
 import openpi.training.sharding as sharding
 import openpi.training.utils as training_utils
 import openpi.training.weight_loaders as _weight_loaders
+import openpi.transforms as _transforms
 
 
 def init_logging():
@@ -193,6 +198,46 @@ def init_wandb(config: _config.TrainConfig, *, resuming: bool, log_code: bool = 
     if log_code:
         wandb.run.log_code(epath.Path(__file__).parent.parent)
 
+
+def _maybe_initialize_jax_distributed():
+    """Initialize JAX distributed only when multi-process is configured.
+
+    This allows single-process GPU/CPU runs without requiring coordination service.
+    """
+    # Already initialized → nothing to do
+    try:
+        if getattr(jax.distributed, "is_initialized", lambda: False)():
+            return
+    except Exception:
+        # Older JAX versions may not have is_initialized
+        pass
+
+    # First, optimistically try to initialize. If the environment is not configured
+    # for multi-process runs, this will raise and we will proceed as single-process.
+    try:
+        jax.distributed.initialize()
+        return
+    except Exception:
+        pass
+
+    # If the optimistic attempt failed, perform a best-effort heuristic check to avoid
+    # surprising users on platforms that do set coordination env vars late.
+    env = os.environ
+    should_init = False
+    if env.get("OPENPI_FORCE_DISTRIBUTED_INIT", "0") == "1":
+        should_init = True
+    if any(env.get(k) for k in ("JAX_COORDINATION_SERVICE_ADDR", "JAX_COORDINATION_SERVICE", "COORDINATOR_ADDRESS")):
+        should_init = True
+    try:
+        if int(env.get("JAX_PROCESS_COUNT", "1")) > 1:
+            should_init = True
+    except Exception:
+        pass
+    if should_init:
+        try:
+            jax.distributed.initialize()
+        except Exception:
+            logging.info("JAX distributed initialization not available; continuing as single process.")
 
 def break_into_single_batches(batch: tuple[_model.Observation, _model.Actions]) -> list[tuple[_model.Observation, _model.Actions]]:
     """Break down a batch into individual single-item batches.
@@ -377,9 +422,23 @@ def val_step(
     return {"val_loss": loss}
 
 
+def eval_step(
+    tok: _tokenizer.PaligemmaTokenizer,
+    state: training_utils.TrainState,
+    batch: tuple[_model.Observation, _model.Actions],
+) -> tuple[training_utils.TrainState, dict[str, at.Array]]:
+    model = nnx.merge(state.model_def, state.params)
+    model.eval()
+    observation = batch[0]
+    logits, t, _, _, _ = model.sample_reasoning(observation)
+    logging.info(f"Logits: {logits.shape}, t: {jax.device_get(t)}")
+    reasoning = tok.decode(jax.device_get(logits).squeeze()[:jax.device_get(t)])
+    return reasoning
+
+
 def main(config: _config.TrainConfig):
-    if ("v6" in config.name and config.fsdp_devices > 8) or ("v4" in config.name and config.fsdp_devices > 4):
-        jax.distributed.initialize()
+    _maybe_initialize_jax_distributed()
+    # jax.distributed.initialize()
     data_dir = save_dir = config.data.rlds_data_dir
     cache_dir = os.environ.get("OPENPI_DATA_HOME", None)
     if _is_tpu_runtime() and (str(data_dir).startswith("gs://") or str(save_dir).startswith("gs://")):
@@ -409,11 +468,18 @@ def main(config: _config.TrainConfig):
     else:
         effective_fsdp_devices = config.fsdp_devices
         assert global_devices % effective_fsdp_devices == 0
+    # Prefer intra-host FSDP when single process.
+    # assert jax.local_device_count() % effective_fsdp_devices == 0
 
     logging.info(
         f"Summation steps: {config.data.summation_steps}, left_pad: {config.data.left_pad}, sum_decimal: {config.data.sum_decimal}, ema_decay: {config.ema_decay}"
     )
     logging.info(f"Running on: {platform.node()}")
+
+    # if config.batch_size % jax.device_count() != 0:
+    #     raise ValueError(
+    #         f"Batch size {config.batch_size} must be divisible by the number of devices {jax.device_count()}."
+    #     )
 
     jax.config.update("jax_compilation_cache_dir", str(epath.Path("~/.cache/jax").expanduser()))
 
@@ -440,9 +506,84 @@ def main(config: _config.TrainConfig):
         config,
         sharding=data_sharding,
         shuffle=True,
-        seed=config.seed,
+        # seed=config.seed,
     )
     data_iter = iter(data_loader)
+
+    do_val = False
+    do_eval = False
+    if do_val:
+        # Validation data loader (non-shuffled, val split)
+        val_loader = _data_loader.create_data_loader(
+            config,
+            sharding=data_sharding,
+            shuffle=False,
+            split="val",
+        )
+        val_iter = iter(val_loader)
+
+    # # Optional sanity check: exhaust data_iter until a repeated sample is seen
+    # # when training with a capped sample set (e.g., max_samples in RLDS CoT).
+    # tok = data_loader._data_loader._dataset._transform.transforms[-1].tokenizer
+    # max_samples_cfg = getattr(config.data, "max_samples", None)
+    # logging.info("Running capped-samples sanity check (expect repeat after ~%s samples)", max_samples_cfg)
+    # seen = set()
+    # total = 0
+    # repeated = False
+    # test_iter = iter(data_loader)
+    # while not repeated:
+    #     test_batch = next(test_iter)
+    #     # test_batch is (Observation, Actions)
+    #     obs = test_batch[0]
+    #     lang_actions_encoded = obs.tokenized_prompt
+    #     # Use the first available camera stream as a stable fingerprint basis
+    #     first_cam = next(iter(obs.images.values()))
+    #     B = first_cam.shape[0]
+    #     for i in range(B):
+    #         img_bytes = bytes(memoryview(jax.device_get(first_cam[i]).astype("uint8").tobytes()))
+    #         h = hashlib.sha1(img_bytes).hexdigest()
+    #         if h in seen:
+    #             repeated = True
+    #             break
+    #         lang_action = jax.device_get(tok.decode(lang_actions_encoded[i]))
+    #         images = jax.device_get(first_cam[i])
+    #         images = (images + 1) / 2
+    #         # img0 = images[0]
+    #         # img1 = images[-1]
+    #         img0 = images
+    #         img1 = images
+
+    #         fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+    #         axes[0].imshow(img0)
+    #         axes[0].axis("off")
+    #         axes[0].set_title("t=0s")
+    #         # Write language action on t=0s image
+    #         _action_text = str(lang_action)
+    #         axes[0].text(
+    #             0.01,
+    #             0.99,
+    #             _action_text,
+    #             transform=axes[0].transAxes,
+    #             va="top",
+    #             ha="left",
+    #             fontsize=10,
+    #             color="white",
+    #             bbox=dict(facecolor="black", alpha=0.5, pad=3),
+    #         )
+    #         axes[1].imshow(img1)
+    #         axes[1].axis("off")
+    #         axes[1].set_title("t≈+1s")
+    #         plt.suptitle("Initial vs +1s")
+    #         plt.savefig(f"initial_vs_1s_{total}.png")
+    #         seen.add(h)
+    #         total += 1
+    # logging.info("Capped-samples sanity: unique before repeat=%d (configured max_samples=%s)", total, max_samples_cfg)
+
+    # # save the hash list to a file, which is easliy loaded in the future
+    # with open("hash4.txt", "w") as f:
+    #     for h in seen:
+    #         f.write(h + "\n")
+    
     # Fetch the correct first batch, advancing the iterator on resume
     logging.info("Before getting batch")
     # if resuming and start_step > 0:
@@ -452,16 +593,20 @@ def main(config: _config.TrainConfig):
     batch = next(data_iter)
     logging.info("After getting batch")
     logging.info(f"Initialized data loader (shapes):\n{training_utils.array_tree_to_info(batch)}")
+    # logging.info(f"Batch[0].tokenized_prompt: {batch[0].tokenized_prompt}")
     # Sharding details for the first batch
     log_batch_sharding(batch)
 
-    # Log images from first batch to sanity check.
-    if jax.process_count() == 1:
-        images_to_log = [
-            wandb.Image(np.concatenate([np.array(img[i]) for img in batch[0].images.values()], axis=1))
-            for i in range(min(5, len(next(iter(batch[0].images.values())))))
-        ]
-        wandb.log({"camera_views": images_to_log}, step=0)
+    # # Log images from first batch to sanity check.
+    # try:
+    #     if jax.process_index() == 0:
+    #         images_to_log = [
+    #             wandb.Image(np.concatenate([np.array(img[i]) for img in batch[0].images.values()], axis=1))
+    #             for i in range(min(5, len(next(iter(batch[0].images.values())))))
+    #         ]
+    #         wandb.log({"camera_views": images_to_log}, step=0)
+    # except Exception:
+    #     pass
 
     train_state, train_state_sharding = init_train_state(config, init_rng, mesh, resume=resuming)
     jax.block_until_ready(train_state)
@@ -480,19 +625,22 @@ def main(config: _config.TrainConfig):
         donate_argnums=(1,),
     )
 
-    if config.do_val:
-        # Validation data loader (non-shuffled, val split)
-        val_loader = _data_loader.create_data_loader(
-            config,
-            sharding=data_sharding,
-            shuffle=False,
-            split="val",
-        )
-        val_iter = iter(val_loader)
+    if do_val:
         pval_step = jax.jit(
             functools.partial(val_step, config),
             in_shardings=(replicated_sharding, train_state_sharding, data_sharding),
         )
+    if do_eval:
+        # peval_step = jax.jit(
+        #     functools.partial(eval_step, tok),
+        # )
+        peval_step = functools.partial(eval_step, tok)
+
+    
+    
+
+    # Optional: warm up eval after batch is available
+    if do_val:
         with sharding.set_mesh(mesh):
             _warm_val = pval_step(train_rng, train_state, batch)
         # Block on one leaf to ensure compile completes before timing-sensitive loops
@@ -506,26 +654,50 @@ def main(config: _config.TrainConfig):
         initial=start_step,
         total=config.num_train_steps,
         dynamic_ncols=True,
-        disable=(jax.process_index() != 0),
+        # disable=(jax.process_index() != 0),
     )
 
     infos = []
-    num_val_batches = getattr(config, "num_val_batches", 500)
+    train_batches = []
+    seen = set()
+    num_val_batches = getattr(config, "num_val_batches", 400)
     for step in pbar:
-        with sharding.set_mesh(mesh):
-            train_state, info = ptrain_step(train_rng, train_state, batch)
-        infos.append(info)
-        if step % config.log_interval == 0:
-            # infos.append(info)
-            stacked_infos = common_utils.stack_forest(infos)
-            reduced_info = jax.device_get(jax.tree.map(jnp.mean, stacked_infos))
-            info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_info.items())
-            pbar.write(f"Step {step}: {info_str}")
-            if jax.process_index() == 0:
-                wandb.log(reduced_info, step=step)
-            infos = []
+        if not do_eval:
+            with sharding.set_mesh(mesh):
+                train_state, info = ptrain_step(train_rng, train_state, batch)
+        else:
+            single_batches = break_into_single_batches(batch)
+            for single_batch in single_batches:
+                first_cam = next(iter(single_batch[0].images.values()))
+                B = first_cam.shape[0]
+                assert B == 1
+                for i in range(B):
+                    img_bytes = bytes(memoryview(jax.device_get(first_cam[i]).astype("uint8").tobytes()))
+                    h = hashlib.sha1(img_bytes).hexdigest()
+                    if h not in seen:
+                        train_batches.append(single_batch)
+                        seen.add(h)
+                logging.info(f"Seen: {len(seen)}")
+                if len(seen) >= config.data.max_samples - 1:
+                    break
+        if not do_eval:
+            infos.append(info)
+            # stacked_infos = common_utils.stack_forest(infos)
+            # reduced_info = jax.device_get(jax.tree.map(jnp.mean, stacked_infos))
+            # info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_info.items())
+            # logging.info(f"Step {step}: {info_str}")
+            # infos = []
+            if step % config.log_interval == 0:
+                # infos.append(info)
+                stacked_infos = common_utils.stack_forest(infos)
+                reduced_info = jax.device_get(jax.tree.map(jnp.mean, stacked_infos))
+                info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_info.items())
+                pbar.write(f"Step {step}: {info_str}")
+                if jax.process_index() == 0:
+                    wandb.log(reduced_info, step=step)
+                infos = []
         # Periodic validation
-        if config.do_val and step % getattr(config, "val_interval", 50) == 0:
+        if do_val and step % getattr(config, "val_interval", 5000) == 0:
             # use a pbar to track the validation progress
             val_pbar = tqdm.tqdm(
                 range(num_val_batches),
@@ -542,15 +714,129 @@ def main(config: _config.TrainConfig):
                     val_infos.append(val_info)
                 stacked_val = common_utils.stack_forest(val_infos)
                 reduced_val = jax.device_get(jax.tree.map(jnp.mean, stacked_val))
-                val_info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_val.items())
-                val_pbar.write(f"Step {step} (val): {val_info_str}")
                 if jax.process_index() == 0:
-                    wandb.log(reduced_val, step=step)
+                    val_pbar.write(
+                        "Step %d (val): %s"
+                        % (
+                            step,
+                            ", ".join(f"{k}={v:.4f}" for k, v in reduced_val.items()),
+                        )
+                    )
+                if jax.process_index() == 0:
+                    wandb.log({**reduced_val, "split": "val"}, step=step)
 
         batch = next(data_iter)
 
         if (step % config.save_interval == 0 and step > start_step) or step == config.num_train_steps:
             _checkpoints.save_state(checkpoint_manager, train_state, data_loader, step)
+
+        if do_eval and len(seen) >= config.data.max_samples - 1:
+            with sharding.set_mesh(mesh):
+                for batch in train_batches:
+                    # Process the batch to remove reasoning and update masks
+                    obs, actions = batch
+                    
+                    # Find position 108 (start of reasoning) in each batch item
+                    batch_size = obs.tokenized_prompt.shape[0]
+                    new_tokenized_prompts = []
+                    new_tokenized_prompt_masks = []
+                    new_tokenized_reasoning_masks = []
+                    
+                    for i in range(batch_size):
+                        prompt_tokens = obs.tokenized_prompt[i]
+                        
+                        # Find position of token 108 (start of reasoning)
+                        # Ensure prompt_tokens is int32 for the comparison
+                        prompt_tokens_int32 = prompt_tokens.astype(jnp.int32)
+                        pos_108 = jnp.where(prompt_tokens_int32 == 108, size=1, fill_value=-1)[0]
+                        
+                        # Log tensor types for debugging
+                        logging.info(f"Batch {i}: prompt_tokens dtype: {prompt_tokens.dtype}, prompt_tokens_int32 dtype: {prompt_tokens_int32.dtype}, pos_108: {pos_108}")
+                        
+                        if pos_108[0] >= 0:
+                            # Remove everything after token 108 (inclusive)
+                            prompt_without_reasoning = prompt_tokens[:pos_108[0]+1]
+                            original_length = prompt_tokens.shape[0]
+                            
+                            # Left pad to maintain the same length
+                            padding_length = original_length - prompt_without_reasoning.shape[0]
+                            # Ensure consistent dtype for concatenation
+                            padding_zeros = jnp.zeros(padding_length, dtype=prompt_tokens.dtype)
+                            prompt_without_reasoning = prompt_without_reasoning.astype(prompt_tokens.dtype)
+                            padded_prompt = jnp.concatenate([padding_zeros, prompt_without_reasoning])
+                            
+                            # Create new mask: True for non-zero tokens, False for padding
+                            new_mask = (padded_prompt != 0).astype(jnp.bool_)
+                            
+                            # Create reasoning mask: all False - ensure consistent dtype
+                            reasoning_mask = jnp.zeros(original_length, dtype=jnp.bool_)
+                            
+                            # Log the processing for debugging
+                            logging.info(f"Batch {i}: Removed reasoning after position {pos_108[0]}, original length: {original_length}, new length: {prompt_without_reasoning.shape[0]}")
+                        else:
+                            # No token 108 found, keep original
+                            padded_prompt = prompt_tokens
+                            # Ensure consistent dtype for the mask
+                            if obs.tokenized_prompt_mask is not None:
+                                new_mask = obs.tokenized_prompt_mask[i].astype(jnp.bool_)
+                            else:
+                                # Create a boolean mask of the same length as prompt_tokens
+                                new_mask = jnp.ones(prompt_tokens.shape[0], dtype=jnp.bool_)
+                            # Create reasoning mask with consistent dtype - use original length instead of zeros_like
+                            reasoning_mask = jnp.zeros(prompt_tokens.shape[0], dtype=jnp.bool_)
+                            
+                            logging.info(f"Batch {i}: No token 108 found, keeping original prompt")
+                        
+                        # Log mask types for debugging
+                        logging.info(f"Batch {i}: new_mask dtype: {new_mask.dtype}, reasoning_mask dtype: {reasoning_mask.dtype}")
+                        
+                        new_tokenized_prompts.append(padded_prompt)
+                        new_tokenized_prompt_masks.append(new_mask)
+                        new_tokenized_reasoning_masks.append(reasoning_mask)
+                    
+                    # Ensure all tensors have consistent types before stacking
+                    # All masks should be boolean, all prompts should be int32
+                    new_tokenized_prompts = [p.astype(jnp.int32) for p in new_tokenized_prompts]
+                    new_tokenized_prompt_masks = [m.astype(jnp.bool_) for m in new_tokenized_prompt_masks]
+                    new_tokenized_reasoning_masks = [r.astype(jnp.bool_) for r in new_tokenized_reasoning_masks]
+                    
+                    # Stack the processed tensors
+                    new_tokenized_prompt = jnp.stack(new_tokenized_prompts)
+                    new_tokenized_prompt_mask = jnp.stack(new_tokenized_prompt_masks)
+                    new_tokenized_reasoning_mask = jnp.stack(new_tokenized_reasoning_masks)
+                    
+                    # Log tensor types for debugging
+                    logging.info(f"Stacked tensor types - prompt: {new_tokenized_prompt.dtype}, prompt_mask: {new_tokenized_prompt_mask.dtype}, reasoning_mask: {new_tokenized_reasoning_mask.dtype}")
+                    
+                    # Create new observation with modified prompts and masks
+                    new_obs = _model.Observation(
+                        images=obs.images,
+                        image_masks=obs.image_masks,
+                        state=obs.state,
+                        tokenized_prompt=new_tokenized_prompt,
+                        tokenized_prompt_mask=new_tokenized_prompt_mask,
+                        tokenized_reasoning_mask=new_tokenized_reasoning_mask,
+                        token_ar_mask=obs.token_ar_mask,
+                        token_loss_mask=obs.token_loss_mask,
+                        example_mask=obs.example_mask
+                    )
+                    
+                    # Create new batch with modified observation
+                    new_batch = (new_obs, actions)
+                    
+                    # Run evaluation on modified batch
+                    #  model = nnx.merge(train_state.model_def, train_state.params) 
+                    # model.train() 
+                    # model.compute_loss(train_rng, batch[0], batch[1], train=True)
+                    reasoning = peval_step(train_state, new_batch)
+                    gt = tok.decode(new_batch[0].tokenized_prompt)[0]
+                    breakpoint() 
+                    
+                    # Log original vs modified prompt for comparison
+                    original_gt = tok.decode(obs.tokenized_prompt[0]) if obs.tokenized_prompt is not None else "No prompt"
+                    logging.info(f"Original GT: {original_gt}")
+                    logging.info(f"Modified GT: {gt}")
+                    logging.info(f"Pred: {reasoning}")
 
     logging.info("Waiting for checkpoint manager to finish")
     checkpoint_manager.wait_until_finished()

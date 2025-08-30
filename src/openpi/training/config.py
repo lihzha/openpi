@@ -630,6 +630,9 @@ class TrainConfig:
     # eg. if total device is 4 and fsdp devices is 2; then the model will shard to 2 devices and run
     # data parallel between 2 groups of devices.
     fsdp_devices: int = 1
+    
+    # Do validation or not
+    do_val: bool = False
 
     @property
     def assets_dirs(self) -> pathlib.Path | epath.Path:
@@ -657,6 +660,7 @@ class TrainConfig:
 _CONFIGS = [
     TrainConfig(
         name="pi0_droid_cot_v4",
+        do_val=True,
         model=pi0_cot.Pi0CoTConfig(
             action_horizon=10,
             max_token_len=110,
@@ -697,6 +701,7 @@ _CONFIGS = [
     ),
     TrainConfig(
         name="pi0_droid_cot_v6",
+        do_val=True,
         model=pi0_cot.Pi0CoTConfig(
             action_horizon=10,
             max_token_len=110,

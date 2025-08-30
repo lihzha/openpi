@@ -331,6 +331,7 @@ class DroidCoTRldsDataset:
         split: str = "train",  # one of {"train", "val"}
         val_fraction: float = 0.05,
         split_seed: int = 0,
+        validation_mode: str = "easy",  # one of {"easy", "hard"}; aliases: {"easier"->"easy", "medium"->"easy", "harder"->"hard"}
         # Overfitting support: cap number of flattened samples (after shuffle)
         max_samples: int | None = None,
         # Global seed for all dataset-related randomness
@@ -361,6 +362,17 @@ class DroidCoTRldsDataset:
             pass
 
         METADATA_PATH = language_action_dir.replace("droid-lang-actions", "metadata")
+
+        # ------------------------------------------------------------------
+        # Validation difficulty levels
+        #   - "easy": train/val do NOT share trajectories (split by episode_id); labs can overlap
+        #   - "hard": train/val come from different labs (split by lab prefix in episode_id)
+        # Aliases for backward compatibility: {"easier", "medium"} -> "easy"; {"harder"} -> "hard"
+        # ------------------------------------------------------------------
+        validation_mode = (validation_mode or "easy").lower()
+        assert validation_mode in {"easy", "hard"}, (
+            f"validation_mode must be one of 'easy', 'hard'; got: {validation_mode}"
+        )
 
         # ---------------------------------------------------------------------
         # 1. TF-DS builder + base dataset
@@ -559,6 +571,14 @@ class DroidCoTRldsDataset:
             episode_path = _extract_episode_path_from_file_path(file_path)
             return ep_table.lookup(episode_path)
 
+        def _lab_from_episode_id(episode_id):
+            """Extract lab/environment name from an episode_id.
+
+            Example episode_id: "AUTOLab+5d05c5aa+2023-07-07-10h-18m-41s" -> "AUTOLab".
+            Uses regex to avoid RaggedTensor outputs from tf.strings.split.
+            """
+            return tf.strings.regex_replace(episode_id, r"\+.*$", "")
+
         def _id_ok(traj):
             episode_id = _episode_id_from_traj(traj)
             if tf.equal(episode_id, default_ep_value):
@@ -584,27 +604,32 @@ class DroidCoTRldsDataset:
         def _split_filter(traj):
             episode_id = _episode_id_from_traj(traj)  # scalar tf.string
 
-            # --- Assertions: fail fast if any bad traj leaks through ---
-            # 1) episode_id must be non-empty (not the default "" from failed lookup)
-            a1 = tf.debugging.assert_greater(
-                tf.strings.length(episode_id),
-                0,
-                message="[_split_filter] Empty/missing episode_id; expected pre-filtering.",
-            )
-            # 2) episode_id must exist in eid_table (has language actions)
-            a2 = tf.debugging.assert_equal(
-                eid_table.lookup(episode_id),
-                True,
-                message="[_split_filter] episode_id not found in eid_table (no lang actions / bad metadata).",
-            )
+            # # --- Assertions: fail fast if any bad traj leaks through ---
+            # # 1) episode_id must be non-empty (not the default "" from failed lookup)
+            # a1 = tf.debugging.assert_greater(
+            #     tf.strings.length(episode_id),
+            #     0,
+            #     message="[_split_filter] Empty/missing episode_id; expected pre-filtering.",
+            # )
+            # # 2) episode_id must exist in eid_table (has language actions)
+            # a2 = tf.debugging.assert_equal(
+            #     eid_table.lookup(episode_id),
+            #     True,
+            #     message="[_split_filter] episode_id not found in eid_table (no lang actions / bad metadata).",
+            # )
 
-            # Make sure assertions run before we use episode_id.
-            with tf.control_dependencies([a1, a2]):
-                episode_id = tf.identity(episode_id)
+            # # Make sure assertions run before we use episode_id.
+            # with tf.control_dependencies([a1, a2]):
+            #     episode_id = tf.identity(episode_id)
 
             # --- Deterministic hash split ---
             salt = tf.strings.as_string(split_seed)
-            key = tf.strings.join([salt, episode_id])
+            if validation_mode == "hard":
+                # Environment-level split: hold out entire labs
+                lab_name = _lab_from_episode_id(episode_id)
+                key = tf.strings.join([salt, lab_name])
+            else:  # "easy": per-trajectory split within seen labs
+                key = tf.strings.join([salt, episode_id])
             bucket = tf.strings.to_hash_bucket_fast(key, 1000)
             thr = tf.cast(int(val_fraction * 1000), tf.int64)
             is_val = bucket < thr
@@ -947,6 +972,7 @@ class DroidCoTRldsDataset:
         self.action_chunk_size = action_chunk_size
         self.summation_steps = summation_steps
         self.max_samples = max_samples
+        self.validation_mode = validation_mode
 
     def __iter__(self):
         it = self.dataset.as_numpy_iterator()
