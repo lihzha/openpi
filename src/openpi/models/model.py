@@ -111,10 +111,10 @@ class Observation(Generic[ArrayT]):
     token_loss_mask: at.Bool[ArrayT, "*b l"] | None = None
 
     # Optional calibration and trajectory context for visualization/debugging
-    # Camera intrinsics as [fx, fy, cx, cy] per-example
-    camera_intrinsics: at.Float[ArrayT, "*b 4"] | None = None
-    # Camera-to-base extrinsics as 4x4 matrix per-example
-    camera_extrinsics: at.Float[ArrayT, "*b 4 4"] | None = None
+    # Camera intrinsics as [fx, fy, cx, cy] per-timestep (aligned with images time dim)
+    camera_intrinsics: at.Float[ArrayT, "*b t 4"] | None = None
+    # Camera-to-base extrinsics as 4x4 matrix per-timestep
+    camera_extrinsics: at.Float[ArrayT, "*b t 4 4"] | None = None
     # Optional grouped cartesian positions for windowed visualization: [T, 6]
     cartesian_position_window: at.Float[ArrayT, "*b t 6"] | None = None
 
