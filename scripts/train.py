@@ -346,13 +346,13 @@ def _draw_text_block(img: np.ndarray, text: str, area: tuple[int, int, int, int]
     img = cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0)
     # Text parameters scaled by height
     block_h = max(1, y1 - y0)
-    base_scale = 0.6
+    base_scale = 2
     font = cv2.FONT_HERSHEY_SIMPLEX
     scale = max(0.4, min(1.2, block_h / 110.0)) * base_scale
-    thickness = 1
+    thickness = 1.5
     color = (255, 255, 255)
     outline = (0, 0, 0)
-    max_chars = max(45, int((x1 - x0) / 6))
+    max_chars = max(80, int((x1 - x0) / 6))
     lines = _wrap_text_to_lines(text, max_chars)
     line_h = max(10, int(10 * scale))
     y = y0 - 5
