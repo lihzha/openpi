@@ -194,6 +194,111 @@ def init_wandb(config: _config.TrainConfig, *, resuming: bool, log_code: bool = 
         wandb.run.log_code(epath.Path(__file__).parent.parent)
 
 
+def _decode_reasoning_strings(obs: _model.Observation, tokenizer) -> list[str]:
+    """Extract and decode the reasoning (language action) tokens per example."""
+    if obs.tokenized_prompt is None or obs.tokenized_reasoning_mask is None:
+        return []
+    tokens = jax.device_get(obs.tokenized_prompt)
+    rmask = jax.device_get(obs.tokenized_reasoning_mask)
+    out: list[str] = []
+    for i in range(tokens.shape[0]):
+        sel = tokens[i][rmask[i].astype(bool)]
+        try:
+            text = tokenizer.decode(sel.astype(np.int32))
+        except Exception:
+            text = ""
+        out.append(text)
+    return out
+
+
+def _parse_language_delta_cm(text: str) -> np.ndarray:
+    """Parse summed language action text -> net [right, forward, down] in cm."""
+    import re
+
+    totals = {"left": 0.0, "right": 0.0, "forward": 0.0, "backward": 0.0, "up": 0.0, "down": 0.0}
+    for part in filter(None, [p.strip() for p in text.split(" and ")]):
+        m = re.match(r"move\s+(\w+)\s+([-+]?\d*\.?\d+)\s*(\w+)", part)
+        if not m:
+            continue
+        direction = m.group(1).lower()
+        try:
+            value = float(m.group(2))
+        except Exception:
+            continue
+        unit = m.group(3).lower()
+        # Convert to cm
+        if unit.startswith("mm"):
+            value = value / 10.0
+        elif unit.startswith("m") and not unit.startswith("mm"):
+            value = value * 100.0
+        totals[direction] = totals.get(direction, 0.0) + value
+    right = totals["right"] - totals["left"]
+    forward = totals["forward"] - totals["backward"]
+    down = totals["down"] - totals["up"]
+    return np.array([right, forward, down], dtype=np.float32)
+
+
+def _invert_camera_axis_map(v_cm: np.ndarray) -> np.ndarray:
+    """Invert AXIS_PERM logic from scripts/visualize_gripper.py to camera-frame delta in metres.
+
+    visualize_gripper uses: v_cm = (AXIS_SIGN * t_cam[AXIS_PERM]) * 100
+    with AXIS_PERM = [0, 2, 1] and AXIS_SIGN = [1, 1, 1].
+    Here we invert to get t_cam in metres from v_cm in cm.
+    """
+    AXIS_PERM = np.array([0, 2, 1], dtype=np.int32)
+    AXIS_SIGN = np.array([1.0, 1.0, 1.0], dtype=np.float32)
+    t_cam = np.zeros(3, dtype=np.float32)
+    t_cam[AXIS_PERM] = (v_cm / 100.0) / AXIS_SIGN
+    return t_cam
+
+
+def _project_point(base_xyz: np.ndarray, cam_T_base: np.ndarray, intr: np.ndarray, out_hw: tuple[int, int]) -> tuple[int, int] | None:
+    """Project base-frame 3D point to pixel coordinates in resized frame.
+
+    intr: [fx, fy, cx, cy] at calibration resolution. We scale to out_hw.
+    cam_T_base: 4x4 camera-to-base.
+    """
+    if intr.shape[-1] != 4 or cam_T_base.shape[-2:] != (4, 4):
+        return None
+    fx, fy, cx, cy = intr.tolist()
+    if fx == 0 or fy == 0:
+        return None
+    base_to_cam = np.linalg.inv(cam_T_base)
+    p_base_h = np.array([base_xyz[0], base_xyz[1], base_xyz[2], 1.0], dtype=np.float32)
+    p_cam = base_to_cam @ p_base_h
+    z = float(p_cam[2])
+    if z <= 1e-6:
+        return None
+    # Calibration pixel coordinates
+    u = fx * (p_cam[0] / z) + cx
+    v = fy * (p_cam[1] / z) + cy
+    # Scale to output frame size using principal-point heuristic
+    W = out_hw[1]
+    H = out_hw[0]
+    calib_w = max(1.0, 2.0 * cx)
+    calib_h = max(1.0, 2.0 * cy)
+    x = int(np.clip(round(u * (W / calib_w)), 0, W - 1))
+    y = int(np.clip(round(v * (H / calib_h)), 0, H - 1))
+    return x, y
+
+
+def _draw_dot(img_u8: np.ndarray, xy: tuple[int, int], color: tuple[int, int, int]) -> np.ndarray:
+    """Draw a small filled circle (radius 4) at xy on RGB image."""
+    out = img_u8.copy()
+    if xy is None:
+        return out
+    x, y = xy
+    H, W = out.shape[:2]
+    rr = 4
+    y0, y1 = max(0, y - rr), min(H, y + rr + 1)
+    x0, x1 = max(0, x - rr), min(W, x + rr + 1)
+    for yy in range(y0, y1):
+        for xx in range(x0, x1):
+            if (yy - y) ** 2 + (xx - x) ** 2 <= rr * rr:
+                out[yy, xx] = color
+    return out
+
+
 def break_into_single_batches(batch: tuple[_model.Observation, _model.Actions]) -> list[tuple[_model.Observation, _model.Actions]]:
     """Break down a batch into individual single-item batches.
     
@@ -442,6 +547,8 @@ def main(config: _config.TrainConfig):
         shuffle=True,
         seed=config.seed,
     )
+    tok = data_loader._data_loader._dataset._transform.transforms[-1].tokenizer
+
     data_iter = iter(data_loader)
     # Fetch the correct first batch, advancing the iterator on resume
     logging.info("Before getting batch")
@@ -457,11 +564,64 @@ def main(config: _config.TrainConfig):
 
     # Log images from first batch to sanity check.
     if jax.process_count() == 1:
-        images_to_log = [
-            wandb.Image(np.concatenate([np.array(img[i]) for img in batch[0].images.values()], axis=1))
-            for i in range(min(5, len(next(iter(batch[0].images.values())))))
-        ]
-        wandb.log({"camera_views": images_to_log}, step=0)
+        try:
+            # Visualize language-action projection per example
+            obs = batch[0]
+            # Decode reasoning strings
+            reasoning_texts = _decode_reasoning_strings(obs, tok)
+            # Prepare start/end images for the first camera view
+            first_cam_key = next(iter(obs.images.keys()))
+            imgs = obs.images[first_cam_key]
+            # imgs shape: [B, T, H, W, C] after grouping; pick t0 and t_end
+            start_imgs = np.array(imgs[:, 0])
+            end_imgs = np.array(imgs[:, -1])
+            B = start_imgs.shape[0]
+            vis_rows = []
+            for i in range(min(B, 4)):
+                start_u8 = ((start_imgs[i] + 1.0) * 0.5 * 255.0).clip(0, 255).astype(np.uint8)
+                end_u8 = ((end_imgs[i] + 1.0) * 0.5 * 255.0).clip(0, 255).astype(np.uint8)
+                # Project true start/end gripper points if cartesian window and calibs available
+                start_xyz = None
+                end_xyz = None
+                if getattr(obs, "cartesian_position_window", None) is not None:
+                    cart = np.array(obs.cartesian_position_window[i])  # [T,6]
+                    if cart.ndim == 2 and cart.shape[-1] >= 3:
+                        start_xyz = cart[0, :3]
+                        end_xyz = cart[-1, :3]
+                intr = None
+                extr = None
+                if getattr(obs, "camera_intrinsics", None) is not None:
+                    intr = np.array(obs.camera_intrinsics[i])
+                if getattr(obs, "camera_extrinsics", None) is not None:
+                    extr = np.array(obs.camera_extrinsics[i])
+                H, W = start_u8.shape[:2]
+                start_xy = _project_point(start_xyz, extr, intr, (H, W)) if (start_xyz is not None and intr is not None and extr is not None) else None
+                end_true_xy = _project_point(end_xyz, extr, intr, (H, W)) if (end_xyz is not None and intr is not None and extr is not None) else None
+                # Predicted end via language action delta in camera frame
+                pred_end_xy = None
+                if reasoning_texts:
+                    v_cm = _parse_language_delta_cm(reasoning_texts[i] if i < len(reasoning_texts) else "")
+                    t_cam = _invert_camera_axis_map(v_cm)
+                    # Approximate base-frame delta by inverting camera->base rotation
+                    if extr is not None and start_xyz is not None:
+                        R_cb = extr[:3, :3]
+                        t_base = R_cb @ t_cam  # camera -> base
+                        pred_xyz = start_xyz + t_base
+                        pred_end_xy = _project_point(pred_xyz, extr, intr, (H, W))
+                # Draw dots
+                s_vis = _draw_dot(start_u8, start_xy, (255, 0, 0))  # red start
+                e_vis = end_u8
+                if end_true_xy is not None:
+                    e_vis = _draw_dot(e_vis, end_true_xy, (0, 255, 0))  # green true end
+                if pred_end_xy is not None:
+                    e_vis = _draw_dot(e_vis, pred_end_xy, (0, 0, 255))  # blue predicted end
+                row = np.concatenate([s_vis, e_vis], axis=1)
+                vis_rows.append(row)
+            if vis_rows:
+                grid = np.concatenate(vis_rows, axis=0)
+                wandb.log({"lang_action_projection": [wandb.Image(grid, caption="start(red) vs true(green)/pred(blue)")]}, step=0)
+        except Exception as e:
+            logging.warning(f"Visualization failed: {e}")
 
     train_state, train_state_sharding = init_train_state(config, init_rng, mesh, resume=resuming)
     jax.block_until_ready(train_state)

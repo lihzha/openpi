@@ -465,8 +465,21 @@ class DroidCoTRldsDataset:
             cam2base_extrinsics = json.load(fp)
         with tf.io.gfile.GFile(f"{METADATA_PATH}/camera_serials.json", "r") as fp:
             camera_serials = json.load(fp)
+        with tf.io.gfile.GFile(f"{METADATA_PATH}/intrinsics.json", "r") as fp:
+            intrinsics_json = json.load(fp)
 
         eid_to_cam_dict = {}
+        eid_to_intr_vec = {}
+        eid_to_extr_mat = {}
+        def _euler_xyz_to_rot(rx, ry, rz):
+            # Build rotation matrix from XYZ intrinsic rotations
+            cx, sx = np.cos(rx), np.sin(rx)
+            cy, sy = np.cos(ry), np.sin(ry)
+            cz, sz = np.cos(rz), np.sin(rz)
+            Rx = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]], dtype=np.float32)
+            Ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]], dtype=np.float32)
+            Rz = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]], dtype=np.float32)
+            return Rz @ Ry @ Rx
         for eid, extr in cam2base_extrinsics.items():
             cams = camera_serials[eid]
             camera_serial = next(k for k in extr if k.isdigit())
@@ -485,6 +498,25 @@ class DroidCoTRldsDataset:
             calib_image_idx = IMAGE_LIST.index(calib_image_name)
             eid_to_cam_dict[eid] = calib_image_idx
 
+            # Camera intrinsics as [fx, fy, cx, cy]
+            try:
+                fx, cx, fy, cy = intrinsics_json[eid][camera_serial]["cameraMatrix"]
+                eid_to_intr_vec[eid] = [fx, fy, cx, cy]
+            except Exception:
+                # Fallback to zeros
+                eid_to_intr_vec[eid] = [0.0, 0.0, 0.0, 0.0]
+
+            # Camera extrinsics 4x4 from [tx,ty,tz,rx,ry,rz]
+            try:
+                tx, ty, tz, rx, ry, rz = extr[camera_serial]
+                R = _euler_xyz_to_rot(rx, ry, rz)
+                T = np.eye(4, dtype=np.float32)
+                T[:3, :3] = R
+                T[:3, 3] = [tx, ty, tz]
+                eid_to_extr_mat[eid] = T.reshape(-1)
+            except Exception:
+                eid_to_extr_mat[eid] = np.zeros((16,), dtype=np.float32)
+
         keys = tf.constant(list(eid_to_cam_dict.keys()), dtype=tf.string)
         values = tf.constant(list(eid_to_cam_dict.values()), dtype=tf.int32)
         cam_table = tf.lookup.StaticHashTable(
@@ -492,6 +524,18 @@ class DroidCoTRldsDataset:
             default_value=-1,  # -1 ⇒ fallback camera
         )
         print_memory_usage("After building cam_table")
+
+        # Camera intrinsics/extrinsics lookup tables
+        intr_vals = tf.constant([eid_to_intr_vec[k] for k in eid_to_cam_dict.keys()], dtype=tf.float32)
+        extr_vals = tf.constant([eid_to_extr_mat[k] for k in eid_to_cam_dict.keys()], dtype=tf.float32)
+        intr_table = tf.lookup.StaticHashTable(
+            tf.lookup.KeyValueTensorInitializer(keys, intr_vals),
+            default_value=tf.zeros([4], dtype=tf.float32),
+        )
+        extr_table = tf.lookup.StaticHashTable(
+            tf.lookup.KeyValueTensorInitializer(keys, extr_vals),
+            default_value=tf.zeros([16], dtype=tf.float32),
+        )
 
         # ---------------------------------------------------------------------
         # 6. Language-instruction tables (3 per episode_id)
@@ -712,6 +756,8 @@ class DroidCoTRldsDataset:
                 "prompt": instruction_vec,
                 "language_actions": lang_tensor,
                 "episode_id": episode_id_vec,
+                "camera_intrinsics": intr_table.lookup(episode_id),  # [4]
+                "camera_extrinsics": tf.reshape(extr_table.lookup(episode_id), [4, 4]),  # [4,4]
             }
 
         # dataset = dataset.traj_map(restructure, num_parallel_calls)
@@ -886,6 +932,13 @@ class DroidCoTRldsDataset:
             language_actions_to_sum = tf.gather(traj["language_actions"], summation_indices)
             # Keep unsummed window for debugging: shape [traj_len, summation_steps]
             traj["language_actions"] = language_actions_to_sum
+            
+            grouped_images = tf.gather(traj["observation"]["image"], summation_indices)
+            traj["observation"]["image"] = grouped_images
+
+            # Group cartesian positions for start/end projection
+            grouped_cart = tf.gather(traj["observation"]["cartesian_position"], summation_indices)
+            traj["observation"]["cartesian_position_window"] = grouped_cart
 
             # Sum over the language actions
             # summed_language_actions = tf.map_fn(
@@ -936,12 +989,22 @@ class DroidCoTRldsDataset:
 
         # Decode images: RLDS saves encoded images, only decode now for efficiency
         def decode_images(traj):
-            traj["observation"]["image"] = tf.io.decode_image(
-                traj["observation"]["image"], expand_animations=False, dtype=tf.uint8
-            )
-            # traj["observation"]["wrist_image"] = tf.io.decode_image(
-            #     traj["observation"]["wrist_image"], expand_animations=False, dtype=tf.uint8
+            # traj["observation"]["image"] = tf.io.decode_image(
+            #     traj["observation"]["image"], expand_animations=False, dtype=tf.uint8
             # )
+            # # traj["observation"]["wrist_image"] = tf.io.decode_image(
+            # #     traj["observation"]["wrist_image"], expand_animations=False, dtype=tf.uint8
+            # # )
+            
+            # return traj
+            def _decode_single(img_bytes):
+                return tf.io.decode_image(img_bytes, expand_animations=False, dtype=tf.uint8)
+
+            traj["observation"]["image"] = tf.map_fn(
+                _decode_single,
+                traj["observation"]["image"],
+                fn_output_signature=tf.uint8,
+            )
             return traj
 
         # Only shuffle during training; validation should be deterministic and cheaper

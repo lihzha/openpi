@@ -209,6 +209,18 @@ class DroidCoTInputs(transforms.DataTransformFn):
                 else:
                     raise ValueError(f"Language actions is not a bytes string: {la}")
                 inputs["language_actions"] = la
+
+        # Optional calibration/context passthroughs for visualization
+        if "camera_intrinsics" in data:
+            inputs["camera_intrinsics"] = np.asarray(data["camera_intrinsics"], dtype=np.float32)
+        if "camera_extrinsics" in data:
+            ce = np.asarray(data["camera_extrinsics"], dtype=np.float32)
+            ce = ce.reshape(4, 4) if ce.ndim == 1 else ce
+            inputs["camera_extrinsics"] = ce
+        if "observation/cartesian_position_window" in data:
+            inputs["cartesian_position_window"] = np.asarray(
+                data["observation/cartesian_position_window"], dtype=np.float32
+            )
         return inputs
 
 

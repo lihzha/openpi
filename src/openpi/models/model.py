@@ -83,7 +83,7 @@ class Observation(Generic[ArrayT]):
     """
 
     # Images, in [-1, 1] float32.
-    images: dict[str, at.Float[ArrayT, "*b h w c"]]
+    images: dict[str, at.Float[ArrayT, "*b t h w c"]]
     # Image masks, with same keys as images.
     image_masks: dict[str, at.Bool[ArrayT, "*b"]]
     # Low-dimensional robot state.
@@ -110,6 +110,14 @@ class Observation(Generic[ArrayT]):
     # Token loss mask (for FAST autoregressive model).
     token_loss_mask: at.Bool[ArrayT, "*b l"] | None = None
 
+    # Optional calibration and trajectory context for visualization/debugging
+    # Camera intrinsics as [fx, fy, cx, cy] per-example
+    camera_intrinsics: at.Float[ArrayT, "*b 4"] | None = None
+    # Camera-to-base extrinsics as 4x4 matrix per-example
+    camera_extrinsics: at.Float[ArrayT, "*b 4 4"] | None = None
+    # Optional grouped cartesian positions for windowed visualization: [T, 6]
+    cartesian_position_window: at.Float[ArrayT, "*b t 6"] | None = None
+
     @classmethod
     def from_dict(cls, data: at.PyTree[ArrayT]) -> "Observation[ArrayT]":
         """This method defines the mapping between unstructured data (i.e., nested dict) to the structured Observation format."""
@@ -131,6 +139,9 @@ class Observation(Generic[ArrayT]):
             tokenized_reasoning_mask=data.get("tokenized_reasoning_mask"),
             tokenized_numeric_mask=data.get("tokenized_numeric_mask"),
             example_mask=data.get("example_mask"),
+            camera_intrinsics=data.get("camera_intrinsics"),
+            camera_extrinsics=data.get("camera_extrinsics"),
+            cartesian_position_window=data.get("cartesian_position_window"),
         )
 
     def to_dict(self) -> at.PyTree[ArrayT]:
@@ -213,6 +224,9 @@ def preprocess_observation(
         token_loss_mask=observation.token_loss_mask,
         tokenized_reasoning_mask=observation.tokenized_reasoning_mask,
         tokenized_numeric_mask=getattr(observation, "tokenized_numeric_mask", None),
+        camera_intrinsics=getattr(observation, "camera_intrinsics", None),
+        camera_extrinsics=getattr(observation, "camera_extrinsics", None),
+        cartesian_position_window=getattr(observation, "cartesian_position_window", None),
     )
 
 

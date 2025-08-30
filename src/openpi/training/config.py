@@ -516,10 +516,13 @@ class RLDSDroidCoTDataConfig(DataConfigFactory):
                         "observation/exterior_image_1_left": "observation/image",
                         # "observation/wrist_image_left": "observation/wrist_image",
                         "observation/cartesian_position": "observation/cartesian_position",
+                        "observation/cartesian_position_window": "observation/cartesian_position_window",
                         "observation/gripper_position": "observation/gripper_position",
                         "actions": "actions",
                         "prompt": "prompt",
                         "language_actions": "language_actions",
+                        "camera_intrinsics": "camera_intrinsics",
+                        "camera_extrinsics": "camera_extrinsics",
                     }
                 )
             ]
