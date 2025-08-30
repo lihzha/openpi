@@ -352,7 +352,7 @@ def _draw_text_block(img: np.ndarray, text: str, area: tuple[int, int, int, int]
     thickness = 2
     color = (255, 255, 255)
     outline = (0, 0, 0)
-    max_chars = max(40, int((x1 - x0) / 6))
+    max_chars = max(30, int((x1 - x0) / 6))
     lines = _wrap_text_to_lines(text, max_chars)
     line_h = max(10, int(10 * scale))
     y = y0 - 5
@@ -373,7 +373,7 @@ def _make_legend_bar(width: int, height: int = 28) -> np.ndarray:
     bar = np.zeros((height, width, 3), dtype=np.uint8)
     bar[:] = 32  # dark gray
     cx = 12
-    items = [((255, 0, 0), "GT start"), ((0, 0, 255), "Pred end"), ((0, 255, 0), "GT end")]
+    items = [((255, 255, 0), "GT start"), ((0, 0, 255), "Pred end"), ((0, 255, 0), "GT end")]
     try:
         if cv2 is not None:
             for color, label in items:
