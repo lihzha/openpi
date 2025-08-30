@@ -525,16 +525,23 @@ class DroidCoTRldsDataset:
         )
         print_memory_usage("After building cam_table")
 
-        # Camera intrinsics/extrinsics lookup tables
-        intr_vals = tf.constant([eid_to_intr_vec[k] for k in eid_to_cam_dict.keys()], dtype=tf.float32)
-        extr_vals = tf.constant([eid_to_extr_mat[k] for k in eid_to_cam_dict.keys()], dtype=tf.float32)
+        # Camera intrinsics/extrinsics lookup tables (serialize tensors to tf.string to avoid shape issues)
+        calib_eids = list(eid_to_cam_dict.keys())
+        intr_ser = []
+        extr_ser = []
+        for _eid in calib_eids:
+            intr_ser.append(tf.io.serialize_tensor(tf.constant(eid_to_intr_vec[_eid], dtype=tf.float32)).numpy())
+            extr_ser.append(tf.io.serialize_tensor(tf.constant(eid_to_extr_mat[_eid], dtype=tf.float32)).numpy())
+        calib_keys = tf.constant(calib_eids, dtype=tf.string)
+        intr_vals = tf.constant(intr_ser, dtype=tf.string)
+        extr_vals = tf.constant(extr_ser, dtype=tf.string)
         intr_table = tf.lookup.StaticHashTable(
-            tf.lookup.KeyValueTensorInitializer(keys, intr_vals),
-            default_value=tf.zeros([4], dtype=tf.float32),
+            tf.lookup.KeyValueTensorInitializer(calib_keys, intr_vals),
+            default_value=tf.constant(b"", dtype=tf.string),
         )
         extr_table = tf.lookup.StaticHashTable(
-            tf.lookup.KeyValueTensorInitializer(keys, extr_vals),
-            default_value=tf.zeros([16], dtype=tf.float32),
+            tf.lookup.KeyValueTensorInitializer(calib_keys, extr_vals),
+            default_value=tf.constant(b"", dtype=tf.string),
         )
 
         # ---------------------------------------------------------------------
@@ -745,6 +752,12 @@ class DroidCoTRldsDataset:
 
             episode_id_vec = tf.fill([traj_len], episode_id)
 
+            # Deserialize intrinsics/extrinsics and broadcast across trajectory length
+            intr = tf.io.parse_tensor(intr_table.lookup(episode_id), out_type=tf.float32)  # [4]
+            extr = tf.reshape(tf.io.parse_tensor(extr_table.lookup(episode_id), out_type=tf.float32), [4, 4])  # [4,4]
+            intr_b = tf.broadcast_to(intr[None, :], [traj_len, 4])
+            extr_b = tf.broadcast_to(extr[None, :, :], [traj_len, 4, 4])
+
             return {
                 "actions": actions,
                 "observation": {
@@ -756,8 +769,9 @@ class DroidCoTRldsDataset:
                 "prompt": instruction_vec,
                 "language_actions": lang_tensor,
                 "episode_id": episode_id_vec,
-                "camera_intrinsics": intr_table.lookup(episode_id),  # [4]
-                "camera_extrinsics": tf.reshape(extr_table.lookup(episode_id), [4, 4]),  # [4,4]
+                # Broadcasted context to match time dimension for flatten
+                "camera_intrinsics": intr_b,  # [traj_len, 4]
+                "camera_extrinsics": extr_b,  # [traj_len, 4, 4]
             }
 
         # dataset = dataset.traj_map(restructure, num_parallel_calls)
@@ -939,6 +953,16 @@ class DroidCoTRldsDataset:
             # Group cartesian positions for start/end projection
             grouped_cart = tf.gather(traj["observation"]["cartesian_position"], summation_indices)
             traj["observation"]["cartesian_position_window"] = grouped_cart
+
+            # Also group broadcast calibration to align with the same windowed time dimension
+            # camera_intrinsics: [traj_len, 4] -> [traj_len, summation_steps, 4]
+            if "camera_intrinsics" in traj:
+                traj["camera_intrinsics"] = tf.gather(traj["camera_intrinsics"], summation_indices)
+            if "camera_extrinsics" in traj:
+                # camera_extrinsics: [traj_len, 4,4] -> [traj_len, summation_steps, 4,4]
+                idx = summation_indices
+                T = traj["camera_extrinsics"]
+                traj["camera_extrinsics"] = tf.gather(T, idx)
 
             # Sum over the language actions
             # summed_language_actions = tf.map_fn(

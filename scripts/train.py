@@ -591,9 +591,13 @@ def main(config: _config.TrainConfig):
                 intr = None
                 extr = None
                 if getattr(obs, "camera_intrinsics", None) is not None:
-                    intr = np.array(obs.camera_intrinsics[i])
+                    # camera_intrinsics shape may be [B,T,4]; take first along T
+                    ci = np.array(obs.camera_intrinsics[i])
+                    intr = ci[0] if ci.ndim == 2 else ci
                 if getattr(obs, "camera_extrinsics", None) is not None:
-                    extr = np.array(obs.camera_extrinsics[i])
+                    # camera_extrinsics shape may be [B,T,4,4]; take first along T
+                    ce = np.array(obs.camera_extrinsics[i])
+                    extr = ce[0] if ce.ndim == 3 else ce
                 H, W = start_u8.shape[:2]
                 start_xy = _project_point(start_xyz, extr, intr, (H, W)) if (start_xyz is not None and intr is not None and extr is not None) else None
                 end_true_xy = _project_point(end_xyz, extr, intr, (H, W)) if (end_xyz is not None and intr is not None and extr is not None) else None
