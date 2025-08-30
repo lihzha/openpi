@@ -572,70 +572,68 @@ def main(config: _config.TrainConfig):
     log_batch_sharding(batch)
 
     # Log images from first batch to sanity check.
-    if jax.process_count() == 1:
-        try:
-            # Visualize language-action projection per example
-            obs = batch[0]
-            # Decode reasoning strings
-            reasoning_texts = _decode_reasoning_strings(obs, tok)
-            # Prepare start/end images for the first camera view
-            first_cam_key = next(iter(obs.images.keys()))
-            imgs = obs.images[first_cam_key]
-            # imgs shape: [B, T, H, W, C] after grouping; pick t0 and t_end
-            start_imgs = np.array(imgs[:, 0])
-            end_imgs = np.array(imgs[:, -1])
-            B = start_imgs.shape[0]
-            vis_rows = []
-            for i in range(min(B, 4)):
-                start_u8 = ((start_imgs[i] + 1.0) * 0.5 * 255.0).clip(0, 255).astype(np.uint8)
-                end_u8 = ((end_imgs[i] + 1.0) * 0.5 * 255.0).clip(0, 255).astype(np.uint8)
-                # Project true start/end gripper points if cartesian window and calibs available
-                start_xyz = None
-                end_xyz = None
-                if getattr(obs, "cartesian_position_window", None) is not None:
-                    cart = np.array(obs.cartesian_position_window[i])  # [T,6]
-                    if cart.ndim == 2 and cart.shape[-1] >= 3:
-                        start_xyz = cart[0, :3]
-                        end_xyz = cart[-1, :3]
-                intr = None
-                extr = None
-                if getattr(obs, "camera_intrinsics", None) is not None:
-                    # camera_intrinsics shape may be [B,T,4]; take first along T
-                    ci = np.array(obs.camera_intrinsics[i])
-                    intr = ci[0] if ci.ndim == 2 else ci
-                if getattr(obs, "camera_extrinsics", None) is not None:
-                    # camera_extrinsics shape may be [B,T,4,4]; take first along T
-                    ce = np.array(obs.camera_extrinsics[i])
-                    extr = ce[0] if ce.ndim == 3 else ce
-                H, W = start_u8.shape[:2]
-                start_xy = _project_point(start_xyz, extr, intr, (H, W)) if (start_xyz is not None and intr is not None and extr is not None) else None
-                end_true_xy = _project_point(end_xyz, extr, intr, (H, W)) if (end_xyz is not None and intr is not None and extr is not None) else None
-                # Predicted end via language action delta in camera frame
-                pred_end_xy = None
-                if reasoning_texts:
-                    v_cm = _parse_language_delta_cm(reasoning_texts[i] if i < len(reasoning_texts) else "")
-                    t_cam = _invert_camera_axis_map(v_cm)
-                    # Approximate base-frame delta by inverting camera->base rotation
-                    if extr is not None and start_xyz is not None:
-                        R_cb = extr[:3, :3]
-                        t_base = R_cb @ t_cam  # camera -> base
-                        pred_xyz = start_xyz + t_base
-                        pred_end_xy = _project_point(pred_xyz, extr, intr, (H, W))
-                # Draw dots
-                # Build three-column row:
-                # 1) start with GT (red)
-                col1 = _draw_dot(start_u8, start_xy, (255, 0, 0))
-                # 2) end with predicted (blue)
-                col2 = _draw_dot(end_u8, pred_end_xy, (0, 0, 255)) if pred_end_xy is not None else end_u8
-                # 3) end with GT (green)
-                col3 = _draw_dot(end_u8, end_true_xy, (0, 255, 0)) if end_true_xy is not None else end_u8
-                row = np.concatenate([col1, col2, col3], axis=1)
-                vis_rows.append(row)
-            if vis_rows:
-                grid = np.concatenate(vis_rows, axis=0)
-                wandb.log({"lang_action_projection": [wandb.Image(grid, caption="start(red) vs true(green)/pred(blue)")]}, step=0)
-        except Exception as e:
-            logging.warning(f"Visualization failed: {e}")
+    # Visualize language-action projection per example
+    obs = batch[0]
+    # Decode reasoning strings
+    reasoning_texts = _decode_reasoning_strings(obs, tok)
+    # Prepare start/end images for the first camera view
+    first_cam_key = next(iter(obs.images.keys()))
+    imgs = obs.images[first_cam_key]
+    # imgs shape: [B, T, H, W, C] after grouping; pick t0 and t_end
+    start_imgs = np.array(imgs[:, 0])
+    end_imgs = np.array(imgs[:, -1])
+    B = start_imgs.shape[0]
+    vis_rows = []
+    for i in range(min(B, 4)):
+        start_u8 = ((start_imgs[i] + 1.0) * 0.5 * 255.0).clip(0, 255).astype(np.uint8)
+        end_u8 = ((end_imgs[i] + 1.0) * 0.5 * 255.0).clip(0, 255).astype(np.uint8)
+        # Project true start/end gripper points if cartesian window and calibs available
+        start_xyz = None
+        end_xyz = None
+        if getattr(obs, "cartesian_position_window", None) is not None:
+            cart = np.array(obs.cartesian_position_window[i])  # [T,6]
+            if cart.ndim == 2 and cart.shape[-1] >= 3:
+                start_xyz = cart[0, :3]
+                end_xyz = cart[-1, :3]
+        intr = None
+        extr = None
+        if getattr(obs, "camera_intrinsics", None) is not None:
+            # camera_intrinsics shape may be [B,T,4]; take first along T
+            ci = np.array(obs.camera_intrinsics[i])
+            intr = ci[0] if ci.ndim == 2 else ci
+        if getattr(obs, "camera_extrinsics", None) is not None:
+            # camera_extrinsics shape may be [B,T,4,4]; take first along T
+            ce = np.array(obs.camera_extrinsics[i])
+            extr = ce[0] if ce.ndim == 3 else ce
+        H, W = start_u8.shape[:2]
+        start_xy = _project_point(start_xyz, extr, intr, (H, W)) if (start_xyz is not None and intr is not None and extr is not None) else None
+        end_true_xy = _project_point(end_xyz, extr, intr, (H, W)) if (end_xyz is not None and intr is not None and extr is not None) else None
+        # Predicted end via language action delta in camera frame
+        pred_end_xy = None
+        if reasoning_texts:
+            v_cm = _parse_language_delta_cm(reasoning_texts[i] if i < len(reasoning_texts) else "")
+            t_cam = _invert_camera_axis_map(v_cm)
+            # Approximate base-frame delta by inverting camera->base rotation
+            if extr is not None and start_xyz is not None:
+                R_cb = extr[:3, :3]
+                t_base = R_cb @ t_cam  # camera -> base
+                pred_xyz = start_xyz + t_base
+                pred_end_xy = _project_point(pred_xyz, extr, intr, (H, W))
+        # Draw dots
+        # Build three-column row:
+        # 1) start with GT (red)
+        col1 = _draw_dot(start_u8, start_xy, (255, 0, 0))
+        # 2) end with predicted (blue)
+        col2 = _draw_dot(end_u8, pred_end_xy, (0, 0, 255)) if pred_end_xy is not None else end_u8
+        # 3) end with GT (green)
+        col3 = _draw_dot(end_u8, end_true_xy, (0, 255, 0)) if end_true_xy is not None else end_u8
+        row = np.concatenate([col1, col2, col3], axis=1)
+        vis_rows.append(row)
+    if vis_rows:
+        import cv2
+        grid = np.concatenate(vis_rows, axis=0)
+        cv2.imwrite(f"grid_{i}.png", grid)
+        wandb.log({"lang_action_projection": [wandb.Image(grid, caption="start(red) vs true(green)/pred(blue)")]}, step=0)
 
     train_state, train_state_sharding = init_train_state(config, init_rng, mesh, resume=resuming)
     jax.block_until_ready(train_state)
