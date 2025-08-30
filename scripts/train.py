@@ -349,7 +349,7 @@ def _draw_text_block(img: np.ndarray, text: str, area: tuple[int, int, int, int]
     base_scale = 2
     font = cv2.FONT_HERSHEY_SIMPLEX
     scale = max(0.4, min(1.2, block_h / 110.0)) * base_scale
-    thickness = 1.5
+    thickness = 2
     color = (255, 255, 255)
     outline = (0, 0, 0)
     max_chars = max(80, int((x1 - x0) / 6))
