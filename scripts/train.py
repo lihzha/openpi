@@ -352,10 +352,10 @@ def _draw_text_block(img: np.ndarray, text: str, area: tuple[int, int, int, int]
     thickness = 1
     color = (255, 255, 255)
     outline = (0, 0, 0)
-    max_chars = max(50, int((x1 - x0) / 6))
+    max_chars = max(45, int((x1 - x0) / 6))
     lines = _wrap_text_to_lines(text, max_chars)
     line_h = max(10, int(10 * scale))
-    y = y0 + line_h
+    y = y0 - 5
     for line in lines:
         # Outline
         cv2.putText(img, line, (x0 + 8, y), font, scale, outline, thickness + 3, cv2.LINE_AA)
@@ -714,7 +714,7 @@ def main(config: _config.TrainConfig):
         la_text = reasoning_texts[i] if i < len(reasoning_texts) else ""
         col1 = _draw_dot(start_u8, start_xy, (255, 0, 0))  # GT start
         # Reserve bottom band for language text overlay (auto-wrapped)
-        band_h = max(18, start_u8.shape[0] // 14)
+        band_h = max(10, start_u8.shape[0] // 14)
         col1 = _draw_text_block(col1, la_text, (4, start_u8.shape[0] - band_h - 2, start_u8.shape[1] - 4, start_u8.shape[0] - 2))
         col2 = _draw_dot(end_u8, pred_end_xy, (0, 0, 255)) if pred_end_xy is not None else end_u8  # Pred end
         col2 = _draw_text_block(col2, la_text, (4, end_u8.shape[0] - band_h - 2, end_u8.shape[1] - 4, end_u8.shape[0] - 2))
