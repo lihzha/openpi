@@ -308,6 +308,97 @@ def _draw_dot(img_u8: np.ndarray, xy: tuple[int, int], color: tuple[int, int, in
     return out
 
 
+def _wrap_text_to_lines(text: str, max_chars_per_line: int) -> list[str]:
+    words = text.split()
+    lines: list[str] = []
+    cur: list[str] = []
+    cur_len = 0
+    for w in words:
+        add = len(w) + (1 if cur else 0)
+        if cur_len + add > max_chars_per_line:
+            if cur:
+                lines.append(" ".join(cur))
+            cur = [w]
+            cur_len = len(w)
+        else:
+            cur.append(w)
+            cur_len += add
+    if cur:
+        lines.append(" ".join(cur))
+    return lines[:4]  # cap lines to avoid huge overlays
+
+
+def _draw_text_block(img: np.ndarray, text: str, area: tuple[int, int, int, int]) -> np.ndarray:
+    """Draw wrapped text with outline over a semi-transparent dark box.
+
+    area: (x0, y0, x1, y1) in image coordinates.
+    """
+    try:
+        import cv2
+    except Exception:
+        return img
+    x0, y0, x1, y1 = area
+    x0 = max(0, x0); y0 = max(0, y0); x1 = min(img.shape[1], x1); y1 = min(img.shape[0], y1)
+    overlay = img.copy()
+    # Semi-transparent background
+    cv2.rectangle(overlay, (x0, y0), (x1, y1), (0, 0, 0), thickness=-1)
+    alpha = 0.55
+    img = cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0)
+    # Text parameters scaled by height
+    block_h = max(1, y1 - y0)
+    base_scale = 0.5
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    scale = max(0.4, min(1.0, block_h / 120.0)) * base_scale
+    thickness = 1
+    color = (255, 255, 255)
+    outline = (0, 0, 0)
+    max_chars = max(16, int((x1 - x0) / 9))
+    lines = _wrap_text_to_lines(text, max_chars)
+    line_h = max(14, int(18 * scale))
+    y = y0 + 6 + line_h
+    for line in lines:
+        # Outline
+        cv2.putText(img, line, (x0 + 8, y), font, scale, outline, thickness + 2, cv2.LINE_AA)
+        # Text
+        cv2.putText(img, line, (x0 + 8, y), font, scale, color, thickness, cv2.LINE_AA)
+        y += line_h + 2
+    return img
+
+
+def _make_legend_bar(width: int, height: int = 36) -> np.ndarray:
+    try:
+        import cv2
+    except Exception:
+        cv2 = None
+    bar = np.zeros((height, width, 3), dtype=np.uint8)
+    bar[:] = 32  # dark gray
+    cx = 12
+    items = [((255, 0, 0), "GT start"), ((0, 0, 255), "Pred end"), ((0, 255, 0), "GT end")]
+    try:
+        if cv2 is not None:
+            for color, label in items:
+                cv2.circle(bar, (cx, height // 2), 6, color, -1)
+                cv2.putText(bar, label, (cx + 12, height // 2 + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+                cx += 120
+    except Exception:
+        pass
+    return bar
+
+
+def _compose_pages(rows: list[np.ndarray], target_max_height: int = 1600) -> list[np.ndarray]:
+    pages: list[np.ndarray] = []
+    if not rows:
+        return pages
+    row_h = rows[0].shape[0]
+    per_page = max(1, target_max_height // row_h)
+    for i in range(0, len(rows), per_page):
+        chunk = rows[i : i + per_page]
+        grid = np.concatenate(chunk, axis=0)
+        legend = _make_legend_bar(grid.shape[1], height=40)
+        page = np.concatenate([legend, grid], axis=0)
+        pages.append(page)
+    return pages
+
 def break_into_single_batches(batch: tuple[_model.Observation, _model.Actions]) -> list[tuple[_model.Observation, _model.Actions]]:
     """Break down a batch into individual single-item batches.
     
@@ -584,7 +675,7 @@ def main(config: _config.TrainConfig):
     end_imgs = np.array(imgs[:, -1])
     B = start_imgs.shape[0]
     vis_rows = []
-    for i in range(min(B, 4)):
+    for i in range(B):
         start_u8 = ((start_imgs[i] + 1.0) * 0.5 * 255.0).clip(0, 255).astype(np.uint8)
         end_u8 = ((end_imgs[i] + 1.0) * 0.5 * 255.0).clip(0, 255).astype(np.uint8)
         # Project true start/end gripper points if cartesian window and calibs available
@@ -619,21 +710,27 @@ def main(config: _config.TrainConfig):
                 t_base = R_cb @ t_cam  # camera -> base
                 pred_xyz = start_xyz + t_base
                 pred_end_xy = _project_point(pred_xyz, extr, intr, (H, W))
-        # Draw dots
-        # Build three-column row:
-        # 1) start with GT (red)
-        col1 = _draw_dot(start_u8, start_xy, (255, 0, 0))
-        # 2) end with predicted (blue)
-        col2 = _draw_dot(end_u8, pred_end_xy, (0, 0, 255)) if pred_end_xy is not None else end_u8
-        # 3) end with GT (green)
-        col3 = _draw_dot(end_u8, end_true_xy, (0, 255, 0)) if end_true_xy is not None else end_u8
+        # Build three-column row and annotate text overlay
+        la_text = reasoning_texts[i] if i < len(reasoning_texts) else ""
+        col1 = _draw_dot(start_u8, start_xy, (255, 0, 0))  # GT start
+        # Reserve bottom band for language text overlay (auto-wrapped)
+        band_h = max(40, start_u8.shape[0] // 6)
+        col1 = _draw_text_block(col1, la_text, (0, start_u8.shape[0] - band_h, start_u8.shape[1], start_u8.shape[0]))
+        col2 = _draw_dot(end_u8, pred_end_xy, (0, 0, 255)) if pred_end_xy is not None else end_u8  # Pred end
+        col2 = _draw_text_block(col2, la_text, (0, end_u8.shape[0] - band_h, end_u8.shape[1], end_u8.shape[0]))
+        col3 = _draw_dot(end_u8, end_true_xy, (0, 255, 0)) if end_true_xy is not None else end_u8  # GT end
+        col3 = _draw_text_block(col3, la_text, (0, end_u8.shape[0] - band_h, end_u8.shape[1], end_u8.shape[0]))
         row = np.concatenate([col1, col2, col3], axis=1)
         vis_rows.append(row)
     if vis_rows:
         import cv2
-        grid = np.concatenate(vis_rows, axis=0)
-        cv2.imwrite(f"grid_{i}.png", grid)
-        wandb.log({"lang_action_projection": [wandb.Image(grid, caption="start(red) vs true(green)/pred(blue)")]}, step=0)
+        pages = _compose_pages(vis_rows, target_max_height=1600)
+        # Save individual pages and log them separately for better fidelity in wandb
+        media_list = []
+        for pi, page in enumerate(pages):
+            cv2.imwrite(f"grid_page_{pi:02d}.png", page)
+            media_list.append(wandb.Image(page, caption=f"Lang-action proj page {pi+1}/{len(pages)}"))
+        wandb.log({"lang_action_projection": media_list}, step=0)
 
     train_state, train_state_sharding = init_train_state(config, init_rng, mesh, resume=resuming)
     jax.block_until_ready(train_state)
