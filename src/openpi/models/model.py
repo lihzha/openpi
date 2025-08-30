@@ -73,6 +73,7 @@ IMAGE_RESOLUTION = (224, 224)
 #   s = state dimension
 #   l = sequence length
 #
+
 @at.typecheck
 @struct.dataclass
 class Observation(Generic[ArrayT]):

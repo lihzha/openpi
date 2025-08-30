@@ -377,18 +377,19 @@ def main(config: _config.TrainConfig):
     # Sharding details for the first batch
     log_batch_sharding(batch)
 
-    # Visualize language-action projection per example
-    obs = batch[0]
-    # Decode reasoning strings
-    reasoning_texts = _decode_reasoning_strings(obs, tok)
-    # Prepare start/end images for the first camera view
-    first_cam_key = next(iter(obs.images.keys()))
-    imgs = obs.images[first_cam_key]
-    # imgs shape: [B, T, H, W, C] after grouping; pick t0 and t_end
-    start_imgs = np.array(imgs[:, 0])
-    end_imgs = np.array(imgs[:, -1])
-    B = start_imgs.shape[0]
+    
     for j in range(10):
+        # Visualize language-action projection per example
+        obs = batch[0]
+        # Decode reasoning strings
+        reasoning_texts = _decode_reasoning_strings(obs, tok)
+        # Prepare start/end images for the first camera view
+        first_cam_key = next(iter(obs.images.keys()))
+        imgs = obs.images[first_cam_key]
+        # imgs shape: [B, T, H, W, C] after grouping; pick t0 and t_end
+        start_imgs = np.array(imgs[:, 0])
+        end_imgs = np.array(imgs[:, -1])
+        B = start_imgs.shape[0]
         vis_rows = []
         for i in range(B):
             start_u8 = ((start_imgs[i] + 1.0) * 0.5 * 255.0).clip(0, 255).astype(np.uint8)
