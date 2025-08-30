@@ -346,13 +346,13 @@ def _draw_text_block(img: np.ndarray, text: str, area: tuple[int, int, int, int]
     img = cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0)
     # Text parameters scaled by height
     block_h = max(1, y1 - y0)
-    base_scale = 1.4
+    base_scale = 1.2
     font = cv2.FONT_HERSHEY_SIMPLEX
     scale = max(0.4, min(1.2, block_h / 110.0)) * base_scale
     thickness = 2
     color = (255, 255, 255)
     outline = (0, 0, 0)
-    max_chars = max(30, int((x1 - x0) / 6))
+    max_chars = max(20, int((x1 - x0) / 6))
     lines = _wrap_text_to_lines(text, max_chars)
     line_h = max(10, int(10 * scale))
     y = y0 - 5
@@ -373,7 +373,7 @@ def _make_legend_bar(width: int, height: int = 28) -> np.ndarray:
     bar = np.zeros((height, width, 3), dtype=np.uint8)
     bar[:] = 32  # dark gray
     cx = 12
-    items = [((255, 255, 0), "GT start"), ((0, 0, 255), "Pred end"), ((0, 255, 0), "GT end")]
+    items = [((0, 255, 255), "GT start"), ((0, 0, 255), "Pred end"), ((0, 255, 0), "GT end")]
     try:
         if cv2 is not None:
             for color, label in items:
@@ -712,7 +712,7 @@ def main(config: _config.TrainConfig):
                 pred_end_xy = _project_point(pred_xyz, extr, intr, (H, W))
         # Build three-column row and annotate text overlay
         la_text = reasoning_texts[i] if i < len(reasoning_texts) else ""
-        col1 = _draw_dot(start_u8, start_xy, (255, 255, 0))  # GT start
+        col1 = _draw_dot(start_u8, start_xy, (0, 255, 255))  # GT start
         if pred_end_xy is not None:
             col1 = _draw_dot(col1, pred_end_xy, (0, 0, 255))  # Pred end on start frame for side-by-side comparison
         col2 = _draw_dot(end_u8, pred_end_xy, (0, 0, 255)) if pred_end_xy is not None else end_u8  # Pred end
