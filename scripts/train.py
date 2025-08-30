@@ -713,14 +713,14 @@ def main(config: _config.TrainConfig):
         # Build three-column row and annotate text overlay
         la_text = reasoning_texts[i] if i < len(reasoning_texts) else ""
         col1 = _draw_dot(start_u8, start_xy, (255, 0, 0))  # GT start
-        # Reserve bottom band for language text overlay (auto-wrapped)
-        band_h = max(10, start_u8.shape[0] // 14)
-        col1 = _draw_text_block(col1, la_text, (4, start_u8.shape[0] - band_h - 2, start_u8.shape[1] - 4, start_u8.shape[0] - 2))
+        if pred_end_xy is not None:
+            col1 = _draw_dot(col1, pred_end_xy, (0, 0, 255))  # Pred end on start frame for side-by-side comparison
         col2 = _draw_dot(end_u8, pred_end_xy, (0, 0, 255)) if pred_end_xy is not None else end_u8  # Pred end
-        col2 = _draw_text_block(col2, la_text, (4, end_u8.shape[0] - band_h - 2, end_u8.shape[1] - 4, end_u8.shape[0] - 2))
         col3 = _draw_dot(end_u8, end_true_xy, (0, 255, 0)) if end_true_xy is not None else end_u8  # GT end
-        col3 = _draw_text_block(col3, la_text, (4, end_u8.shape[0] - band_h - 2, end_u8.shape[1] - 4, end_u8.shape[0] - 2))
         row = np.concatenate([col1, col2, col3], axis=1)
+        # Single bottom overlay spanning the entire row
+        band_h_row = max(16, row.shape[0] // 14)
+        row = _draw_text_block(row, la_text, (4, row.shape[0] - band_h_row - 2, row.shape[1] - 4, row.shape[0] - 2))
         vis_rows.append(row)
     if vis_rows:
         import cv2
