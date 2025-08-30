@@ -342,7 +342,7 @@ def _draw_text_block(img: np.ndarray, text: str, area: tuple[int, int, int, int]
     overlay = img.copy()
     # Semi-transparent background (lighter to reduce apparent black area)
     cv2.rectangle(overlay, (x0, y0), (x1, y1), (0, 0, 0), thickness=-1)
-    alpha = 0.35
+    alpha = 0.5
     img = cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0)
     # Text parameters scaled by height
     block_h = max(1, y1 - y0)
@@ -352,7 +352,7 @@ def _draw_text_block(img: np.ndarray, text: str, area: tuple[int, int, int, int]
     thickness = 2
     color = (255, 255, 255)
     outline = (0, 0, 0)
-    max_chars = max(24, int((x1 - x0) / 7))
+    max_chars = max(28, int((x1 - x0) / 6))
     lines = _wrap_text_to_lines(text, max_chars)
     line_h = max(12, int(14 * scale))
     y = y0 + 4 + line_h
@@ -390,7 +390,7 @@ def _compose_pages(rows: list[np.ndarray], target_max_height: int = 1600) -> lis
     if not rows:
         return pages
     row_h = rows[0].shape[0]
-    per_page = max(1, target_max_height // row_h)
+    per_page = max(1, (target_max_height - 28) // row_h)
     for i in range(0, len(rows), per_page):
         chunk = rows[i : i + per_page]
         grid = np.concatenate(chunk, axis=0)
@@ -714,12 +714,12 @@ def main(config: _config.TrainConfig):
         la_text = reasoning_texts[i] if i < len(reasoning_texts) else ""
         col1 = _draw_dot(start_u8, start_xy, (255, 0, 0))  # GT start
         # Reserve bottom band for language text overlay (auto-wrapped)
-        band_h = max(24, start_u8.shape[0] // 10)
-        col1 = _draw_text_block(col1, la_text, (0, start_u8.shape[0] - band_h, start_u8.shape[1], start_u8.shape[0]))
+        band_h = max(18, start_u8.shape[0] // 14)
+        col1 = _draw_text_block(col1, la_text, (4, start_u8.shape[0] - band_h - 2, start_u8.shape[1] - 4, start_u8.shape[0] - 2))
         col2 = _draw_dot(end_u8, pred_end_xy, (0, 0, 255)) if pred_end_xy is not None else end_u8  # Pred end
-        col2 = _draw_text_block(col2, la_text, (0, end_u8.shape[0] - band_h, end_u8.shape[1], end_u8.shape[0]))
+        col2 = _draw_text_block(col2, la_text, (4, end_u8.shape[0] - band_h - 2, end_u8.shape[1] - 4, end_u8.shape[0] - 2))
         col3 = _draw_dot(end_u8, end_true_xy, (0, 255, 0)) if end_true_xy is not None else end_u8  # GT end
-        col3 = _draw_text_block(col3, la_text, (0, end_u8.shape[0] - band_h, end_u8.shape[1], end_u8.shape[0]))
+        col3 = _draw_text_block(col3, la_text, (4, end_u8.shape[0] - band_h - 2, end_u8.shape[1] - 4, end_u8.shape[0] - 2))
         row = np.concatenate([col1, col2, col3], axis=1)
         vis_rows.append(row)
     if vis_rows:
