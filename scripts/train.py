@@ -340,32 +340,32 @@ def _draw_text_block(img: np.ndarray, text: str, area: tuple[int, int, int, int]
     x0, y0, x1, y1 = area
     x0 = max(0, x0); y0 = max(0, y0); x1 = min(img.shape[1], x1); y1 = min(img.shape[0], y1)
     overlay = img.copy()
-    # Semi-transparent background
+    # Semi-transparent background (lighter to reduce apparent black area)
     cv2.rectangle(overlay, (x0, y0), (x1, y1), (0, 0, 0), thickness=-1)
-    alpha = 0.55
+    alpha = 0.35
     img = cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0)
     # Text parameters scaled by height
     block_h = max(1, y1 - y0)
-    base_scale = 0.5
+    base_scale = 0.6
     font = cv2.FONT_HERSHEY_SIMPLEX
-    scale = max(0.4, min(1.0, block_h / 120.0)) * base_scale
-    thickness = 1
+    scale = max(0.4, min(1.2, block_h / 110.0)) * base_scale
+    thickness = 2
     color = (255, 255, 255)
     outline = (0, 0, 0)
-    max_chars = max(16, int((x1 - x0) / 9))
+    max_chars = max(24, int((x1 - x0) / 7))
     lines = _wrap_text_to_lines(text, max_chars)
-    line_h = max(14, int(18 * scale))
-    y = y0 + 6 + line_h
+    line_h = max(12, int(14 * scale))
+    y = y0 + 4 + line_h
     for line in lines:
         # Outline
-        cv2.putText(img, line, (x0 + 8, y), font, scale, outline, thickness + 2, cv2.LINE_AA)
+        cv2.putText(img, line, (x0 + 8, y), font, scale, outline, thickness + 3, cv2.LINE_AA)
         # Text
         cv2.putText(img, line, (x0 + 8, y), font, scale, color, thickness, cv2.LINE_AA)
-        y += line_h + 2
+        y += line_h + 1
     return img
 
 
-def _make_legend_bar(width: int, height: int = 36) -> np.ndarray:
+def _make_legend_bar(width: int, height: int = 28) -> np.ndarray:
     try:
         import cv2
     except Exception:
@@ -378,8 +378,8 @@ def _make_legend_bar(width: int, height: int = 36) -> np.ndarray:
         if cv2 is not None:
             for color, label in items:
                 cv2.circle(bar, (cx, height // 2), 6, color, -1)
-                cv2.putText(bar, label, (cx + 12, height // 2 + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
-                cx += 120
+                cv2.putText(bar, label, (cx + 12, height // 2 + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+                cx += 110
     except Exception:
         pass
     return bar
@@ -714,7 +714,7 @@ def main(config: _config.TrainConfig):
         la_text = reasoning_texts[i] if i < len(reasoning_texts) else ""
         col1 = _draw_dot(start_u8, start_xy, (255, 0, 0))  # GT start
         # Reserve bottom band for language text overlay (auto-wrapped)
-        band_h = max(40, start_u8.shape[0] // 6)
+        band_h = max(24, start_u8.shape[0] // 10)
         col1 = _draw_text_block(col1, la_text, (0, start_u8.shape[0] - band_h, start_u8.shape[1], start_u8.shape[0]))
         col2 = _draw_dot(end_u8, pred_end_xy, (0, 0, 255)) if pred_end_xy is not None else end_u8  # Pred end
         col2 = _draw_text_block(col2, la_text, (0, end_u8.shape[0] - band_h, end_u8.shape[1], end_u8.shape[0]))
