@@ -352,7 +352,7 @@ def _draw_text_block(img: np.ndarray, text: str, area: tuple[int, int, int, int]
     thickness = 2
     color = (255, 255, 255)
     outline = (0, 0, 0)
-    max_chars = max(20, int((x1 - x0) / 6))
+    max_chars = 30
     lines = _wrap_text_to_lines(text, max_chars)
     line_h = max(10, int(10 * scale))
     y = y0 - 5
