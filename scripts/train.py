@@ -253,10 +253,10 @@ def _invert_camera_axis_map(v_cm: np.ndarray) -> np.ndarray:
 
 
 def _project_point(base_xyz: np.ndarray, cam_T_base: np.ndarray, intr: np.ndarray, out_hw: tuple[int, int]) -> tuple[int, int] | None:
-    """Project base-frame 3D point to pixel coordinates in resized frame.
+    """Project base-frame 3D point to pixel coordinates respecting resize_with_pad letterboxing.
 
-    intr: [fx, fy, cx, cy] at calibration resolution. We scale to out_hw.
-    cam_T_base: 4x4 camera-to-base.
+    intr: [fx, fy, cx, cy] measured at calibration resolution (Wc≈2*cx, Hc≈2*cy).
+    We compute resized size and padding exactly like image_tools.resize_with_pad and then map (u,v).
     """
     if intr.shape[-1] != 4 or cam_T_base.shape[-2:] != (4, 4):
         return None
@@ -269,16 +269,25 @@ def _project_point(base_xyz: np.ndarray, cam_T_base: np.ndarray, intr: np.ndarra
     z = float(p_cam[2])
     if z <= 1e-6:
         return None
-    # Calibration pixel coordinates
+    # Calibration pixel coordinates (before resize/pad)
     u = fx * (p_cam[0] / z) + cx
     v = fy * (p_cam[1] / z) + cy
-    # Scale to output frame size using principal-point heuristic
-    W = out_hw[1]
-    H = out_hw[0]
-    calib_w = max(1.0, 2.0 * cx)
-    calib_h = max(1.0, 2.0 * cy)
-    x = int(np.clip(round(u * (W / calib_w)), 0, W - 1))
-    y = int(np.clip(round(v * (H / calib_h)), 0, H - 1))
+    # Derive calibration resolution from principal point
+    Wt = int(out_hw[1])
+    Ht = int(out_hw[0])
+    Wc = max(1.0, 2.0 * cx)
+    Hc = max(1.0, 2.0 * cy)
+    # Compute resized (letterboxed) dimensions identical to resize_with_pad
+    ratio = max(Wc / Wt, Hc / Ht)
+    resized_w = int(Wc / ratio)
+    resized_h = int(Hc / ratio)
+    pad_w0 = (Wt - resized_w) // 2
+    pad_h0 = (Ht - resized_h) // 2
+    # Scale and offset
+    x = int(np.round(u * (resized_w / Wc) + pad_w0))
+    y = int(np.round(v * (resized_h / Hc) + pad_h0))
+    x = int(np.clip(x, 0, Wt - 1))
+    y = int(np.clip(y, 0, Ht - 1))
     return x, y
 
 
@@ -613,13 +622,14 @@ def main(config: _config.TrainConfig):
                         pred_xyz = start_xyz + t_base
                         pred_end_xy = _project_point(pred_xyz, extr, intr, (H, W))
                 # Draw dots
-                s_vis = _draw_dot(start_u8, start_xy, (255, 0, 0))  # red start
-                e_vis = end_u8
-                if end_true_xy is not None:
-                    e_vis = _draw_dot(e_vis, end_true_xy, (0, 255, 0))  # green true end
-                if pred_end_xy is not None:
-                    e_vis = _draw_dot(e_vis, pred_end_xy, (0, 0, 255))  # blue predicted end
-                row = np.concatenate([s_vis, e_vis], axis=1)
+                # Build three-column row:
+                # 1) start with GT (red)
+                col1 = _draw_dot(start_u8, start_xy, (255, 0, 0))
+                # 2) end with predicted (blue)
+                col2 = _draw_dot(end_u8, pred_end_xy, (0, 0, 255)) if pred_end_xy is not None else end_u8
+                # 3) end with GT (green)
+                col3 = _draw_dot(end_u8, end_true_xy, (0, 255, 0)) if end_true_xy is not None else end_u8
+                row = np.concatenate([col1, col2, col3], axis=1)
                 vis_rows.append(row)
             if vis_rows:
                 grid = np.concatenate(vis_rows, axis=0)
