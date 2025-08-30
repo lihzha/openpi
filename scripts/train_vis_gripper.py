@@ -262,13 +262,13 @@ def _draw_text_block(img: np.ndarray, text: str, area: tuple[int, int, int, int]
     max_chars = 75
     lines = _wrap_text_to_lines(text, max_chars)
     line_h = max(10, int(10 * scale))
-    y = y0 + 5
+    y = y0 - 5
     for line in lines:
         # Outline
         cv2.putText(img, line, (x0 + 8, y), font, scale, outline, thickness + 3, cv2.LINE_AA)
         # Text
         cv2.putText(img, line, (x0 + 8, y), font, scale, color, thickness, cv2.LINE_AA)
-        y += line_h + 1
+        y += line_h + 10
     return img
 
 
