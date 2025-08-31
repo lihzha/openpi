@@ -748,6 +748,7 @@ _CONFIGS = [
     ),
     TrainConfig(
         name="pi0_droid_cot_local",
+        do_val=True,
         model=pi0_cot.Pi0CoTConfig(
             action_horizon=10,
             max_token_len=110,
@@ -765,7 +766,6 @@ _CONFIGS = [
                 assets_dir="/n/fs/robot-data/pi0-cot/assets/pi0_droid_cot_v4",
                 asset_id="droid",
             ),
-            max_samples=150,
         ),
         num_train_steps=100_000,
         fsdp_devices=8,
