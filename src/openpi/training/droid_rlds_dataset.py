@@ -465,21 +465,21 @@ class DroidCoTRldsDataset:
             cam2base_extrinsics = json.load(fp)
         with tf.io.gfile.GFile(f"{METADATA_PATH}/camera_serials.json", "r") as fp:
             camera_serials = json.load(fp)
-        with tf.io.gfile.GFile(f"{METADATA_PATH}/intrinsics.json", "r") as fp:
-            intrinsics_json = json.load(fp)
+        # with tf.io.gfile.GFile(f"{METADATA_PATH}/intrinsics.json", "r") as fp:
+        #     intrinsics_json = json.load(fp)
 
         eid_to_cam_dict = {}
-        eid_to_intr_vec = {}
-        eid_to_extr_mat = {}
-        def _euler_xyz_to_rot(rx, ry, rz):
-            # Build rotation matrix from XYZ intrinsic rotations
-            cx, sx = np.cos(rx), np.sin(rx)
-            cy, sy = np.cos(ry), np.sin(ry)
-            cz, sz = np.cos(rz), np.sin(rz)
-            Rx = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]], dtype=np.float32)
-            Ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]], dtype=np.float32)
-            Rz = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]], dtype=np.float32)
-            return Rz @ Ry @ Rx
+        # eid_to_intr_vec = {}
+        # eid_to_extr_mat = {}
+        # def _euler_xyz_to_rot(rx, ry, rz):
+        #     # Build rotation matrix from XYZ intrinsic rotations
+        #     cx, sx = np.cos(rx), np.sin(rx)
+        #     cy, sy = np.cos(ry), np.sin(ry)
+        #     cz, sz = np.cos(rz), np.sin(rz)
+        #     Rx = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]], dtype=np.float32)
+        #     Ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]], dtype=np.float32)
+        #     Rz = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]], dtype=np.float32)
+        #     return Rz @ Ry @ Rx
         for eid, extr in cam2base_extrinsics.items():
             cams = camera_serials[eid]
             camera_serial = next(k for k in extr if k.isdigit())
@@ -499,23 +499,23 @@ class DroidCoTRldsDataset:
             eid_to_cam_dict[eid] = calib_image_idx
 
             # Camera intrinsics as [fx, fy, cx, cy]
-            try:
-                fx, cx, fy, cy = intrinsics_json[eid][camera_serial]["cameraMatrix"]
-                eid_to_intr_vec[eid] = [fx, fy, cx, cy]
-            except Exception:
-                # Fallback to zeros
-                eid_to_intr_vec[eid] = [0.0, 0.0, 0.0, 0.0]
+            # try:
+            #     fx, cx, fy, cy = intrinsics_json[eid][camera_serial]["cameraMatrix"]
+            #     eid_to_intr_vec[eid] = [fx, fy, cx, cy]
+            # except Exception:
+            #     # Fallback to zeros
+            #     eid_to_intr_vec[eid] = [0.0, 0.0, 0.0, 0.0]
 
-            # Camera extrinsics 4x4 from [tx,ty,tz,rx,ry,rz]
-            try:
-                tx, ty, tz, rx, ry, rz = extr[camera_serial]
-                R = _euler_xyz_to_rot(rx, ry, rz)
-                T = np.eye(4, dtype=np.float32)
-                T[:3, :3] = R
-                T[:3, 3] = [tx, ty, tz]
-                eid_to_extr_mat[eid] = T.reshape(-1)
-            except Exception:
-                eid_to_extr_mat[eid] = np.zeros((16,), dtype=np.float32)
+            # # Camera extrinsics 4x4 from [tx,ty,tz,rx,ry,rz]
+            # try:
+            #     tx, ty, tz, rx, ry, rz = extr[camera_serial]
+            #     R = _euler_xyz_to_rot(rx, ry, rz)
+            #     T = np.eye(4, dtype=np.float32)
+            #     T[:3, :3] = R
+            #     T[:3, 3] = [tx, ty, tz]
+            #     eid_to_extr_mat[eid] = T.reshape(-1)
+            # except Exception:
+            #     eid_to_extr_mat[eid] = np.zeros((16,), dtype=np.float32)
 
         keys = tf.constant(list(eid_to_cam_dict.keys()), dtype=tf.string)
         values = tf.constant(list(eid_to_cam_dict.values()), dtype=tf.int32)
@@ -526,23 +526,23 @@ class DroidCoTRldsDataset:
         print_memory_usage("After building cam_table")
 
         # Camera intrinsics/extrinsics lookup tables (serialize tensors to tf.string to avoid shape issues)
-        calib_eids = list(eid_to_cam_dict.keys())
-        intr_ser = []
-        extr_ser = []
-        for _eid in calib_eids:
-            intr_ser.append(tf.io.serialize_tensor(tf.constant(eid_to_intr_vec[_eid], dtype=tf.float32)).numpy())
-            extr_ser.append(tf.io.serialize_tensor(tf.constant(eid_to_extr_mat[_eid], dtype=tf.float32)).numpy())
-        calib_keys = tf.constant(calib_eids, dtype=tf.string)
-        intr_vals = tf.constant(intr_ser, dtype=tf.string)
-        extr_vals = tf.constant(extr_ser, dtype=tf.string)
-        intr_table = tf.lookup.StaticHashTable(
-            tf.lookup.KeyValueTensorInitializer(calib_keys, intr_vals),
-            default_value=tf.constant(b"", dtype=tf.string),
-        )
-        extr_table = tf.lookup.StaticHashTable(
-            tf.lookup.KeyValueTensorInitializer(calib_keys, extr_vals),
-            default_value=tf.constant(b"", dtype=tf.string),
-        )
+        # calib_eids = list(eid_to_cam_dict.keys())
+        # intr_ser = []
+        # extr_ser = []
+        # for _eid in calib_eids:
+        #     intr_ser.append(tf.io.serialize_tensor(tf.constant(eid_to_intr_vec[_eid], dtype=tf.float32)).numpy())
+        #     extr_ser.append(tf.io.serialize_tensor(tf.constant(eid_to_extr_mat[_eid], dtype=tf.float32)).numpy())
+        # calib_keys = tf.constant(calib_eids, dtype=tf.string)
+        # intr_vals = tf.constant(intr_ser, dtype=tf.string)
+        # extr_vals = tf.constant(extr_ser, dtype=tf.string)
+        # intr_table = tf.lookup.StaticHashTable(
+        #     tf.lookup.KeyValueTensorInitializer(calib_keys, intr_vals),
+        #     default_value=tf.constant(b"", dtype=tf.string),
+        # )
+        # extr_table = tf.lookup.StaticHashTable(
+        #     tf.lookup.KeyValueTensorInitializer(calib_keys, extr_vals),
+        #     default_value=tf.constant(b"", dtype=tf.string),
+        # )
 
         # ---------------------------------------------------------------------
         # 6. Language-instruction tables (3 per episode_id)
@@ -753,10 +753,10 @@ class DroidCoTRldsDataset:
             episode_id_vec = tf.fill([traj_len], episode_id)
 
             # Deserialize intrinsics/extrinsics and broadcast across trajectory length
-            intr = tf.io.parse_tensor(intr_table.lookup(episode_id), out_type=tf.float32)  # [4]
-            extr = tf.reshape(tf.io.parse_tensor(extr_table.lookup(episode_id), out_type=tf.float32), [4, 4])  # [4,4]
-            intr_b = tf.broadcast_to(intr[None, :], [traj_len, 4])
-            extr_b = tf.broadcast_to(extr[None, :, :], [traj_len, 4, 4])
+            # intr = tf.io.parse_tensor(intr_table.lookup(episode_id), out_type=tf.float32)  # [4]
+            # extr = tf.reshape(tf.io.parse_tensor(extr_table.lookup(episode_id), out_type=tf.float32), [4, 4])  # [4,4]
+            # intr_b = tf.broadcast_to(intr[None, :], [traj_len, 4])
+            # extr_b = tf.broadcast_to(extr[None, :, :], [traj_len, 4, 4])
 
             return {
                 "actions": actions,
@@ -770,8 +770,8 @@ class DroidCoTRldsDataset:
                 "language_actions": lang_tensor,
                 "episode_id": episode_id_vec,
                 # Broadcasted context to match time dimension for flatten
-                "camera_intrinsics": intr_b,  # [traj_len, 4]
-                "camera_extrinsics": extr_b,  # [traj_len, 4, 4]
+                # "camera_intrinsics": intr_b,  # [traj_len, 4]
+                # "camera_extrinsics": extr_b,  # [traj_len, 4, 4]
             }
 
         # dataset = dataset.traj_map(restructure, num_parallel_calls)

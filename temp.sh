@@ -319,17 +319,17 @@ while true; do
 
   if [[ "$run_setup_and_training" == "true" ]]; then
     echo "$(ts) - Setting up environment and repository..."
-    if ! safe_v6 "curl -LsSf https://astral.sh/uv/install.sh | sh && \
-        echo 'export WANDB_API_KEY=9d133998a3d44bf5dd2d827a5d8e2710dc91a19b' >> ~/.zshrc && \
-        echo 'export OPENPI_DATA_HOME=\"$TPU_BUCKET/cache\"' >> ~/.zshrc && \
-        source ~/.zshrc && \
-        git clone --branch tpu https://github.com/lihzha/openpi.git || true && \
-        cd openpi && \
-        GIT_LFS_SKIP_SMUDGE=1 uv sync && \
-        GIT_LFS_SKIP_SMUDGE=1 uv pip install -e ."; then
-      echo "$(ts) - Setup failed/SSH timed out. Back to state check."
-      sleep_backoff "$SLEEP_SECS"; continue
-    fi
+    # if ! safe_v6 "curl -LsSf https://astral.sh/uv/install.sh | sh && \
+    #     echo 'export WANDB_API_KEY=9d133998a3d44bf5dd2d827a5d8e2710dc91a19b' >> ~/.zshrc && \
+    #     echo 'export OPENPI_DATA_HOME=\"$TPU_BUCKET/cache\"' >> ~/.zshrc && \
+    #     source ~/.zshrc && \
+    #     git clone --branch tpu https://github.com/lihzha/openpi.git || true && \
+    #     cd openpi && \
+    #     GIT_LFS_SKIP_SMUDGE=1 uv sync && \
+    #     GIT_LFS_SKIP_SMUDGE=1 uv pip install -e ."; then
+    #   echo "$(ts) - Setup failed/SSH timed out. Back to state check."
+    #   sleep_backoff "$SLEEP_SECS"; continue
+    # fi
 
     echo "$(ts) - Starting training..."
     if ! safe_v6_tmux "source ~/.zshrc && cd openpi && \
