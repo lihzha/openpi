@@ -951,8 +951,8 @@ class DroidCoTRldsDataset:
             # traj["observation"]["image"] = grouped_images
 
             # Group cartesian positions for start/end projection
-            grouped_cart = tf.gather(traj["observation"]["cartesian_position"], summation_indices)
-            traj["observation"]["cartesian_position_window"] = grouped_cart
+            # grouped_cart = tf.gather(traj["observation"]["cartesian_position"], summation_indices)
+            # traj["observation"]["cartesian_position_window"] = grouped_cart
 
             # Also group broadcast calibration to align with the same windowed time dimension
             # camera_intrinsics: [traj_len, 4] -> [traj_len, summation_steps, 4]
