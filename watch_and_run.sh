@@ -317,6 +317,8 @@ while true; do
       ;;
   esac
 
+  EXTRA_ARGS_STR=$( printf ' %q' "${EXTRA_ARGS[@]}" )
+
   if [[ "$run_setup_and_training" == "true" ]]; then
     echo "$(ts) - Setting up environment and repository..."
     if ! safe_v6 "curl -LsSf https://astral.sh/uv/install.sh | sh && \
@@ -336,7 +338,7 @@ while true; do
             git pull origin tpu && \
             XLA_PYTHON_CLIENT_MEM_FRACTION=0.95 \
             uv run --group rlds scripts/train.py pi0_droid_cot_v6 \
-            $( printf ' %q' "${EXTRA_ARGS[@]}" )
+            $EXTRA_ARGS_STR
     "; then
       echo "$(ts) - Launch failed/SSH timed out. Back to state check."
       sleep_backoff "$SLEEP_SECS"; continue

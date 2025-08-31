@@ -228,7 +228,7 @@ def create_rlds_dataset(
     *,
     shuffle: bool = False,
     split: str = "train",
-    val_fraction: float = 0.05,
+    val_fraction: float = 0.01,
     split_seed: int = 0,
     seed: int = 0,
 ) -> Dataset:
@@ -346,7 +346,7 @@ def create_data_loader(
             num_batches=num_batches,
             skip_norm_stats=skip_norm_stats,
             split=split,
-            val_fraction=getattr(config, "val_fraction", 0.05),
+            val_fraction=getattr(config, "val_fraction", 0.01),
             split_seed=seed,
             seed=seed,
         )
@@ -420,7 +420,7 @@ def create_rlds_data_loader(
     shuffle: bool = False,
     num_batches: int | None = None,
     split: str = "train",
-    val_fraction: float = 0.05,
+    val_fraction: float = 0.01,
     split_seed: int = 0,
     seed: int = 0,
 ) -> DataLoader[tuple[_model.Observation, _model.Actions]]:

@@ -334,7 +334,6 @@ while true; do
     echo "$(ts) - Starting training..."
     if ! safe_v6_tmux "source ~/.zshrc && cd openpi && \
             git pull origin tpu && \
-            export JAX_PROCESS_COUNT=4 && \
             XLA_PYTHON_CLIENT_MEM_FRACTION=0.95 \
             uv run --group rlds scripts/train.py pi0_droid_cot_v6 --fsdp-devices=32 --batch-size=2048 --exp-name v6_bs2048_lr1e4_pi0_nonumber --data.sum-decimal=no_number --weight-loader.kind=checkpoint --weight-loader.params-path=gs://openpi-assets/checkpoints/pi0_base/params --save_interval=500 --log-interval=50 --data.left-pad --data.include_decimal_point --model.number_token_weight=1 --resume \
     "; then

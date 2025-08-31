@@ -460,7 +460,7 @@ def main(config: _config.TrainConfig):
             in_shardings=(replicated_sharding, train_state_sharding, data_sharding),
         )
         # get all the validation batches and store them in a list
-        num_val_batches = int(60000 / config.batch_size) # 60000 = 30000 trajs * 200 steps per traj * 0.01 val fraction
+        num_val_batches = int(10000 / config.batch_size) # 60000 = 30000 trajs * 200 steps per traj * 0.01 val fraction
         val_batches = []
         for _ in range(num_val_batches):
             val_batch = next(val_iter)
