@@ -415,7 +415,6 @@ def main(config: _config.TrainConfig):
         shuffle=True,
         seed=config.seed,
     )
-    tok = data_loader._data_loader._dataset._transform.transforms[-1].tokenizer
 
     data_iter = iter(data_loader)
     # Fetch the correct first batch, advancing the iterator on resume
@@ -460,13 +459,12 @@ def main(config: _config.TrainConfig):
             functools.partial(val_step, config),
             in_shardings=(replicated_sharding, train_state_sharding, data_sharding),
         )
-        with sharding.set_mesh(mesh):
-            _warm_val = pval_step(train_rng, train_state, batch)
-        # Block on one leaf to ensure compile completes before timing-sensitive loops
-        try:
-            jax.tree_util.tree_leaves(_warm_val)[0].block_until_ready()
-        except Exception:
-            pass
+        # get all the validation batches and store them in a list
+        num_val_batches = int(60000 / config.batch_size) # 60000 = 30000 trajs * 200 steps per traj * 0.01 val fraction
+        val_batches = []
+        for _ in range(num_val_batches):
+            val_batch = next(val_iter)
+            val_batches.append(val_batch)
     start_step = int(train_state.step)
     pbar = tqdm.tqdm(
         range(start_step, config.num_train_steps),
@@ -477,7 +475,6 @@ def main(config: _config.TrainConfig):
     )
 
     infos = []
-    num_val_batches = getattr(config, "num_val_batches", 500)
     for step in pbar:
         with sharding.set_mesh(mesh):
             train_state, info = ptrain_step(train_rng, train_state, batch)
@@ -503,8 +500,8 @@ def main(config: _config.TrainConfig):
             )
             with sharding.set_mesh(mesh):
                 val_infos = []
-                for _ in val_pbar:
-                    val_batch = next(val_iter)
+                for i in val_pbar:
+                    val_batch = val_batches[i]
                     val_info = pval_step(train_rng, train_state, val_batch)
                     val_infos.append(val_info)
                 stacked_val = common_utils.stack_forest(val_infos)

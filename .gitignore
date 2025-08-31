@@ -172,3 +172,4 @@ logs/
 slurm/
 .vscode/
 visualizations/
+dataset_vis/

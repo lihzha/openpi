@@ -329,7 +329,7 @@ class DroidCoTRldsDataset:
         num_parallel_calls: int = -1,  # -1 == tf.data.AUTOTUNE -- hack to not import tf at top level
         # Validation support
         split: str = "train",  # one of {"train", "val"}
-        val_fraction: float = 0.05,
+        val_fraction: float = 0.01,
         split_seed: int = 0,
         validation_mode: str = "easy",  # one of {"easy", "hard"}; aliases: {"easier"->"easy", "medium"->"easy", "harder"->"hard"}
         # Overfitting support: cap number of flattened samples (after shuffle)
@@ -947,8 +947,8 @@ class DroidCoTRldsDataset:
             # Keep unsummed window for debugging: shape [traj_len, summation_steps]
             traj["language_actions"] = language_actions_to_sum
             
-            grouped_images = tf.gather(traj["observation"]["image"], summation_indices)
-            traj["observation"]["image"] = grouped_images
+            # grouped_images = tf.gather(traj["observation"]["image"], summation_indices)
+            # traj["observation"]["image"] = grouped_images
 
             # Group cartesian positions for start/end projection
             grouped_cart = tf.gather(traj["observation"]["cartesian_position"], summation_indices)
@@ -1013,23 +1013,23 @@ class DroidCoTRldsDataset:
 
         # Decode images: RLDS saves encoded images, only decode now for efficiency
         def decode_images(traj):
-            # traj["observation"]["image"] = tf.io.decode_image(
-            #     traj["observation"]["image"], expand_animations=False, dtype=tf.uint8
-            # )
-            # # traj["observation"]["wrist_image"] = tf.io.decode_image(
-            # #     traj["observation"]["wrist_image"], expand_animations=False, dtype=tf.uint8
-            # # )
-            
-            # return traj
-            def _decode_single(img_bytes):
-                return tf.io.decode_image(img_bytes, expand_animations=False, dtype=tf.uint8)
-
-            traj["observation"]["image"] = tf.map_fn(
-                _decode_single,
-                traj["observation"]["image"],
-                fn_output_signature=tf.uint8,
+            traj["observation"]["image"] = tf.io.decode_image(
+                traj["observation"]["image"], expand_animations=False, dtype=tf.uint8
             )
+            # traj["observation"]["wrist_image"] = tf.io.decode_image(
+            #     traj["observation"]["wrist_image"], expand_animations=False, dtype=tf.uint8
+            # )
+            
             return traj
+            # def _decode_single(img_bytes):
+            #     return tf.io.decode_image(img_bytes, expand_animations=False, dtype=tf.uint8)
+
+            # traj["observation"]["image"] = tf.map_fn(
+            #     _decode_single,
+            #     traj["observation"]["image"],
+            #     fn_output_signature=tf.uint8,
+            # )
+            # return traj
 
         # Only shuffle during training; validation should be deterministic and cheaper
         if shuffle and max_samples is None:
