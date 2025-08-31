@@ -742,9 +742,8 @@ _CONFIGS = [
             decay_steps=1_000_000,
             decay_lr=1e-4,
         ),
-
         # ema_decay=None,
-        # keep_period=20_000,
+        keep_period=2500,
     ),
     TrainConfig(
         name="pi0_droid_cot_local",

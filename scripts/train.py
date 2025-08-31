@@ -465,6 +465,8 @@ def main(config: _config.TrainConfig):
         for _ in range(num_val_batches):
             val_batch = next(val_iter)
             val_batches.append(val_batch)
+        del val_iter
+        del val_loader
     start_step = int(train_state.step)
     pbar = tqdm.tqdm(
         range(start_step, config.num_train_steps),

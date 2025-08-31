@@ -275,7 +275,7 @@ while true; do
       if ! with_timeout $((DESCRIBE_TIMEOUT * 20)) -- \
             gcloud alpha compute tpus tpu-vm create "$TPU_NAME" \
               --zone="$TPU_ZONE_v6" --project="$TPU_PROJECT" \
-              --accelerator-type=v6e-8 \
+              --accelerator-type=v6e-32 \
               --version=v2-alpha-tpuv6e \
               --service-account=irom-service-account@mae-irom-lab-guided-data.iam.gserviceaccount.com \
               --spot; then
