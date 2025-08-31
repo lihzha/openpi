@@ -521,8 +521,8 @@ class RLDSDroidCoTDataConfig(DataConfigFactory):
                         "actions": "actions",
                         "prompt": "prompt",
                         "language_actions": "language_actions",
-                        "camera_intrinsics": "camera_intrinsics",
-                        "camera_extrinsics": "camera_extrinsics",
+                        # "camera_intrinsics": "camera_intrinsics",
+                        # "camera_extrinsics": "camera_extrinsics",
                     }
                 )
             ]
