@@ -637,6 +637,10 @@ class TrainConfig:
     # Do validation or not
     do_val: bool = False
 
+    # If set, validation loader will materialize a fixed subset of this many
+    # flattened samples via take(K).cache().repeat(), ensuring consistent val batches.
+    val_max_samples: int | None = None
+
     @property
     def assets_dirs(self) -> pathlib.Path | epath.Path:
         """Assets directory (works for local paths and gs://…)."""
@@ -692,6 +696,7 @@ _CONFIGS = [
         log_interval=50,
         save_interval=5000,
         weight_loader=weight_loaders.WeightLoaderChoice(kind="paligemma"),
+        keep_period=2500,
         # weight_loader=weight_loaders.WeightLoaderChoice(kind="checkpoint", params_path="gs://openpi-assets/checkpoints/pi0_base/params"),
         assets_base_dir="gs://pi0-cot/assets",
         checkpoint_base_dir="gs://pi0-cot/checkpoints",

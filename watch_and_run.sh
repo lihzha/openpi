@@ -337,8 +337,7 @@ while true; do
     if ! safe_v6_tmux "source ~/.zshrc && cd openpi && \
             git pull origin tpu && \
             XLA_PYTHON_CLIENT_MEM_FRACTION=0.95 \
-            uv run --group rlds scripts/train.py pi0_droid_cot_v6 \
-            $EXTRA_ARGS_STR
+            uv run --group rlds scripts/train.py pi0_droid_cot_v6 $EXTRA_ARGS_STR \
     "; then
       echo "$(ts) - Launch failed/SSH timed out. Back to state check."
       sleep_backoff "$SLEEP_SECS"; continue

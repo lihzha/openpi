@@ -1,6 +1,4 @@
 import dataclasses
-import dataclasses as dc
-import hashlib
 import logging
 from math import acos
 from math import pi
@@ -9,16 +7,20 @@ import warnings
 
 import jax
 import jax.numpy as jnp
-import matplotlib.pyplot as plt
 import numpy as np
 from openpi_client import image_tools
 import tyro
+import os
 
-from openpi.policies import policy as _policy
-from openpi.policies import policy_config as _policy_config
+import etils.epath as epath
+from rail_tpu_utils import prevent_cross_region
+
 import openpi.training.config as _config
 import openpi.training.data_loader as _data_loader
 import openpi.training.sharding as sharding
+
+from openpi.policies import policy as _policy
+from openpi.policies import policy_config as _policy_config
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
@@ -151,6 +153,23 @@ class Args:
 
     # Specifies how to load the policy. If not provided, the default policy for the environment will be used.
 
+def init_logging():
+    """Custom logging format for better readability."""
+    level_mapping = {"DEBUG": "D", "INFO": "I", "WARNING": "W", "ERROR": "E", "CRITICAL": "C"}
+
+    class CustomFormatter(logging.Formatter):
+        def format(self, record):
+            record.levelname = level_mapping.get(record.levelname, record.levelname)
+            return super().format(record)
+
+    formatter = CustomFormatter(
+        fmt="%(asctime)s.%(msecs)03d [%(levelname)s] %(message)-80s (%(process)d:%(filename)s:%(lineno)s)",
+        datefmt="%H:%M:%S",
+    )
+
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+    logger.handlers[0].setFormatter(formatter)
 
 def create_policy(args: Args, policy_config: _policy_config.PolicyConfig) -> _policy.Policy:
     """Create a policy from the given arguments."""
@@ -163,6 +182,11 @@ def create_policy(args: Args, policy_config: _policy_config.PolicyConfig) -> _po
         )
     raise ValueError(f"Invalid policy type. Expected Checkpoint, got: {type(args.policy)}")
 
+def _is_tpu_runtime() -> bool:
+    try:
+        return any(d.platform == "tpu" for d in jax.devices())
+    except Exception:
+        return False
 
 def main(args: Args):
     policy_config = _policy_config.PolicyConfig(
@@ -172,10 +196,22 @@ def main(args: Args):
     policy = create_policy(args, policy_config=policy_config)
 
     config = _config.get_config(args.policy.config)
-    config = dc.replace(config, data=dc.replace(config.data, max_samples=150, left_pad=True), batch_size=8)
+    # config = dc.replace(config, data=dc.replace(config.data, max_samples=150, left_pad=True), batch_size=8)
+    
+    if ("v6" in config.name and config.fsdp_devices > 8) or ("v4" in config.name and config.fsdp_devices > 4):
+        jax.distributed.initialize()
+    data_dir = save_dir = config.data.rlds_data_dir
+    cache_dir = os.environ.get("OPENPI_DATA_HOME", None)
+    if _is_tpu_runtime() and (str(data_dir).startswith("gs://") or str(save_dir).startswith("gs://")):
+        prevent_cross_region(data_dir, save_dir)
+        if cache_dir is not None:
+            prevent_cross_region(cache_dir, save_dir)
+    # Determine effective FSDP devices for single-process GPU/CPU runs.
     process_count = getattr(jax, "process_count", lambda: 1)()
     local_devices = getattr(jax, "local_device_count", lambda: 1)()
     global_devices = getattr(jax, "device_count", lambda: local_devices)()
+    init_logging()
+    logging.info(f"Local devices: {local_devices}, Global devices: {global_devices}, Process count: {process_count}")
     if process_count == 1:
         # Choose the largest divisor of available devices not exceeding configured fsdp_devices
         target = min(config.fsdp_devices, max(1, local_devices))
@@ -193,11 +229,14 @@ def main(args: Args):
     else:
         effective_fsdp_devices = config.fsdp_devices
         assert global_devices % effective_fsdp_devices == 0
+
     logging.info(
         f"Summation steps: {config.data.summation_steps}, left_pad: {config.data.left_pad}, sum_decimal: {config.data.sum_decimal}, ema_decay: {config.ema_decay}"
     )
-    rng = jax.random.key(config.seed)
-    train_rng, init_rng = jax.random.split(rng)
+
+    jax.config.update("jax_compilation_cache_dir", str(epath.Path("~/.cache/jax").expanduser()))
+
+
     mesh = sharding.make_mesh(effective_fsdp_devices)
     data_sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec(sharding.DATA_AXIS))
 
@@ -206,91 +245,11 @@ def main(args: Args):
         sharding=data_sharding,
         shuffle=True,
         seed=config.seed,
+        split="val",
     )
+    
+    tok = data_loader._data_loader._dataset._transform.transforms[-1].tokenizer
     ds = iter(data_loader)
-
-    tok = data_loader._data_loader._dataset._transform.transforms[-1].tokenizer
-    max_samples_cfg = getattr(config.data, "max_samples", None)
-    logging.info("Running capped-samples sanity check (expect repeat after ~%s samples)", max_samples_cfg)
-    seen = set()
-    total = 0
-    repeated = False
-    test_iter = iter(data_loader)
-    while not repeated:
-        test_batch = next(test_iter)
-        # test_batch is (Observation, Actions)
-        obs = test_batch[0]
-        lang_actions_encoded = obs.tokenized_prompt
-        # Use the first available camera stream as a stable fingerprint basis
-        first_cam = next(iter(obs.images.values()))
-        B = first_cam.shape[0]
-        for i in range(B):
-            img_bytes = bytes(memoryview(jax.device_get(first_cam[i]).astype("uint8").tobytes()))
-            h = hashlib.sha1(img_bytes).hexdigest()
-            if h in seen:
-                repeated = True
-                break
-            lang_action = jax.device_get(tok.decode(lang_actions_encoded[i]))
-            images = jax.device_get(first_cam[i])
-            images = (images + 1) / 2
-            # img0 = images[0]
-            # img1 = images[-1]
-            img0 = images
-            img1 = images
-
-            fig, axes = plt.subplots(1, 2, figsize=(10, 4))
-            axes[0].imshow(img0)
-            axes[0].axis("off")
-            axes[0].set_title("t=0s")
-            # Write language action on t=0s image
-            _action_text = str(lang_action)
-            axes[0].text(
-                0.01,
-                0.99,
-                _action_text,
-                transform=axes[0].transAxes,
-                va="top",
-                ha="left",
-                fontsize=10,
-                color="white",
-                bbox=dict(facecolor="black", alpha=0.5, pad=3),
-            )
-            axes[1].imshow(img1)
-            axes[1].axis("off")
-            axes[1].set_title("t≈+1s")
-            plt.suptitle("Initial vs +1s")
-            plt.savefig(f"initial_vs_1s_{total}.png")
-            seen.add(h)
-            total += 1
-    logging.info("Capped-samples sanity: unique before repeat=%d (configured max_samples=%s)", total, max_samples_cfg)
-
-    # save the hash list to a file, which is easliy loaded in the future
-    with open("hash0.txt", "w") as f:
-        for h in seen:
-            f.write(h + "\n")
-
-    # max_samples_cfg = getattr(config.data, "max_samples", None)
-    tok = data_loader._data_loader._dataset._transform.transforms[-1].tokenizer
-    # logging.info("Running capped-samples sanity check (expect repeat after ~%s samples)", max_samples_cfg)
-    # seen = set()
-    # total = 0
-    # repeated = False
-    # test_iter = iter(data_loader)
-    # while not repeated:
-    #     test_batch = next(test_iter)
-    #     # test_batch is (Observation, Actions)
-    #     obs = test_batch[0]
-    #     # Use the first available camera stream as a stable fingerprint basis
-    #     first_cam = next(iter(obs.images.values()))
-    #     for i in range(first_cam.shape[0]):
-    #         img_bytes = bytes(memoryview(jax.device_get(first_cam[i]).astype("uint8").tobytes()))
-    #         h = hashlib.sha1(img_bytes).hexdigest()
-    #         if h in seen:
-    #             repeated = True
-    #             break
-    #         seen.add(h)
-    #         total += 1
-    # logging.info("Capped-samples sanity: unique before repeat=%d (configured max_samples=%s)", total, max_samples_cfg)
 
     totals = {
         "num_batches": 0,
@@ -319,58 +278,12 @@ def main(args: Args):
         }
         outputs = policy.infer_reasoning(data)["reasoning"]  # predicted string
         assert outputs is not None
-        # summed = _sum_language_actions(
-        #     seq,
-        #     sum_decimal="2f",
-        # )  # ground-truth string
 
-        # compute losses
-        # comp = losses_from_strings(outputs, summed)
-
-        # accumulate
         totals["num_batches"] += 1
-        # for k in ["l2", "angle_rad", "length_abs_diff", "scale_inv_residual", "gripper_l1", "total_loss"]:
-        #     totals[k] += comp[k]
 
-        # (optional) per-batch logging
         print(f"Batch {idx}")
         print("  Pred:", outputs)
         print("  GT:  ", gt_lang_action)
-        # print("  vec_pred:", comp["vec_pred"], "vec_gt:", comp["vec_gt"])
-        # print(
-        #     "  l2:",
-        #     comp["l2"],
-        #     "angle(rad):",
-        #     comp["angle_rad"],
-        #     "len|Δ|:",
-        #     comp["length_abs_diff"],
-        #     "residual:",
-        #     comp["scale_inv_residual"],
-        #     "grip|Δ|:",
-        #     comp["gripper_l1"],
-        #     "total:",
-        #     comp["total_loss"],
-        # )
-
-        # if idx % 10 == 0:
-        #     # final totals and (optional) averages
-        #     N = max(1, totals["num_batches"])
-        #     print("\n=== Totals ===")
-        #     print(f"batches: {totals['num_batches']}")
-        #     print(f"L2 sum: {totals['l2']:.6f}")
-        #     print(f"Angle(rad) sum: {totals['angle_rad']:.6f}")
-        #     print(f"Length |Δ| sum: {totals['length_abs_diff']:.6f}")
-        #     print(f"Scale-invariant residual sum: {totals['scale_inv_residual']:.6f}")
-        #     print(f"Gripper L1 sum: {totals['gripper_l1']:.6f}")
-        #     print(f"TOTAL loss sum: {totals['total_loss']:.6f}")
-
-        #     print("\n=== Averages per batch ===")
-        #     print(f"L2 avg: {totals['l2'] / N:.6f}")
-        #     print(f"Angle(rad) avg: {totals['angle_rad'] / N:.6f}")
-        #     print(f"Length |Δ| avg: {totals['length_abs_diff'] / N:.6f}")
-        #     print(f"Scale-invariant residual avg: {totals['scale_inv_residual'] / N:.6f}")
-        #     print(f"Gripper L1 avg: {totals['gripper_l1'] / N:.6f}")
-        #     print(f"TOTAL loss avg: {totals['total_loss'] / N:.6f}")
 
 
 if __name__ == "__main__":

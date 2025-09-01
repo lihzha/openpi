@@ -3,6 +3,7 @@ import functools
 import logging
 import os
 import platform
+import math
 from typing import Any
 
 import etils.epath as epath
@@ -11,7 +12,6 @@ from flax.training import common_utils
 import flax.traverse_util as traverse_util
 import jax
 import jax.numpy as jnp
-import numpy as np
 import optax
 from rail_tpu_utils import prevent_cross_region
 import tqdm_loggable.auto as tqdm
@@ -453,20 +453,22 @@ def main(config: _config.TrainConfig):
             sharding=data_sharding,
             shuffle=False,
             split="val",
+            max_samples=getattr(config, "val_max_samples", None),
         )
-        val_iter = iter(val_loader)
         pval_step = jax.jit(
             functools.partial(val_step, config),
             in_shardings=(replicated_sharding, train_state_sharding, data_sharding),
         )
-        # get all the validation batches and store them in a list
-        num_val_batches = int(10000 / config.batch_size) # 60000 = 30000 trajs * 200 steps per traj * 0.01 val fraction
-        val_batches = []
-        for _ in range(num_val_batches):
-            val_batch = next(val_iter)
-            val_batches.append(val_batch)
-        del val_iter
-        del val_loader
+        # Determine how many validation batches to evaluate each time.
+        # If a fixed validation subset size is configured, compute batches from it;
+        # otherwise fall back to a heuristic constant divided by global batch size.
+        if getattr(config, "val_max_samples", None):
+            # local batch size per host mirrors RLDS dataset batching
+            process_count = getattr(jax, "process_count", lambda: 1)()
+            local_bs = max(1, config.batch_size // process_count)
+            num_val_batches = int(math.ceil(config.val_max_samples / local_bs))
+        else:
+            num_val_batches = int(60000 / config.batch_size)  # adjust if needed
     start_step = int(train_state.step)
     pbar = tqdm.tqdm(
         range(start_step, config.num_train_steps),
@@ -491,7 +493,7 @@ def main(config: _config.TrainConfig):
                 wandb.log(reduced_info, step=step)
             infos = []
         # Periodic validation
-        if config.do_val and step % getattr(config, "val_interval", 50) == 0:
+        if config.do_val and step % getattr(config, "val_interval", 500) == 0:
             # use a pbar to track the validation progress
             val_pbar = tqdm.tqdm(
                 range(num_val_batches),
@@ -502,8 +504,10 @@ def main(config: _config.TrainConfig):
             )
             with sharding.set_mesh(mesh):
                 val_infos = []
-                for i in val_pbar:
-                    val_batch = val_batches[i]
+                # Recreate a fresh iterator to ensure the same fixed validation subset each time.
+                val_iter = iter(val_loader)
+                for _ in val_pbar:
+                    val_batch = next(val_iter)
                     val_info = pval_step(train_rng, train_state, val_batch)
                     val_infos.append(val_info)
                 stacked_val = common_utils.stack_forest(val_infos)

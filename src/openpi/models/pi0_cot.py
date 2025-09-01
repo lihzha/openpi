@@ -34,7 +34,7 @@ class Pi0CoTConfig(_model.BaseModelConfig):
     )
 
     # Weight multiplier for numeric tokens in reasoning loss (>=1.0). 1.0 disables weighting.
-    number_token_weight: float = 2.0
+    number_token_weight: float = 1.0
 
     @property
     @override
