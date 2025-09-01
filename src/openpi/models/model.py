@@ -5,6 +5,7 @@ import enum
 import logging
 import pathlib
 from typing import Generic, TypeVar
+
 import augmax
 from flax import nnx
 from flax import struct
@@ -74,6 +75,7 @@ IMAGE_RESOLUTION = (224, 224)
 #   l = sequence length
 #
 
+
 @at.typecheck
 @struct.dataclass
 class Observation(Generic[ArrayT]):
@@ -84,7 +86,7 @@ class Observation(Generic[ArrayT]):
     """
 
     # Images, in [-1, 1] float32.
-    images: dict[str, at.Float[ArrayT, "*b h w c"]]
+    images: dict[str, at.Float[ArrayT, "*b t h w c"]]
     # Image masks, with same keys as images.
     image_masks: dict[str, at.Bool[ArrayT, "*b"]]
     # Low-dimensional robot state.
@@ -182,7 +184,6 @@ def preprocess_observation(
             logger.info(f"Resizing image {key} from {image.shape[1:3]} to {image_resolution}")
             image = image_tools.resize_with_pad(image, *image_resolution)
 
-       
         if train:
             # Convert from [-1, 1] to [0, 1] for augmax.
             image = image / 2.0 + 0.5
