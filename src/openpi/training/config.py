@@ -107,14 +107,24 @@ class DataConfig:
     # Action space for DROID dataset.
     action_space: droid_rlds_dataset.DroidActionSpace | None = None
 
-    # # For DROID-cot
-    # cot: bool = False
-    # language_action_dir: str | None = None
-    # shuffle_buffer_size: int = 250_000
-    # # For CoT-style datasets (e.g., DROID-CoT): number of future steps to sum over for language actions
-    # summation_steps: int = 15
-    # # Optional cap on number of unique flattened samples for overfitting tests
-    # max_samples: int | None = None
+    # For DROID-CoT (optional; used only when `cot` is True)
+    cot: bool = False
+    language_action_dir: str | None = None
+    shuffle_buffer_size: int = 250_000
+    # For CoT-style datasets (e.g., DROID-CoT): number of future steps to sum over for language actions
+    summation_steps: int = 15
+    # Optional cap on number of unique flattened samples for overfitting tests
+    max_samples: int | None = None
+    # Tokenization / formatting controls for CoT numeric aggregation
+    sum_decimal: str = "2f"
+    left_pad: bool = True
+    include_decimal_point: bool = True
+    # Validation controls for RLDS-CoT dataset splitting/visualization
+    val_max_samples: int | None = None
+    val_fraction: float | None = None
+    validation_mode: str = "easy"
+    vis_dataset: bool = False
+    use_wrist_image: bool = False
 
 
 class GroupFactory(Protocol):
@@ -571,19 +581,19 @@ class RLDSDroidCoTDataConfig(DataConfigFactory):
             use_quantile_norm=model_config.model_type == ModelType.PI0_FAST,
             rlds_data_dir=self.rlds_data_dir,
             action_space=self.action_space,
-            # cot=self.cot,
-            # language_action_dir=self.language_action_dir,
-            # shuffle_buffer_size=self.shuffle_buffer_size,
-            # summation_steps=self.summation_steps,
-            # max_samples=self.max_samples,
-            # sum_decimal=self.sum_decimal,
-            # left_pad=self.left_pad,
-            # include_decimal_point=self.include_decimal_point,
-            # use_wrist_image=self.use_wrist_image,
-            # val_max_samples=self.val_max_samples,
-            # val_fraction=self.val_fraction,
-            # validation_mode=self.validation_mode,
-            # vis_dataset=self.vis_dataset,
+            cot=self.cot,
+            language_action_dir=self.language_action_dir,
+            shuffle_buffer_size=self.shuffle_buffer_size,
+            summation_steps=self.summation_steps,
+            max_samples=self.max_samples,
+            sum_decimal=self.sum_decimal,
+            left_pad=self.left_pad,
+            include_decimal_point=self.include_decimal_point,
+            use_wrist_image=self.use_wrist_image,
+            val_max_samples=self.val_max_samples,
+            val_fraction=self.val_fraction,
+            validation_mode=self.validation_mode,
+            vis_dataset=self.vis_dataset,
         )
 
 
