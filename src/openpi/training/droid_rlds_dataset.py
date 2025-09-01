@@ -471,6 +471,7 @@ class DroidCoTRldsDataset:
         eid_to_cam_dict = {}
         eid_to_intr_vec = {}
         eid_to_extr_mat = {}
+
         def _euler_xyz_to_rot(rx, ry, rz):
             # Build rotation matrix from XYZ intrinsic rotations
             cx, sx = np.cos(rx), np.sin(rx)
@@ -480,6 +481,7 @@ class DroidCoTRldsDataset:
             Ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]], dtype=np.float32)
             Rz = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]], dtype=np.float32)
             return Rz @ Ry @ Rx
+
         for eid, extr in cam2base_extrinsics.items():
             cams = camera_serials[eid]
             camera_serial = next(k for k in extr if k.isdigit())
@@ -851,7 +853,7 @@ class DroidCoTRldsDataset:
             language_actions_to_sum = tf.gather(traj["language_actions"], summation_indices)
             # Keep unsummed window for debugging: shape [traj_len, summation_steps]
             traj["language_actions"] = language_actions_to_sum
-            
+
             grouped_images = tf.gather(traj["observation"]["image"], summation_indices)
             traj["observation"]["image"] = grouped_images
 
@@ -913,10 +915,10 @@ class DroidCoTRldsDataset:
             traj["observation"]["image"] = tf.io.decode_image(
                 traj["observation"]["image"], expand_animations=False, dtype=tf.uint8
             )
-            # traj["observation"]["wrist_image"] = tf.io.decode_image(
-            #     traj["observation"]["wrist_image"], expand_animations=False, dtype=tf.uint8
-            # )
-            
+            traj["observation"]["wrist_image"] = tf.io.decode_image(
+                traj["observation"]["wrist_image"], expand_animations=False, dtype=tf.uint8
+            )
+
             return traj
             # def _decode_single(img_bytes):
             #     return tf.io.decode_image(img_bytes, expand_animations=False, dtype=tf.uint8)

@@ -2,17 +2,18 @@ import logging
 import os
 import platform
 
+import cv2
 import etils.epath as epath
 import jax
 import numpy as np
 from rail_tpu_utils import prevent_cross_region
-import cv2
 
 import openpi.models.model as _model
 import openpi.training.config as _config
 import openpi.training.data_loader as _data_loader
 import openpi.training.sharding as sharding
 import openpi.training.utils as training_utils
+
 
 def init_logging():
     """Custom logging format for better readability."""
@@ -159,7 +160,9 @@ def _invert_camera_axis_map(v_cm: np.ndarray) -> np.ndarray:
     return t_cam
 
 
-def _project_point(base_xyz: np.ndarray, cam_T_base: np.ndarray, intr: np.ndarray, out_hw: tuple[int, int]) -> tuple[int, int] | None:
+def _project_point(
+    base_xyz: np.ndarray, cam_T_base: np.ndarray, intr: np.ndarray, out_hw: tuple[int, int]
+) -> tuple[int, int] | None:
     """Project base-frame 3D point to pixel coordinates respecting resize_with_pad letterboxing.
 
     intr: [fx, fy, cx, cy] measured at calibration resolution (Wc≈2*cx, Hc≈2*cy).
@@ -245,7 +248,10 @@ def _draw_text_block(img: np.ndarray, text: str, area: tuple[int, int, int, int]
     except Exception:
         return img
     x0, y0, x1, y1 = area
-    x0 = max(0, x0); y0 = max(0, y0); x1 = min(img.shape[1], x1); y1 = min(img.shape[0], y1)
+    x0 = max(0, x0)
+    y0 = max(0, y0)
+    x1 = min(img.shape[1], x1)
+    y1 = min(img.shape[0], y1)
     overlay = img.copy()
     # Semi-transparent background (lighter to reduce apparent black area)
     cv2.rectangle(overlay, (x0, y0), (x1, y1), (0, 0, 0), thickness=-1)
@@ -285,7 +291,16 @@ def _make_legend_bar(width: int, height: int = 28) -> np.ndarray:
         if cv2 is not None:
             for color, label in items:
                 cv2.circle(bar, (cx, height // 2), 6, color, -1)
-                cv2.putText(bar, label, (cx + 12, height // 2 + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+                cv2.putText(
+                    bar,
+                    label,
+                    (cx + 12, height // 2 + 4),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (255, 255, 255),
+                    1,
+                    cv2.LINE_AA,
+                )
                 cx += 110
     except Exception:
         pass
@@ -354,7 +369,6 @@ def main(config: _config.TrainConfig):
 
     jax.config.update("jax_compilation_cache_dir", str(epath.Path("~/.cache/jax").expanduser()))
 
-
     mesh = sharding.make_mesh(effective_fsdp_devices)
     data_sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec(sharding.DATA_AXIS))
     # Human-readable mesh overview
@@ -377,7 +391,6 @@ def main(config: _config.TrainConfig):
     # Sharding details for the first batch
     log_batch_sharding(batch)
 
-    
     for j in range(10):
         # Visualize language-action projection per example
         obs = batch[0]
@@ -431,8 +444,16 @@ def main(config: _config.TrainConfig):
                 ce = np.array(obs.camera_extrinsics[i])
                 extr = ce[0] if ce.ndim == 3 else ce
             H, W = start_u8.shape[:2]
-            start_xy = _project_point(start_xyz, extr, intr, (H, W)) if (start_xyz is not None and intr is not None and extr is not None) else None
-            end_true_xy = _project_point(end_xyz, extr, intr, (H, W)) if (end_xyz is not None and intr is not None and extr is not None) else None
+            start_xy = (
+                _project_point(start_xyz, extr, intr, (H, W))
+                if (start_xyz is not None and intr is not None and extr is not None)
+                else None
+            )
+            end_true_xy = (
+                _project_point(end_xyz, extr, intr, (H, W))
+                if (end_xyz is not None and intr is not None and extr is not None)
+                else None
+            )
             # Predicted end via language action delta in camera frame
             pred_end_xy = None
             if reasoning_texts:
@@ -466,6 +487,7 @@ def main(config: _config.TrainConfig):
             for pi, page in enumerate(pages):
                 cv2.imwrite(f"grid_page_{j}_{pi:02d}.png", page)
         batch = next(data_iter)
+
 
 if __name__ == "__main__":
     main(_config.cli())

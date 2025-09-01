@@ -178,14 +178,18 @@ class CoTModelTransformFactory(GroupFactory):
                         _transforms.ResizeImages(224, 224),
                         _transforms.TokenizePromptAndReasoning(
                             _tokenizer.PaligemmaTokenizer(
-                                model_config.max_token_len, left_pad=self.left_pad, include_decimal_point=self.include_decimal_point
+                                model_config.max_token_len,
+                                left_pad=self.left_pad,
+                                include_decimal_point=self.include_decimal_point,
                             )
                         ),
                     ],
                     outputs=[
                         _transforms.DetokenizeReasoning(
                             _tokenizer.PaligemmaTokenizer(
-                                model_config.max_token_len, left_pad=self.left_pad, include_decimal_point=self.include_decimal_point
+                                model_config.max_token_len,
+                                left_pad=self.left_pad,
+                                include_decimal_point=self.include_decimal_point,
                             )
                         )
                     ],
@@ -545,7 +549,9 @@ class RLDSDroidCoTDataConfig(DataConfigFactory):
             outputs=[_transforms.AbsoluteActions(delta_action_mask)],
         )
 
-        model_transforms = CoTModelTransformFactory(left_pad=self.left_pad, include_decimal_point=self.include_decimal_point)(model_config)
+        model_transforms = CoTModelTransformFactory(
+            left_pad=self.left_pad, include_decimal_point=self.include_decimal_point
+        )(model_config)
 
         assert self.rlds_data_dir is not None, "Need to set rlds data dir for RLDS data loader."
 
@@ -633,14 +639,14 @@ class TrainConfig:
     # eg. if total device is 4 and fsdp devices is 2; then the model will shard to 2 devices and run
     # data parallel between 2 groups of devices.
     fsdp_devices: int = 1
-    
+
     # Do validation or not
     do_val: bool = False
 
     # If set, validation loader will materialize a fixed subset of this many
     # flattened samples via take(K).cache().repeat(), ensuring consistent val batches.
     val_max_samples: int | None = None
-    
+
     val_fraction: float | None = None
 
     @property
@@ -789,7 +795,6 @@ _CONFIGS = [
             decay_steps=1_000_000,
             decay_lr=1e-4,
         ),
-
         # keep_period=20_000,
     ),
     #
