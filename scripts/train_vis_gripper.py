@@ -386,14 +386,32 @@ def main(config: _config.TrainConfig):
         # Prepare start/end images for the first camera view
         first_cam_key = next(iter(obs.images.keys()))
         imgs = obs.images[first_cam_key]
+        # Also try to find a wrist camera to visualize next to the first image
+        wrist_cam_key = None
+        for k in obs.images.keys():
+            if "left_wrist" in k:
+                wrist_cam_key = k
+                break
+        if wrist_cam_key is None:
+            for k in obs.images.keys():
+                if "wrist" in k:
+                    wrist_cam_key = k
+                    break
+        wrist_imgs = obs.images[wrist_cam_key] if wrist_cam_key is not None else None
         # imgs shape: [B, T, H, W, C] after grouping; pick t0 and t_end
         start_imgs = np.array(imgs[:, 0])
         end_imgs = np.array(imgs[:, -1])
+        wrist_start_imgs = np.array(wrist_imgs[:, 0]) if wrist_imgs is not None else None
         B = start_imgs.shape[0]
         vis_rows = []
         for i in range(B):
             start_u8 = ((start_imgs[i] + 1.0) * 0.5 * 255.0).clip(0, 255).astype(np.uint8)
             end_u8 = ((end_imgs[i] + 1.0) * 0.5 * 255.0).clip(0, 255).astype(np.uint8)
+            wrist_u8 = (
+                ((wrist_start_imgs[i] + 1.0) * 0.5 * 255.0).clip(0, 255).astype(np.uint8)
+                if wrist_start_imgs is not None
+                else None
+            )
             # Project true start/end gripper points if cartesian window and calibs available
             start_xyz = None
             end_xyz = None
@@ -433,7 +451,11 @@ def main(config: _config.TrainConfig):
                 col1 = _draw_dot(col1, pred_end_xy, (0, 0, 255))  # Pred end on start frame for side-by-side comparison
             col2 = _draw_dot(end_u8, pred_end_xy, (0, 0, 255)) if pred_end_xy is not None else end_u8  # Pred end
             col3 = _draw_dot(end_u8, end_true_xy, (0, 255, 0)) if end_true_xy is not None else end_u8  # GT end
-            row = np.concatenate([col1, col2, col3], axis=1)
+            panels = [col1]
+            if wrist_u8 is not None:
+                panels.append(wrist_u8)
+            panels.extend([col2, col3])
+            row = np.concatenate(panels, axis=1)
             # Single bottom overlay spanning the entire row
             band_h_row = max(16, row.shape[0] // 14)
             row = _draw_text_block(row, la_text, (4, row.shape[0] - band_h_row - 2, row.shape[1] - 4, row.shape[0] - 2))

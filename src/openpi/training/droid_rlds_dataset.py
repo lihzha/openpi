@@ -465,21 +465,21 @@ class DroidCoTRldsDataset:
             cam2base_extrinsics = json.load(fp)
         with tf.io.gfile.GFile(f"{METADATA_PATH}/camera_serials.json", "r") as fp:
             camera_serials = json.load(fp)
-        # with tf.io.gfile.GFile(f"{METADATA_PATH}/intrinsics.json", "r") as fp:
-        #     intrinsics_json = json.load(fp)
+        with tf.io.gfile.GFile(f"{METADATA_PATH}/intrinsics.json", "r") as fp:
+            intrinsics_json = json.load(fp)
 
         eid_to_cam_dict = {}
-        # eid_to_intr_vec = {}
-        # eid_to_extr_mat = {}
-        # def _euler_xyz_to_rot(rx, ry, rz):
-        #     # Build rotation matrix from XYZ intrinsic rotations
-        #     cx, sx = np.cos(rx), np.sin(rx)
-        #     cy, sy = np.cos(ry), np.sin(ry)
-        #     cz, sz = np.cos(rz), np.sin(rz)
-        #     Rx = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]], dtype=np.float32)
-        #     Ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]], dtype=np.float32)
-        #     Rz = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]], dtype=np.float32)
-        #     return Rz @ Ry @ Rx
+        eid_to_intr_vec = {}
+        eid_to_extr_mat = {}
+        def _euler_xyz_to_rot(rx, ry, rz):
+            # Build rotation matrix from XYZ intrinsic rotations
+            cx, sx = np.cos(rx), np.sin(rx)
+            cy, sy = np.cos(ry), np.sin(ry)
+            cz, sz = np.cos(rz), np.sin(rz)
+            Rx = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]], dtype=np.float32)
+            Ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]], dtype=np.float32)
+            Rz = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]], dtype=np.float32)
+            return Rz @ Ry @ Rx
         for eid, extr in cam2base_extrinsics.items():
             cams = camera_serials[eid]
             camera_serial = next(k for k in extr if k.isdigit())
@@ -499,23 +499,23 @@ class DroidCoTRldsDataset:
             eid_to_cam_dict[eid] = calib_image_idx
 
             # Camera intrinsics as [fx, fy, cx, cy]
-            # try:
-            #     fx, cx, fy, cy = intrinsics_json[eid][camera_serial]["cameraMatrix"]
-            #     eid_to_intr_vec[eid] = [fx, fy, cx, cy]
-            # except Exception:
-            #     # Fallback to zeros
-            #     eid_to_intr_vec[eid] = [0.0, 0.0, 0.0, 0.0]
+            try:
+                fx, cx, fy, cy = intrinsics_json[eid][camera_serial]["cameraMatrix"]
+                eid_to_intr_vec[eid] = [fx, fy, cx, cy]
+            except Exception:
+                # Fallback to zeros
+                eid_to_intr_vec[eid] = [0.0, 0.0, 0.0, 0.0]
 
-            # # Camera extrinsics 4x4 from [tx,ty,tz,rx,ry,rz]
-            # try:
-            #     tx, ty, tz, rx, ry, rz = extr[camera_serial]
-            #     R = _euler_xyz_to_rot(rx, ry, rz)
-            #     T = np.eye(4, dtype=np.float32)
-            #     T[:3, :3] = R
-            #     T[:3, 3] = [tx, ty, tz]
-            #     eid_to_extr_mat[eid] = T.reshape(-1)
-            # except Exception:
-            #     eid_to_extr_mat[eid] = np.zeros((16,), dtype=np.float32)
+            # Camera extrinsics 4x4 from [tx,ty,tz,rx,ry,rz]
+            try:
+                tx, ty, tz, rx, ry, rz = extr[camera_serial]
+                R = _euler_xyz_to_rot(rx, ry, rz)
+                T = np.eye(4, dtype=np.float32)
+                T[:3, :3] = R
+                T[:3, 3] = [tx, ty, tz]
+                eid_to_extr_mat[eid] = T.reshape(-1)
+            except Exception:
+                eid_to_extr_mat[eid] = np.zeros((16,), dtype=np.float32)
 
         keys = tf.constant(list(eid_to_cam_dict.keys()), dtype=tf.string)
         values = tf.constant(list(eid_to_cam_dict.values()), dtype=tf.int32)
@@ -526,23 +526,23 @@ class DroidCoTRldsDataset:
         print_memory_usage("After building cam_table")
 
         # Camera intrinsics/extrinsics lookup tables (serialize tensors to tf.string to avoid shape issues)
-        # calib_eids = list(eid_to_cam_dict.keys())
-        # intr_ser = []
-        # extr_ser = []
-        # for _eid in calib_eids:
-        #     intr_ser.append(tf.io.serialize_tensor(tf.constant(eid_to_intr_vec[_eid], dtype=tf.float32)).numpy())
-        #     extr_ser.append(tf.io.serialize_tensor(tf.constant(eid_to_extr_mat[_eid], dtype=tf.float32)).numpy())
-        # calib_keys = tf.constant(calib_eids, dtype=tf.string)
-        # intr_vals = tf.constant(intr_ser, dtype=tf.string)
-        # extr_vals = tf.constant(extr_ser, dtype=tf.string)
-        # intr_table = tf.lookup.StaticHashTable(
-        #     tf.lookup.KeyValueTensorInitializer(calib_keys, intr_vals),
-        #     default_value=tf.constant(b"", dtype=tf.string),
-        # )
-        # extr_table = tf.lookup.StaticHashTable(
-        #     tf.lookup.KeyValueTensorInitializer(calib_keys, extr_vals),
-        #     default_value=tf.constant(b"", dtype=tf.string),
-        # )
+        calib_eids = list(eid_to_cam_dict.keys())
+        intr_ser = []
+        extr_ser = []
+        for _eid in calib_eids:
+            intr_ser.append(tf.io.serialize_tensor(tf.constant(eid_to_intr_vec[_eid], dtype=tf.float32)).numpy())
+            extr_ser.append(tf.io.serialize_tensor(tf.constant(eid_to_extr_mat[_eid], dtype=tf.float32)).numpy())
+        calib_keys = tf.constant(calib_eids, dtype=tf.string)
+        intr_vals = tf.constant(intr_ser, dtype=tf.string)
+        extr_vals = tf.constant(extr_ser, dtype=tf.string)
+        intr_table = tf.lookup.StaticHashTable(
+            tf.lookup.KeyValueTensorInitializer(calib_keys, intr_vals),
+            default_value=tf.constant(b"", dtype=tf.string),
+        )
+        extr_table = tf.lookup.StaticHashTable(
+            tf.lookup.KeyValueTensorInitializer(calib_keys, extr_vals),
+            default_value=tf.constant(b"", dtype=tf.string),
+        )
 
         # ---------------------------------------------------------------------
         # 6. Language-instruction tables (3 per episode_id)
@@ -748,21 +748,21 @@ class DroidCoTRldsDataset:
             #     lambda: traj["observation"]["exterior_image_1_left"],
             #     lambda: traj["observation"]["exterior_image_2_left"],
             # )
-            # wrist_img = traj["observation"]["wrist_image_left"]
+            wrist_img = traj["observation"]["wrist_image_left"]
 
             episode_id_vec = tf.fill([traj_len], episode_id)
 
             # Deserialize intrinsics/extrinsics and broadcast across trajectory length
-            # intr = tf.io.parse_tensor(intr_table.lookup(episode_id), out_type=tf.float32)  # [4]
-            # extr = tf.reshape(tf.io.parse_tensor(extr_table.lookup(episode_id), out_type=tf.float32), [4, 4])  # [4,4]
-            # intr_b = tf.broadcast_to(intr[None, :], [traj_len, 4])
-            # extr_b = tf.broadcast_to(extr[None, :, :], [traj_len, 4, 4])
+            intr = tf.io.parse_tensor(intr_table.lookup(episode_id), out_type=tf.float32)  # [4]
+            extr = tf.reshape(tf.io.parse_tensor(extr_table.lookup(episode_id), out_type=tf.float32), [4, 4])  # [4,4]
+            intr_b = tf.broadcast_to(intr[None, :], [traj_len, 4])
+            extr_b = tf.broadcast_to(extr[None, :, :], [traj_len, 4, 4])
 
             return {
                 "actions": actions,
                 "observation": {
                     "image": exterior_img,
-                    # "wrist_image": wrist_img,
+                    "wrist_image": wrist_img,
                     "cartesian_position": traj["observation"]["cartesian_position"],
                     "gripper_position": traj["observation"]["gripper_position"],
                 },
@@ -770,8 +770,8 @@ class DroidCoTRldsDataset:
                 "language_actions": lang_tensor,
                 "episode_id": episode_id_vec,
                 # Broadcasted context to match time dimension for flatten
-                # "camera_intrinsics": intr_b,  # [traj_len, 4]
-                # "camera_extrinsics": extr_b,  # [traj_len, 4, 4]
+                "camera_intrinsics": intr_b,  # [traj_len, 4]
+                "camera_extrinsics": extr_b,  # [traj_len, 4, 4]
             }
 
         # dataset = dataset.traj_map(restructure, num_parallel_calls)
@@ -825,101 +825,6 @@ class DroidCoTRldsDataset:
             dataset = dataset.traj_map(restructure, num_parallel_calls)
             dataset = dataset.traj_map(chunk_actions, num_parallel_calls)
 
-        def _sum_language_actions(language_actions_batch):
-            """Helper function to sum over a batch of language actions.
-
-            Args:
-                language_actions_batch: Tensor of shape [summation_steps] containing language action strings
-
-            Returns:
-                A single string representing the summed language action
-            """
-            # Use py_function to implement the complex string parsing and summation logic
-            # This allows us to use Python string operations while keeping the function traceable
-
-            def _python_sum_language_actions(actions_np):
-                """Python implementation of language action summation."""
-                import re
-
-                # Dictionary to store summed movements by direction
-                movement_sums = {}
-
-                # Define opposite directions for cancellation
-                opposite_directions = {
-                    "left": "right",
-                    "right": "left",
-                    "forward": "backward",
-                    "backward": "forward",
-                    "up": "down",
-                    "down": "up",
-                }
-
-                # Convert possible EagerTensor to numpy array of bytes
-                try:
-                    actions_arr = actions_np.numpy()
-                except AttributeError:
-                    actions_arr = actions_np
-
-                for action_str in actions_arr:
-                    # Ensure we operate on a Python string
-                    if isinstance(action_str, (bytes, bytearray)):
-                        s = action_str.decode("utf-8")
-                    else:
-                        s = str(action_str)
-                    if not s:
-                        continue
-
-                    # Split by " and " to get individual movements
-                    movements = s.split(" and ")
-
-                    for movement in movements:
-                        # Parse movement: "move direction value unit"
-                        # Use regex to handle variations in spacing
-                        match = re.match(r"move\s+(\w+)\s+([\d.]+)\s*(\w+)", movement.strip())
-                        if match:
-                            direction = match.group(1)
-                            value = float(match.group(2))
-                            unit = match.group(3)
-
-                            # Check if we have an opposite direction already
-                            opposite = opposite_directions.get(direction)
-                            if opposite in movement_sums:
-                                # Cancel out opposite movements
-                                opposite_value = movement_sums[opposite]["value"]
-                                if value > opposite_value:
-                                    # Current direction wins
-                                    movement_sums[direction] = {"value": value - opposite_value, "unit": unit}
-                                    del movement_sums[opposite]
-                                elif value < opposite_value:
-                                    # Opposite direction wins
-                                    movement_sums[opposite]["value"] = opposite_value - value
-                                else:
-                                    # Equal values, cancel out completely
-                                    del movement_sums[opposite]
-                            else:
-                                # Initialize if direction not seen before
-                                if direction not in movement_sums:
-                                    movement_sums[direction] = {"value": 0.0, "unit": unit}
-
-                                # Add the value
-                                movement_sums[direction]["value"] += value
-
-                # Build the result string
-                if not movement_sums:
-                    return ""
-
-                result_parts = []
-                for direction, data in movement_sums.items():
-                    if data["value"] > 0:  # Only include positive values
-                        result_parts.append(f"move {direction} {data['value']:.2f} {data['unit']}")
-
-                return " and ".join(result_parts)
-
-            # Convert TensorFlow tensor to numpy and back
-            result = tf.py_function(_python_sum_language_actions, [language_actions_batch], tf.string)
-
-            return result
-
         def group_language_actions(traj):
             """Compute per-timestep summed language actions over future steps.
 
@@ -947,12 +852,12 @@ class DroidCoTRldsDataset:
             # Keep unsummed window for debugging: shape [traj_len, summation_steps]
             traj["language_actions"] = language_actions_to_sum
             
-            # grouped_images = tf.gather(traj["observation"]["image"], summation_indices)
-            # traj["observation"]["image"] = grouped_images
+            grouped_images = tf.gather(traj["observation"]["image"], summation_indices)
+            traj["observation"]["image"] = grouped_images
 
             # Group cartesian positions for start/end projection
-            # grouped_cart = tf.gather(traj["observation"]["cartesian_position"], summation_indices)
-            # traj["observation"]["cartesian_position_window"] = grouped_cart
+            grouped_cart = tf.gather(traj["observation"]["cartesian_position"], summation_indices)
+            traj["observation"]["cartesian_position_window"] = grouped_cart
 
             # Also group broadcast calibration to align with the same windowed time dimension
             # camera_intrinsics: [traj_len, 4] -> [traj_len, summation_steps, 4]
@@ -964,14 +869,6 @@ class DroidCoTRldsDataset:
                 T = traj["camera_extrinsics"]
                 traj["camera_extrinsics"] = tf.gather(T, idx)
 
-            # Sum over the language actions
-            # summed_language_actions = tf.map_fn(
-            #     _sum_language_actions,
-            #     language_actions_to_sum,
-            #     fn_output_signature=tf.string
-            # )
-            # # Keep a single summed language string per timestep (no chunking)
-            # traj["language_actions"] = summed_language_actions
             return traj
 
         # TODO: chunk action or not
