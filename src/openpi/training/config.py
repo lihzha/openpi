@@ -510,6 +510,14 @@ class RLDSDroidCoTDataConfig(DataConfigFactory):
     left_pad: bool = True
     include_decimal_point: bool = True
 
+    # If set, validation loader will materialize a fixed subset of this many
+    # flattened samples via take(K).cache().repeat(), ensuring consistent val batches.
+    val_max_samples: int | None = None
+    val_fraction: float | None = None
+    validation_mode: str = "easy"
+    vis_dataset: bool = False
+    use_wrist_image: bool = False
+
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
         repack_transform = _transforms.Group(
@@ -568,6 +576,14 @@ class RLDSDroidCoTDataConfig(DataConfigFactory):
             shuffle_buffer_size=self.shuffle_buffer_size,
             summation_steps=self.summation_steps,
             max_samples=self.max_samples,
+            sum_decimal=self.sum_decimal,
+            left_pad=self.left_pad,
+            include_decimal_point=self.include_decimal_point,
+            use_wrist_image=self.use_wrist_image,
+            val_max_samples=self.val_max_samples,
+            val_fraction=self.val_fraction,
+            validation_mode=self.validation_mode,
+            vis_dataset=self.vis_dataset,
         )
 
 
@@ -642,12 +658,6 @@ class TrainConfig:
 
     # Do validation or not
     do_val: bool = False
-
-    # If set, validation loader will materialize a fixed subset of this many
-    # flattened samples via take(K).cache().repeat(), ensuring consistent val batches.
-    val_max_samples: int | None = None
-
-    val_fraction: float | None = None
 
     @property
     def assets_dirs(self) -> pathlib.Path | epath.Path:

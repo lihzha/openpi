@@ -56,6 +56,8 @@ import jax
 import numpy as np
 import psutil
 
+import openpi.training.config as _config
+
 METADATA_PATH = "/n/fs/robot-data/vlm-syn/droid"
 IMAGE_LIST = [
     "exterior_image_1_left",
@@ -316,10 +318,10 @@ class DroidCoTRldsDataset:
         data_dir: str,
         batch_size: int,
         language_action_dir: str,
+        config: _config.DataConfig,
         *,  # Force keyword-only arguments
         shuffle: bool = True,
         action_chunk_size: int = 16,
-        summation_steps: int = 15,  # Number of future steps to sum over for language actions
         # We default to joint position actions, since they allow policy evaluation in simulation.
         action_space: DroidActionSpace = DroidActionSpace.CARTESIAN_POSITION,
         max_loaded_steps_per_episode: int = 100,
@@ -328,14 +330,12 @@ class DroidCoTRldsDataset:
         num_parallel_reads: int = -1,  # -1 == tf.data.AUTOTUNE -- hack to not import tf at top level
         num_parallel_calls: int = -1,  # -1 == tf.data.AUTOTUNE -- hack to not import tf at top level
         # Validation support
-        split: str = "train",  # one of {"train", "val"}
-        val_fraction: float = 0.01,
         split_seed: int = 0,
-        validation_mode: str = "easy",  # one of {"easy", "hard"}; aliases: {"easier"->"easy", "medium"->"easy", "harder"->"hard"}
         # Overfitting support: cap number of flattened samples (after shuffle)
         max_samples: int | None = None,
         # Global seed for all dataset-related randomness
         seed: int = 0,
+        split: str = "train",
     ):
         # Import tensorflow here to not make it mandatory in case RLDS data loader is not used.
         import dlimp as dl
@@ -343,6 +343,11 @@ class DroidCoTRldsDataset:
         import tensorflow_datasets as tfds
 
         assert action_space == DroidActionSpace.CARTESIAN_POSITION, "CoT only supports EEF actions for now"
+        validation_mode = getattr(config, "validation_mode", "easy")
+        summation_steps = getattr(config, "summation_steps", 15)
+        val_fraction = getattr(config, "val_fraction", 0.02)
+        vis_dataset = getattr(config, "vis_dataset", False)
+        use_wrist_image = getattr(config, "use_wrist_image", False)
 
         # ------------------------------------------------------------------
         # Global seeding for reproducibility across dataset ops
@@ -465,22 +470,23 @@ class DroidCoTRldsDataset:
             cam2base_extrinsics = json.load(fp)
         with tf.io.gfile.GFile(f"{METADATA_PATH}/camera_serials.json", "r") as fp:
             camera_serials = json.load(fp)
-        with tf.io.gfile.GFile(f"{METADATA_PATH}/intrinsics.json", "r") as fp:
-            intrinsics_json = json.load(fp)
+        if vis_dataset:
+            with tf.io.gfile.GFile(f"{METADATA_PATH}/intrinsics.json", "r") as fp:
+                intrinsics_json = json.load(fp)
+            eid_to_intr_vec = {}
+            eid_to_extr_mat = {}
+
+            def _euler_xyz_to_rot(rx, ry, rz):
+                # Build rotation matrix from XYZ intrinsic rotations
+                cx, sx = np.cos(rx), np.sin(rx)
+                cy, sy = np.cos(ry), np.sin(ry)
+                cz, sz = np.cos(rz), np.sin(rz)
+                Rx = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]], dtype=np.float32)
+                Ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]], dtype=np.float32)
+                Rz = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]], dtype=np.float32)
+                return Rz @ Ry @ Rx
 
         eid_to_cam_dict = {}
-        eid_to_intr_vec = {}
-        eid_to_extr_mat = {}
-
-        def _euler_xyz_to_rot(rx, ry, rz):
-            # Build rotation matrix from XYZ intrinsic rotations
-            cx, sx = np.cos(rx), np.sin(rx)
-            cy, sy = np.cos(ry), np.sin(ry)
-            cz, sz = np.cos(rz), np.sin(rz)
-            Rx = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]], dtype=np.float32)
-            Ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]], dtype=np.float32)
-            Rz = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]], dtype=np.float32)
-            return Rz @ Ry @ Rx
 
         for eid, extr in cam2base_extrinsics.items():
             cams = camera_serials[eid]
@@ -500,24 +506,25 @@ class DroidCoTRldsDataset:
             calib_image_idx = IMAGE_LIST.index(calib_image_name)
             eid_to_cam_dict[eid] = calib_image_idx
 
-            # Camera intrinsics as [fx, fy, cx, cy]
-            try:
-                fx, cx, fy, cy = intrinsics_json[eid][camera_serial]["cameraMatrix"]
-                eid_to_intr_vec[eid] = [fx, fy, cx, cy]
-            except Exception:
-                # Fallback to zeros
-                eid_to_intr_vec[eid] = [0.0, 0.0, 0.0, 0.0]
+            if vis_dataset:
+                # Camera intrinsics as [fx, fy, cx, cy]
+                try:
+                    fx, cx, fy, cy = intrinsics_json[eid][camera_serial]["cameraMatrix"]
+                    eid_to_intr_vec[eid] = [fx, fy, cx, cy]
+                except Exception:
+                    # Fallback to zeros
+                    eid_to_intr_vec[eid] = [0.0, 0.0, 0.0, 0.0]
 
-            # Camera extrinsics 4x4 from [tx,ty,tz,rx,ry,rz]
-            try:
-                tx, ty, tz, rx, ry, rz = extr[camera_serial]
-                R = _euler_xyz_to_rot(rx, ry, rz)
-                T = np.eye(4, dtype=np.float32)
-                T[:3, :3] = R
-                T[:3, 3] = [tx, ty, tz]
-                eid_to_extr_mat[eid] = T.reshape(-1)
-            except Exception:
-                eid_to_extr_mat[eid] = np.zeros((16,), dtype=np.float32)
+                # Camera extrinsics 4x4 from [tx,ty,tz,rx,ry,rz]
+                try:
+                    tx, ty, tz, rx, ry, rz = extr[camera_serial]
+                    R = _euler_xyz_to_rot(rx, ry, rz)
+                    T = np.eye(4, dtype=np.float32)
+                    T[:3, :3] = R
+                    T[:3, 3] = [tx, ty, tz]
+                    eid_to_extr_mat[eid] = T.reshape(-1)
+                except Exception:
+                    eid_to_extr_mat[eid] = np.zeros((16,), dtype=np.float32)
 
         keys = tf.constant(list(eid_to_cam_dict.keys()), dtype=tf.string)
         values = tf.constant(list(eid_to_cam_dict.values()), dtype=tf.int32)
@@ -750,31 +757,34 @@ class DroidCoTRldsDataset:
             #     lambda: traj["observation"]["exterior_image_1_left"],
             #     lambda: traj["observation"]["exterior_image_2_left"],
             # )
-            wrist_img = traj["observation"]["wrist_image_left"]
-
             episode_id_vec = tf.fill([traj_len], episode_id)
 
             # Deserialize intrinsics/extrinsics and broadcast across trajectory length
-            intr = tf.io.parse_tensor(intr_table.lookup(episode_id), out_type=tf.float32)  # [4]
-            extr = tf.reshape(tf.io.parse_tensor(extr_table.lookup(episode_id), out_type=tf.float32), [4, 4])  # [4,4]
-            intr_b = tf.broadcast_to(intr[None, :], [traj_len, 4])
-            extr_b = tf.broadcast_to(extr[None, :, :], [traj_len, 4, 4])
+            if vis_dataset:
+                intr = tf.io.parse_tensor(intr_table.lookup(episode_id), out_type=tf.float32)  # [4]
+                extr = tf.reshape(
+                    tf.io.parse_tensor(extr_table.lookup(episode_id), out_type=tf.float32), [4, 4]
+                )  # [4,4]
+                intr_b = tf.broadcast_to(intr[None, :], [traj_len, 4])
+                extr_b = tf.broadcast_to(extr[None, :, :], [traj_len, 4, 4])
 
-            return {
+            _return_dict = {
                 "actions": actions,
                 "observation": {
                     "image": exterior_img,
-                    "wrist_image": wrist_img,
                     "cartesian_position": traj["observation"]["cartesian_position"],
                     "gripper_position": traj["observation"]["gripper_position"],
                 },
                 "prompt": instruction_vec,
                 "language_actions": lang_tensor,
                 "episode_id": episode_id_vec,
-                # Broadcasted context to match time dimension for flatten
-                "camera_intrinsics": intr_b,  # [traj_len, 4]
-                "camera_extrinsics": extr_b,  # [traj_len, 4, 4]
             }
+            if vis_dataset:
+                _return_dict["camera_intrinsics"] = intr_b  # [traj_len, 4]
+                _return_dict["camera_extrinsics"] = extr_b  # [traj_len, 4, 4]
+            if use_wrist_image:
+                _return_dict["observation"]["wrist_image"] = traj["observation"]["wrist_image_left"]
+            return _return_dict
 
         # dataset = dataset.traj_map(restructure, num_parallel_calls)
 
@@ -854,21 +864,23 @@ class DroidCoTRldsDataset:
             # Keep unsummed window for debugging: shape [traj_len, summation_steps]
             traj["language_actions"] = language_actions_to_sum
 
-            grouped_images = tf.gather(traj["observation"]["image"], summation_indices)
-            traj["observation"]["image"] = grouped_images
+            if vis_dataset:
+                grouped_images = tf.gather(traj["observation"]["image"], summation_indices)
+                traj["observation"]["image"] = grouped_images
 
-            grouped_wrist_images = tf.gather(traj["observation"]["wrist_image"], summation_indices)
-            traj["observation"]["wrist_image"] = grouped_wrist_images
+                if use_wrist_image:
+                    grouped_wrist_images = tf.gather(traj["observation"]["wrist_image"], summation_indices)
+                    traj["observation"]["wrist_image"] = grouped_wrist_images
 
-            # Group cartesian positions for start/end projection
-            grouped_cart = tf.gather(traj["observation"]["cartesian_position"], summation_indices)
-            traj["observation"]["cartesian_position_window"] = grouped_cart
+                # Group cartesian positions for start/end projection
+                grouped_cart = tf.gather(traj["observation"]["cartesian_position"], summation_indices)
+                traj["observation"]["cartesian_position_window"] = grouped_cart
 
-            # Also group broadcast calibration to align with the same windowed time dimension
-            # camera_intrinsics: [traj_len, 4] -> [traj_len, summation_steps, 4]
-            if "camera_intrinsics" in traj:
+                # Also group broadcast calibration to align with the same windowed time dimension
+                # camera_intrinsics: [traj_len, 4] -> [traj_len, summation_steps, 4]
+                assert "camera_intrinsics" in traj, "camera_intrinsics not found in traj"
                 traj["camera_intrinsics"] = tf.gather(traj["camera_intrinsics"], summation_indices)
-            if "camera_extrinsics" in traj:
+                assert "camera_extrinsics" in traj, "camera_extrinsics not found in traj"
                 # camera_extrinsics: [traj_len, 4,4] -> [traj_len, summation_steps, 4,4]
                 idx = summation_indices
                 T = traj["camera_extrinsics"]
@@ -915,27 +927,25 @@ class DroidCoTRldsDataset:
 
         # Decode images: RLDS saves encoded images, only decode now for efficiency
         def decode_images(traj):
-            # traj["observation"]["image"] = tf.io.decode_image(
-            #     traj["observation"]["image"], expand_animations=False, dtype=tf.uint8
-            # )
-            # traj["observation"]["wrist_image"] = tf.io.decode_image(
-            #     traj["observation"]["wrist_image"], expand_animations=False, dtype=tf.uint8
-            # )
-
-            # return traj
             def _decode_single(img_bytes):
                 return tf.io.decode_image(img_bytes, expand_animations=False, dtype=tf.uint8)
 
-            traj["observation"]["image"] = tf.map_fn(
-                _decode_single,
-                traj["observation"]["image"],
-                fn_output_signature=tf.uint8,
-            )
-            traj["observation"]["wrist_image"] = tf.map_fn(
-                _decode_single,
-                traj["observation"]["wrist_image"],
-                fn_output_signature=tf.uint8,
-            )
+            if vis_dataset:
+                traj["observation"]["image"] = tf.map_fn(
+                    _decode_single,
+                    traj["observation"]["image"],
+                    fn_output_signature=tf.uint8,
+                )
+                if use_wrist_image:
+                    traj["observation"]["wrist_image"] = tf.map_fn(
+                        _decode_single,
+                        traj["observation"]["wrist_image"],
+                        fn_output_signature=tf.uint8,
+                    )
+            else:
+                traj["observation"]["image"] = _decode_single(traj["observation"]["image"])
+                if use_wrist_image:
+                    traj["observation"]["wrist_image"] = _decode_single(traj["observation"]["wrist_image"])
             return traj
 
         # Only shuffle during training; validation should be deterministic and cheaper

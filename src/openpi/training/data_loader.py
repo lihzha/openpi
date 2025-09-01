@@ -227,11 +227,10 @@ def create_rlds_dataset(
     batch_size: int,
     *,
     shuffle: bool = False,
-    split: str = "train",
-    val_fraction: float = 0.01,
     split_seed: int = 0,
     seed: int = 0,
     max_samples: int | None = None,
+    split: str = "train",
 ) -> Dataset:
     # At the moment, we only support DROID for RLDS datasets.
     # Use per-host batching to avoid duplicative slicing work in the loader
@@ -244,14 +243,13 @@ def create_rlds_dataset(
             batch_size=local_batch_size,
             shuffle=shuffle,
             action_chunk_size=action_horizon,
-            summation_steps=getattr(data_config, "summation_steps", 15),
             action_space=data_config.action_space,
             shuffle_buffer_size=data_config.shuffle_buffer_size,
-            split=split,
-            val_fraction=val_fraction,
             split_seed=split_seed,
-            max_samples=(max_samples if max_samples is not None else getattr(data_config, "max_samples", None)),
+            max_samples=max_samples,
             seed=seed,
+            config=data_config,
+            split=split,
         )
     return DroidRldsDataset(
         data_dir=data_config.rlds_data_dir,
@@ -321,24 +319,14 @@ def create_data_loader(
     shuffle: bool = False,
     num_batches: int | None = None,
     skip_norm_stats: bool = False,
-    split: str = "train",
     seed: int = 0,
     max_samples: int | None = None,
+    split: str = "train",
 ) -> DataLoader[tuple[_model.Observation, _model.Actions]]:
     """Create a data loader for training."""
     data_config = config.data.create(config.assets_dirs, config.model)
 
     if data_config.rlds_data_dir is not None:
-        # Debug pathway: use a lightweight synthetic iterable dataset to test multi-process sharding
-        # without requiring RLDS/DROID. Enable by setting OPENPI_USE_TEST_ITER_DATASET=1.
-        if os.environ.get("OPENPI_USE_TEST_ITER_DATASET", "0") == "1":
-            return create_test_rlds_data_loader(
-                data_config,
-                config.model,
-                batch_size=config.batch_size,
-                sharding=sharding,
-                num_batches=num_batches,
-            )
         return create_rlds_data_loader(
             data_config,
             action_horizon=config.model.action_horizon,
@@ -347,11 +335,10 @@ def create_data_loader(
             shuffle=shuffle,
             num_batches=num_batches,
             skip_norm_stats=skip_norm_stats,
-            split=split,
-            val_fraction=getattr(config, "val_fraction", 0.01),
             split_seed=seed,
             seed=seed,
             max_samples=max_samples,
+            split=split,
         )
     return create_torch_data_loader(
         data_config,
@@ -362,7 +349,7 @@ def create_data_loader(
         shuffle=shuffle,
         num_batches=num_batches,
         num_workers=config.num_workers,
-        seed=config.seed,
+        seed=seed,
         skip_norm_stats=skip_norm_stats,
     )
 
@@ -422,11 +409,10 @@ def create_rlds_data_loader(
     skip_norm_stats: bool = False,
     shuffle: bool = False,
     num_batches: int | None = None,
-    split: str = "train",
-    val_fraction: float = 0.01,
     split_seed: int = 0,
     seed: int = 0,
     max_samples: int | None = None,
+    split: str = "train",
 ) -> DataLoader[tuple[_model.Observation, _model.Actions]]:
     """Create an RLDS data loader for training.
 
@@ -449,11 +435,10 @@ def create_rlds_data_loader(
         action_horizon,
         batch_size,
         shuffle=shuffle,
-        split=split,
-        val_fraction=val_fraction,
         split_seed=split_seed,
         seed=seed,
         max_samples=(max_samples if max_samples is not None else getattr(data_config, "max_samples", None)),
+        split=split,
     )
     dataset = transform_iterable_dataset(dataset, data_config, skip_norm_stats=skip_norm_stats, is_batched=True)
 

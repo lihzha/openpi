@@ -171,14 +171,17 @@ class DroidCoTInputs(transforms.DataTransformFn):
         # lihan: always name base image as "exterior_image_1_left", though it should come from the camera which language action is annotated.
         assert "observation/exterior_image_1_left" in data
         base_image = _parse_image(data["observation/exterior_image_1_left"])
-        wrist_image = _parse_image(data["observation/wrist_image_left"])
+        if "observation/wrist_image_left" in data:
+            wrist_image = _parse_image(data["observation/wrist_image_left"])
+            wrist_image_mask = np.True_
+        else:
+            wrist_image = np.zeros_like(base_image)
+            wrist_image_mask = np.False_
 
         if self.model_type == _model.ModelType.PI0CoT:
             names = ("base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb")
-            # images = (base_image, np.zeros_like(base_image), np.zeros_like(base_image))
-            # image_masks = (np.True_, np.False_, np.False_)
             images = (base_image, wrist_image, np.zeros_like(base_image))
-            image_masks = (np.True_, np.True_, np.False_)
+            image_masks = (np.True_, wrist_image_mask, np.False_)
         else:
             raise ValueError(f"Unsupported model type: {self.model_type}")
 
