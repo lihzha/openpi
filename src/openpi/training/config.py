@@ -534,7 +534,6 @@ class RLDSDroidCoTDataConfig(DataConfigFactory):
             # lihan: always name base image as "exterior_image_1_left", though it should come from the camera which language action is annotated.
             "observation/exterior_image_1_left": "observation/image",
             "observation/cartesian_position": "observation/cartesian_position",
-            "observation/cartesian_position_window": "observation/cartesian_position_window",
             "observation/gripper_position": "observation/gripper_position",
             "actions": "actions",
             "prompt": "prompt",
@@ -543,6 +542,7 @@ class RLDSDroidCoTDataConfig(DataConfigFactory):
         if self.vis_dataset:
             repack_dict["camera_intrinsics"] = "camera_intrinsics"
             repack_dict["camera_extrinsics"] = "camera_extrinsics"
+            repack_dict["observation/cartesian_position_window"] = "observation/cartesian_position_window"
         if self.use_wrist_image:
             repack_dict["observation/wrist_image_left"] = "observation/wrist_image"
         repack_transform = _transforms.Group(inputs=[_transforms.RepackTransform(repack_dict)])
