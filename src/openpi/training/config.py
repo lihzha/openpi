@@ -640,6 +640,8 @@ class TrainConfig:
     # If set, validation loader will materialize a fixed subset of this many
     # flattened samples via take(K).cache().repeat(), ensuring consistent val batches.
     val_max_samples: int | None = None
+    
+    val_fraction: float | None = None
 
     @property
     def assets_dirs(self) -> pathlib.Path | epath.Path:
