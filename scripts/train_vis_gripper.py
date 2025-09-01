@@ -397,16 +397,16 @@ def main(config: _config.TrainConfig):
         # Decode reasoning strings
         reasoning_texts = _decode_reasoning_strings(obs, tok)
         # Prepare start/end images for the first camera view
-        first_cam_key = next(iter(obs.images.keys()))
+        first_cam_key = next(iter(obs.images))
         imgs = obs.images[first_cam_key]
         # Also try to find a wrist camera to visualize next to the first image
         wrist_cam_key = None
-        for k in obs.images.keys():
+        for k in obs.images:
             if "left_wrist" in k:
                 wrist_cam_key = k
                 break
         if wrist_cam_key is None:
-            for k in obs.images.keys():
+            for k in obs.images:
                 if "wrist" in k:
                     wrist_cam_key = k
                     break
@@ -415,14 +415,20 @@ def main(config: _config.TrainConfig):
         start_imgs = np.array(imgs[:, 0])
         end_imgs = np.array(imgs[:, -1])
         wrist_start_imgs = np.array(wrist_imgs[:, 0]) if wrist_imgs is not None else None
+        wrist_end_imgs = np.array(wrist_imgs[:, -1]) if wrist_imgs is not None else None
         B = start_imgs.shape[0]
         vis_rows = []
         for i in range(B):
             start_u8 = ((start_imgs[i] + 1.0) * 0.5 * 255.0).clip(0, 255).astype(np.uint8)
             end_u8 = ((end_imgs[i] + 1.0) * 0.5 * 255.0).clip(0, 255).astype(np.uint8)
-            wrist_u8 = (
+            wrist_start_u8 = (
                 ((wrist_start_imgs[i] + 1.0) * 0.5 * 255.0).clip(0, 255).astype(np.uint8)
                 if wrist_start_imgs is not None
+                else None
+            )
+            wrist_end_u8 = (
+                ((wrist_end_imgs[i] + 1.0) * 0.5 * 255.0).clip(0, 255).astype(np.uint8)
+                if wrist_end_imgs is not None
                 else None
             )
             # Project true start/end gripper points if cartesian window and calibs available
@@ -473,9 +479,12 @@ def main(config: _config.TrainConfig):
             col2 = _draw_dot(end_u8, pred_end_xy, (0, 0, 255)) if pred_end_xy is not None else end_u8  # Pred end
             col3 = _draw_dot(end_u8, end_true_xy, (0, 255, 0)) if end_true_xy is not None else end_u8  # GT end
             panels = [col1]
-            if wrist_u8 is not None:
-                panels.append(wrist_u8)
-            panels.extend([col2, col3])
+            if wrist_start_u8 is not None:
+                panels.append(wrist_start_u8)
+            panels.append(col2)
+            if wrist_end_u8 is not None:
+                panels.append(wrist_end_u8)
+            panels.append(col3)
             row = np.concatenate(panels, axis=1)
             # Single bottom overlay spanning the entire row
             band_h_row = max(16, row.shape[0] // 14)
