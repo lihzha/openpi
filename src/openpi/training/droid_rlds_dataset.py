@@ -539,23 +539,24 @@ class DroidCoTRldsDataset:
         print_memory_usage("After building cam_table")
 
         # Camera intrinsics/extrinsics lookup tables (serialize tensors to tf.string to avoid shape issues)
-        calib_eids = list(eid_to_cam_dict.keys())
-        intr_ser = []
-        extr_ser = []
-        for _eid in calib_eids:
-            intr_ser.append(tf.io.serialize_tensor(tf.constant(eid_to_intr_vec[_eid], dtype=tf.float32)).numpy())
-            extr_ser.append(tf.io.serialize_tensor(tf.constant(eid_to_extr_mat[_eid], dtype=tf.float32)).numpy())
-        calib_keys = tf.constant(calib_eids, dtype=tf.string)
-        intr_vals = tf.constant(intr_ser, dtype=tf.string)
-        extr_vals = tf.constant(extr_ser, dtype=tf.string)
-        intr_table = tf.lookup.StaticHashTable(
-            tf.lookup.KeyValueTensorInitializer(calib_keys, intr_vals),
-            default_value=tf.constant(b"", dtype=tf.string),
-        )
-        extr_table = tf.lookup.StaticHashTable(
-            tf.lookup.KeyValueTensorInitializer(calib_keys, extr_vals),
-            default_value=tf.constant(b"", dtype=tf.string),
-        )
+        if vis_dataset:
+            calib_eids = list(eid_to_cam_dict.keys())
+            intr_ser = []
+            extr_ser = []
+            for _eid in calib_eids:
+                intr_ser.append(tf.io.serialize_tensor(tf.constant(eid_to_intr_vec[_eid], dtype=tf.float32)).numpy())
+                extr_ser.append(tf.io.serialize_tensor(tf.constant(eid_to_extr_mat[_eid], dtype=tf.float32)).numpy())
+            calib_keys = tf.constant(calib_eids, dtype=tf.string)
+            intr_vals = tf.constant(intr_ser, dtype=tf.string)
+            extr_vals = tf.constant(extr_ser, dtype=tf.string)
+            intr_table = tf.lookup.StaticHashTable(
+                tf.lookup.KeyValueTensorInitializer(calib_keys, intr_vals),
+                default_value=tf.constant(b"", dtype=tf.string),
+            )
+            extr_table = tf.lookup.StaticHashTable(
+                tf.lookup.KeyValueTensorInitializer(calib_keys, extr_vals),
+                default_value=tf.constant(b"", dtype=tf.string),
+            )
 
         # ---------------------------------------------------------------------
         # 6. Language-instruction tables (3 per episode_id)
