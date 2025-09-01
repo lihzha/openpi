@@ -349,6 +349,18 @@ class DroidCoTRldsDataset:
         vis_dataset = getattr(config, "vis_dataset", False)
         use_wrist_image = getattr(config, "use_wrist_image", False)
 
+        logging.info(
+            f"validation_mode: {validation_mode}",
+            f"val_fraction: {val_fraction}",
+            f"vis_dataset: {vis_dataset}",
+            f"use_wrist_image: {use_wrist_image}",
+            f"summation_steps: {summation_steps}",
+            f"max_samples: {max_samples}",
+            f"sum_decimal: {config.sum_decimal}",
+            f"left_pad: {config.left_pad}",
+            f"include_decimal_point: {config.include_decimal_point}",
+        )
+
         # ------------------------------------------------------------------
         # Global seeding for reproducibility across dataset ops
         # ------------------------------------------------------------------
@@ -954,7 +966,6 @@ class DroidCoTRldsDataset:
 
         # If requested, cap the number of flattened samples for overfitting tests.
         # We cache the capped set so repeating yields the same fixed subset.
-        logging.info(f"max_samples: {max_samples}")
         if max_samples is not None:
             dataset = dataset.take(int(max_samples)).cache().repeat()
 

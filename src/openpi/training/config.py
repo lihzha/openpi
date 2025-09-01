@@ -107,14 +107,14 @@ class DataConfig:
     # Action space for DROID dataset.
     action_space: droid_rlds_dataset.DroidActionSpace | None = None
 
-    # For DROID-cot
-    cot: bool = False
-    language_action_dir: str | None = None
-    shuffle_buffer_size: int = 250_000
-    # For CoT-style datasets (e.g., DROID-CoT): number of future steps to sum over for language actions
-    summation_steps: int = 15
-    # Optional cap on number of unique flattened samples for overfitting tests
-    max_samples: int | None = None
+    # # For DROID-cot
+    # cot: bool = False
+    # language_action_dir: str | None = None
+    # shuffle_buffer_size: int = 250_000
+    # # For CoT-style datasets (e.g., DROID-CoT): number of future steps to sum over for language actions
+    # summation_steps: int = 15
+    # # Optional cap on number of unique flattened samples for overfitting tests
+    # max_samples: int | None = None
 
 
 class GroupFactory(Protocol):
@@ -571,19 +571,19 @@ class RLDSDroidCoTDataConfig(DataConfigFactory):
             use_quantile_norm=model_config.model_type == ModelType.PI0_FAST,
             rlds_data_dir=self.rlds_data_dir,
             action_space=self.action_space,
-            cot=self.cot,
-            language_action_dir=self.language_action_dir,
-            shuffle_buffer_size=self.shuffle_buffer_size,
-            summation_steps=self.summation_steps,
-            max_samples=self.max_samples,
-            sum_decimal=self.sum_decimal,
-            left_pad=self.left_pad,
-            include_decimal_point=self.include_decimal_point,
-            use_wrist_image=self.use_wrist_image,
-            val_max_samples=self.val_max_samples,
-            val_fraction=self.val_fraction,
-            validation_mode=self.validation_mode,
-            vis_dataset=self.vis_dataset,
+            # cot=self.cot,
+            # language_action_dir=self.language_action_dir,
+            # shuffle_buffer_size=self.shuffle_buffer_size,
+            # summation_steps=self.summation_steps,
+            # max_samples=self.max_samples,
+            # sum_decimal=self.sum_decimal,
+            # left_pad=self.left_pad,
+            # include_decimal_point=self.include_decimal_point,
+            # use_wrist_image=self.use_wrist_image,
+            # val_max_samples=self.val_max_samples,
+            # val_fraction=self.val_fraction,
+            # validation_mode=self.validation_mode,
+            # vis_dataset=self.vis_dataset,
         )
 
 
@@ -689,6 +689,7 @@ _CONFIGS = [
         model=pi0_cot.Pi0CoTConfig(
             action_horizon=10,
             max_token_len=110,
+            number_token_weight=1.0,
         ),
         data=RLDSDroidCoTDataConfig(
             repo_id="droid",
@@ -707,6 +708,11 @@ _CONFIGS = [
             sum_decimal="2f",
             left_pad=True,
             include_decimal_point=True,
+            validation_mode="easy",
+            vis_dataset=False,
+            use_wrist_image=False,
+            val_max_samples=50000,
+            val_fraction=0.02,
         ),
         num_train_steps=100_000,
         fsdp_devices=4,
@@ -731,6 +737,7 @@ _CONFIGS = [
         model=pi0_cot.Pi0CoTConfig(
             action_horizon=10,
             max_token_len=110,
+            number_token_weight=1.0,
         ),
         data=RLDSDroidCoTDataConfig(
             repo_id="droid",
@@ -749,6 +756,11 @@ _CONFIGS = [
             sum_decimal="2f",
             left_pad=True,
             include_decimal_point=True,
+            validation_mode="easy",
+            vis_dataset=False,
+            use_wrist_image=False,
+            val_max_samples=50000,
+            val_fraction=0.02,
         ),
         num_train_steps=100_000,
         fsdp_devices=8,

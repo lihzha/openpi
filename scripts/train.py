@@ -1,9 +1,9 @@
 import dataclasses
 import functools
 import logging
+import math
 import os
 import platform
-import math
 from typing import Any
 
 import etils.epath as epath
@@ -383,9 +383,6 @@ def main(config: _config.TrainConfig):
         effective_fsdp_devices = config.fsdp_devices
         assert global_devices % effective_fsdp_devices == 0
 
-    logging.info(
-        f"Summation steps: {config.data.summation_steps}, left_pad: {config.data.left_pad}, sum_decimal: {config.data.sum_decimal}, ema_decay: {config.ema_decay}"
-    )
     logging.info(f"Running on: {platform.node()}")
 
     jax.config.update("jax_compilation_cache_dir", str(epath.Path("~/.cache/jax").expanduser()))
@@ -435,7 +432,7 @@ def main(config: _config.TrainConfig):
     # Planned vs actual parameter sharding
     log_param_sharding_planned(train_state_sharding)
     log_param_sharding_actual(train_state.params)
-    
+
     if resuming:
         train_state = _checkpoints.restore_state(checkpoint_manager, train_state, data_loader)
 
