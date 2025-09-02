@@ -454,7 +454,7 @@ def main(config: _config.TrainConfig):
             sharding=data_sharding,
             shuffle=False,
             split="val",
-            max_samples=getattr(config, "val_max_samples", None),
+            max_samples=getattr(config.data, "val_max_samples", None),
         )
         pval_step = jax.jit(
             functools.partial(val_step, config),
@@ -463,11 +463,11 @@ def main(config: _config.TrainConfig):
         # Determine how many validation batches to evaluate each time.
         # If a fixed validation subset size is configured, compute batches from it;
         # otherwise fall back to a heuristic constant divided by global batch size.
-        if getattr(config, "val_max_samples", None):
+        if getattr(config.data, "val_max_samples", None):
             # local batch size per host mirrors RLDS dataset batching
             process_count = getattr(jax, "process_count", lambda: 1)()
             local_bs = max(1, config.batch_size // process_count)
-            num_val_batches = int(math.ceil(config.val_max_samples / local_bs))
+            num_val_batches = int(math.ceil(config.data.val_max_samples / local_bs))
         else:
             num_val_batches = int(60000 / config.batch_size)  # adjust if needed
     start_step = int(train_state.step)
