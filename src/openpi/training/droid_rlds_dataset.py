@@ -709,6 +709,25 @@ class DroidCoTRldsDataset:
         # Repeat dataset so we never run out of data.
         dataset = dataset.repeat()
 
+        with tf.io.gfile.GFile(f"{METADATA_PATH}/keep_ranges_1_0_1.json", "r") as f:
+            filter_dict = json.load(f)
+
+        logging.info(f"Using filter dictionary with {len(filter_dict)} episodes")
+
+        keys_tensor = []
+        values_tensor = []
+
+        for episode_key, ranges in filter_dict.items():
+            for start, end in ranges:
+                for t in range(start, end):
+                    frame_key = f"{episode_key}--{t}"
+                    keys_tensor.append(frame_key)
+                    values_tensor.append(True)
+        filter_table = tf.lookup.StaticHashTable(
+            tf.lookup.KeyValueTensorInitializer(keys_tensor, values_tensor), default_value=False
+        )
+        logging.info("Filter hash table initialized")
+
         def restructure(traj):
             """Reformat observation and action keys, sample language instruction."""
             # Important: we use joint *position* action space -- easier to simulate!
@@ -776,6 +795,15 @@ class DroidCoTRldsDataset:
                 intr_b = tf.broadcast_to(intr[None, :], [traj_len, 4])
                 extr_b = tf.broadcast_to(extr[None, :, :], [traj_len, 4, 4])
 
+            step_id = (
+                traj["traj_metadata"]["episode_metadata"]["recording_folderpath"]
+                + "--"
+                + traj["traj_metadata"]["episode_metadata"]["file_path"]
+                + "--"
+                + tf.as_string(tf.range(traj_len))
+            )
+            passes_filter = filter_table.lookup(step_id)
+
             _return_dict = {
                 "actions": actions,
                 "observation": {
@@ -786,6 +814,7 @@ class DroidCoTRldsDataset:
                 "prompt": instruction_vec,
                 "language_actions": lang_tensor,
                 "episode_id": episode_id_vec,
+                "passes_filter": passes_filter,
             }
             if vis_dataset:
                 _return_dict["camera_intrinsics"] = intr_b  # [traj_len, 4]
@@ -932,6 +961,18 @@ class DroidCoTRldsDataset:
 
         # Flatten: map from trajectory dataset to dataset of individual action chunks
         dataset = dataset.flatten(num_parallel_calls=num_parallel_calls)
+
+        def filter_from_dict(frame):
+            return frame["passes_filter"]
+
+        dataset = dataset.filter(filter_from_dict)
+
+        # Remove "passes_filter" key from output
+        def remove_passes_filter(frame):
+            frame.pop("passes_filter")
+            return frame
+
+        dataset = dataset.map(remove_passes_filter)
 
         # Decode images: RLDS saves encoded images, only decode now for efficiency
         def decode_images(traj):

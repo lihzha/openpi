@@ -199,6 +199,7 @@ fi
 
 # Map TPU_NUM to topology
 case "$TPU_NUM" in
+  4)  TOPOLOGY="2x2x1" ;;
   8)  TOPOLOGY="2x2x2" ;;
   16) TOPOLOGY="2x2x4" ;;
   32) TOPOLOGY="2x4x4" ;;
