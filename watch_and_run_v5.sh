@@ -167,16 +167,20 @@ usage() {
   echo "Usage: $0 [OPTIONS]"
   echo "Options:"
   echo "  -f, --force              Force setup and training even if TPU is READY"
+  echo "  -n, --tpu-num NUM        TPU chips (8/16/32)"
   echo "  -h, --help               Show this help message"
   echo ""
   exit 1
 }
 
 FORCE_RUN=false
+TPU_NUM=${TPU_NUM:-16}
 EXTRA_ARGS=()
 while [[ $# -gt 0 ]]; do
   case $1 in
     -f|--force) FORCE_RUN=true; shift ;;
+    -n|--tpu-num)
+      if [[ -n "${2:-}" ]]; then TPU_NUM="$2"; shift 2; else echo "Error: --tpu-num requires a value"; exit 1; fi ;;
     -h|--help)  usage ;;
     *)          EXTRA_ARGS+=("$1"); shift ;;
   esac
@@ -193,11 +197,21 @@ if ! command -v v5 >/dev/null 2>&1; then
   exit 1
 fi
 
+# Map TPU_NUM to accelerator type for v5-lite pods
+case "$TPU_NUM" in
+  8)  ACCEL="v5litepod-8" ;;
+  16) ACCEL="v5litepod-16" ;;
+  32) ACCEL="v5litepod-32" ;;
+  *) echo "Error: unsupported TPU_NUM '$TPU_NUM' (allowed: 8, 16, 32)"; exit 1 ;;
+esac
+
 echo "Starting TPU auto-launcher with:"
 echo "  TPU Name: ${TPU_NAME:-}"
 echo "  Zone: $TPU_ZONE_v5"
 echo "  Project: $TPU_PROJECT"
 echo "  Bucket: $TPU_BUCKET_v5"
+echo "  TPU Num: $TPU_NUM"
+echo "  Accelerator: $ACCEL"
 echo "  Force run: $FORCE_RUN"
 if [[ ${#EXTRA_ARGS[@]} -gt 0 ]]; then
   echo "  Extra args: ${EXTRA_ARGS[*]}"
@@ -275,7 +289,7 @@ while true; do
       if ! with_timeout $((DESCRIBE_TIMEOUT * 20)) -- \
             gcloud alpha compute tpus tpu-vm create "$TPU_NAME" \
               --zone="$TPU_ZONE_v5" --project="$TPU_PROJECT" \
-              --accelerator-type=v5litepod-16 \
+              --accelerator-type="$ACCEL" \
               --version=v2-alpha-tpuv5-lite \
               --service-account=irom-service-account@mae-irom-lab-guided-data.iam.gserviceaccount.com \
               --spot; then

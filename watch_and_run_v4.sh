@@ -167,16 +167,20 @@ usage() {
   echo "Usage: $0 [OPTIONS]"
   echo "Options:"
   echo "  -f, --force              Force setup and training even if TPU is READY"
+  echo "  -n, --tpu-num NUM        TPU chips: 8->2x2x2, 16->2x2x4, 32->2x4x4"
   echo "  -h, --help               Show this help message"
   echo ""
   exit 1
 }
 
 FORCE_RUN=false
+TPU_NUM=${TPU_NUM:-8}
 EXTRA_ARGS=()
 while [[ $# -gt 0 ]]; do
   case $1 in
     -f|--force) FORCE_RUN=true; shift ;;
+    -n|--tpu-num)
+      if [[ -n "${2:-}" ]]; then TPU_NUM="$2"; shift 2; else echo "Error: --tpu-num requires a value"; exit 1; fi ;;
     -h|--help)  usage ;;
     *)          EXTRA_ARGS+=("$1"); shift ;;
   esac
@@ -193,11 +197,21 @@ if ! command -v v4 >/dev/null 2>&1; then
   exit 1
 fi
 
+# Map TPU_NUM to topology
+case "$TPU_NUM" in
+  8)  TOPOLOGY="2x2x2" ;;
+  16) TOPOLOGY="2x2x4" ;;
+  32) TOPOLOGY="2x4x4" ;;
+  *) echo "Error: unsupported TPU_NUM '$TPU_NUM' (allowed: 8, 16, 32)"; exit 1 ;;
+esac
+
 echo "Starting TPU auto-launcher with:"
 echo "  TPU Name: ${TPU_NAME:-}"
 echo "  Zone: $TPU_ZONE_v4"
 echo "  Project: $TPU_PROJECT"
 echo "  Bucket: $TPU_BUCKET_v4"
+echo "  TPU Num: $TPU_NUM"
+echo "  Topology: $TOPOLOGY"
 echo "  Force run: $FORCE_RUN"
 if [[ ${#EXTRA_ARGS[@]} -gt 0 ]]; then
   echo "  Extra args: ${EXTRA_ARGS[*]}"
@@ -276,7 +290,7 @@ while true; do
             gcloud alpha compute tpus tpu-vm create "$TPU_NAME" \
               --zone="$TPU_ZONE_v4" --project="$TPU_PROJECT" \
               --type=v4 \
-              --topology=2x2x4 \
+              --topology="$TOPOLOGY" \
               --version=tpu-ubuntu2204-base \
               --service-account=irom-service-account@mae-irom-lab-guided-data.iam.gserviceaccount.com \
               --spot; then
