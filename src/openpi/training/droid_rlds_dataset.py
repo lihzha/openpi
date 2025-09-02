@@ -350,7 +350,10 @@ class DroidCoTRldsDataset:
         use_wrist_image = getattr(config, "use_wrist_image", False)
 
         logging.info(
-            f"validation_mode: {validation_mode}, val_fraction: {val_fraction}, vis_dataset: {vis_dataset}, use_wrist_image: {use_wrist_image}, summation_steps: {summation_steps}, max_samples: {max_samples}, sum_decimal: {config.sum_decimal}, left_pad: {config.left_pad}, include_decimal_point: {config.include_decimal_point}"
+            f"validation_mode: {validation_mode}, val_fraction: {val_fraction}, vis_dataset: {vis_dataset}, \
+                use_wrist_image: {use_wrist_image}, summation_steps: {summation_steps}, max_samples: {max_samples}, \
+                    sum_decimal: {config.sum_decimal}, left_pad: {config.left_pad}, include_decimal_point: {config.include_decimal_point}, \
+                        batch_size: {batch_size}"
         )
 
         # ------------------------------------------------------------------
