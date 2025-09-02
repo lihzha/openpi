@@ -125,6 +125,8 @@ class DataConfig:
     validation_mode: str = "easy"
     vis_dataset: bool = False
     use_wrist_image: bool = False
+    use_text_state: bool = True
+    num_state_bins: int = 16
 
 
 class GroupFactory(Protocol):
@@ -527,9 +529,14 @@ class RLDSDroidCoTDataConfig(DataConfigFactory):
     validation_mode: str = "easy"
     vis_dataset: bool = False
     use_wrist_image: bool = False
+    use_text_state: bool = True
+    num_state_bins: int = 16
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        # Load base config first to access norm stats (for state binning in prompt augmentation)
+        base_cfg = self.create_base_config(assets_dirs)
+
         repack_dict = {
             # lihan: always name base image as "exterior_image_1_left", though it should come from the camera which language action is annotated.
             "observation/exterior_image_1_left": "observation/image",
@@ -547,10 +554,20 @@ class RLDSDroidCoTDataConfig(DataConfigFactory):
             repack_dict["observation/wrist_image_left"] = "observation/wrist_image"
         repack_transform = _transforms.Group(inputs=[_transforms.RepackTransform(repack_dict)])
 
+        # Extract state norm stats (if available) to pass into the DroidCoTInputs for binning
+        state_stats = None
+        if base_cfg.norm_stats is not None and "state" in base_cfg.norm_stats:
+            state_stats = base_cfg.norm_stats["state"]
+
         data_transforms = _transforms.Group(
             inputs=[
                 droid_cot_policy.DroidCoTInputs(
-                    action_dim=model_config.action_dim, model_type=model_config.model_type, sum_decimal=self.sum_decimal
+                    action_dim=model_config.action_dim,
+                    model_type=model_config.model_type,
+                    sum_decimal=self.sum_decimal,
+                    state_norm_stats=state_stats,
+                    use_text_state=self.use_text_state,
+                    num_state_bins=self.num_state_bins,
                 )
             ],
             outputs=[droid_cot_policy.DroidCoTOutputs()],
@@ -571,7 +588,7 @@ class RLDSDroidCoTDataConfig(DataConfigFactory):
         assert self.rlds_data_dir is not None, "Need to set rlds data dir for RLDS data loader."
 
         return dataclasses.replace(
-            self.create_base_config(assets_dirs),
+            base_cfg,
             repack_transforms=repack_transform,
             data_transforms=data_transforms,
             model_transforms=model_transforms,
@@ -591,6 +608,8 @@ class RLDSDroidCoTDataConfig(DataConfigFactory):
             val_fraction=self.val_fraction,
             validation_mode=self.validation_mode,
             vis_dataset=self.vis_dataset,
+            use_text_state=self.use_text_state,
+            num_state_bins=self.num_state_bins,
         )
 
 
@@ -720,6 +739,8 @@ _CONFIGS = [
             use_wrist_image=False,
             val_max_samples=50000,
             val_fraction=0.02,
+            use_text_state=True,
+            num_state_bins=16,
         ),
         num_train_steps=100_000,
         fsdp_devices=4,
@@ -768,6 +789,8 @@ _CONFIGS = [
             use_wrist_image=False,
             val_max_samples=50000,
             val_fraction=0.02,
+            use_text_state=True,
+            num_state_bins=16,
         ),
         num_train_steps=100_000,
         fsdp_devices=8,
