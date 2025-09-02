@@ -351,7 +351,11 @@ def val_step(
 
 
 def main(config: _config.TrainConfig):
-    if ("v6" in config.name and config.fsdp_devices > 8) or ("v4" in config.name and config.fsdp_devices > 4):
+    if (
+        ("v6" in config.name and config.fsdp_devices > 8)
+        or ("v4" in config.name and config.fsdp_devices > 4)
+        or ("v5" in config.name and config.fsdp_devices > 8)
+    ):
         jax.distributed.initialize()
     data_dir = save_dir = config.data.rlds_data_dir
     cache_dir = os.environ.get("OPENPI_DATA_HOME", None)

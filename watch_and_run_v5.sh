@@ -9,7 +9,7 @@ export CLOUDSDK_CORE_DISABLE_PROMPTS=1  # avoid interactive prompts
 # ──────────────────────────────────────────────────────────────────────────────
 
 # Load TPU helper functions explicitly (POSIX-compatible)
-if ! command -v v4 >/dev/null 2>&1; then
+if ! command -v v5 >/dev/null 2>&1; then
   if [ -r "$HOME/.tpu_funcs.sh" ]; then
     # shellcheck disable=SC1090
     . "$HOME/.tpu_funcs.sh"
@@ -78,7 +78,7 @@ gc_ssh() {
   local out rc
   out=$(with_timeout "$SSH_TOTAL_TIMEOUT" \
         gcloud alpha compute tpus tpu-vm ssh "$tpu_name" \
-          --zone="$TPU_ZONE_v4" --project="$TPU_PROJECT" \
+          --zone="$TPU_ZONE_v5" --project="$TPU_PROJECT" \
           "${key_arg[@]}" \
           "$@" \
           "${ssh_passthru[@]}" 2>&1)
@@ -97,18 +97,18 @@ gc_ssh() {
 
 
 
-# v4-style wrappers (your helpers ultimately call gcloud ssh).
-# We cannot inject ssh flags into your v4 implementation, but the outer timeout protects us.
-safe_v4() {
+# v5-style wrappers (your helpers ultimately call gcloud ssh).
+# We cannot inject ssh flags into your v5 implementation, but the outer timeout protects us.
+safe_v5() {
   local cmd="$1"
   with_timeout "$SSH_TOTAL_TIMEOUT" \
-    bash -lc "source \"\$HOME/.tpu_funcs.sh\" 2>/dev/null || true; v4 $(printf '%q' "$cmd")"
+    bash -lc "source \"\$HOME/.tpu_funcs.sh\" 2>/dev/null || true; v5 $(printf '%q' "$cmd")"
 }
 
-safe_v4_tmux() {
+safe_v5_tmux() {
   local cmd="$1"
   with_timeout "$SSH_TOTAL_TIMEOUT" \
-    bash -lc "source \"\$HOME/.tpu_funcs.sh\" 2>/dev/null || true; v4_tmux $(printf '%q' "$cmd")"
+    bash -lc "source \"\$HOME/.tpu_funcs.sh\" 2>/dev/null || true; v5_tmux $(printf '%q' "$cmd")"
 }
 
 # Log helper
@@ -187,17 +187,17 @@ if [[ -z "${TPU_NAME:-}" ]]; then
   echo "Error: TPU name cannot be empty"
   exit 1
 fi
-if ! command -v v4 >/dev/null 2>&1; then
-  echo "ERROR: TPU helper functions (e.g., v4) not found."
+if ! command -v v5 >/dev/null 2>&1; then
+  echo "ERROR: TPU helper functions (e.g., v5) not found."
   echo "Hint: move them into ~/.tpu_funcs.sh and source from your rc files (e.g. ~/.bashrc, ~/.zshrc)."
   exit 1
 fi
 
 echo "Starting TPU auto-launcher with:"
 echo "  TPU Name: ${TPU_NAME:-}"
-echo "  Zone: $TPU_ZONE_v4"
+echo "  Zone: $TPU_ZONE_v5"
 echo "  Project: $TPU_PROJECT"
-echo "  Bucket: $TPU_BUCKET_v4"
+echo "  Bucket: $TPU_BUCKET_v5"
 echo "  Force run: $FORCE_RUN"
 if [[ ${#EXTRA_ARGS[@]} -gt 0 ]]; then
   echo "  Extra args: ${EXTRA_ARGS[*]}"
@@ -208,7 +208,7 @@ describe_tpu() {
   local out rc
   out=$(with_timeout "$DESCRIBE_TIMEOUT" -- \
         gcloud alpha compute tpus tpu-vm describe "$TPU_NAME" \
-          --zone="$TPU_ZONE_v4" \
+          --zone="$TPU_ZONE_v5" \
           --project="$TPU_PROJECT" \
           --format="value(state)" 2>&1)
   rc=$?
@@ -226,7 +226,7 @@ describe_tpu() {
     STATE="PERMISSION_DENIED"; return 0
   fi
   if echo "$out" | grep -qiE 'Invalid value for \[--zone\]|argument --zone'; then
-    echo "$(ts) - ERROR: invalid or empty TPU_ZONE_v4='$TPU_ZONE_v4'"
+    echo "$(ts) - ERROR: invalid or empty TPU_ZONE_v5='$TPU_ZONE_v5'"
     return 2
   fi
 
@@ -265,7 +265,7 @@ while true; do
       if [[ "$STATE" != "NOT_FOUND" ]]; then
         if ! with_timeout $((DESCRIBE_TIMEOUT * 20)) -- \
               gcloud alpha compute tpus tpu-vm delete "$TPU_NAME" \
-                --zone="$TPU_ZONE_v4" --project="$TPU_PROJECT" --quiet; then
+                --zone="$TPU_ZONE_v5" --project="$TPU_PROJECT" --quiet; then
           echo "$(ts) - Delete failed/timed out."
           sleep_backoff "$SLEEP_SECS"; continue
         fi
@@ -274,10 +274,9 @@ while true; do
       echo "$(ts) - Creating new TPU..."
       if ! with_timeout $((DESCRIBE_TIMEOUT * 20)) -- \
             gcloud alpha compute tpus tpu-vm create "$TPU_NAME" \
-              --zone="$TPU_ZONE_v4" --project="$TPU_PROJECT" \
-              --type=v4 \
-              --topology=2x2x4 \
-              --version=tpu-ubuntu2204-base \
+              --zone="$TPU_ZONE_v5" --project="$TPU_PROJECT" \
+              --accelerator-type=v5litepod-16 \
+              --version=v2-alpha-tpuv5-lite \
               --service-account=irom-service-account@mae-irom-lab-guided-data.iam.gserviceaccount.com \
               --spot; then
         echo "$(ts) - Create failed/timed out."
@@ -322,9 +321,9 @@ while true; do
 
   if [[ "$run_setup_and_training" == "true" ]]; then
     echo "$(ts) - Setting up environment and repository..."
-    if ! safe_v4 "curl -LsSf https://astral.sh/uv/install.sh | sh && \
+    if ! safe_v5 "curl -LsSf https://astral.sh/uv/install.sh | sh && \
         echo 'export WANDB_API_KEY=9d133998a3d44bf5dd2d827a5d8e2710dc91a19b' >> ~/.zshrc && \
-        echo 'export OPENPI_DATA_HOME=\"$TPU_BUCKET_v4/cache\"' >> ~/.zshrc && \
+        echo 'export OPENPI_DATA_HOME=\"$TPU_BUCKET_v5/cache\"' >> ~/.zshrc && \
         source ~/.zshrc && \
         git clone --branch tpu https://github.com/lihzha/openpi.git || true && \
         cd openpi && \
@@ -335,10 +334,10 @@ while true; do
     fi
 
     echo "$(ts) - Starting training..."
-    if ! safe_v4_tmux "source ~/.zshrc && cd openpi && \
+    if ! safe_v5_tmux "source ~/.zshrc && cd openpi && \
             git pull origin tpu && \
             XLA_PYTHON_CLIENT_MEM_FRACTION=0.95 \
-            uv run --group rlds scripts/train.py pi0_droid_cot_v4 $EXTRA_ARGS_STR \
+            uv run --group rlds scripts/train.py pi0_droid_cot_v5 $EXTRA_ARGS_STR \
     "; then
       echo "$(ts) - Launch failed/SSH timed out. Back to state check."
       sleep_backoff "$SLEEP_SECS"; continue
