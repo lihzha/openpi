@@ -840,7 +840,7 @@ _CONFIGS = [
             use_wrist_image=False,
             val_max_samples=60000,
             val_fraction=0.02,
-            use_text_state=True,
+            use_text_state=False,
             num_state_bins=16,
         ),
         num_train_steps=100_000,

@@ -348,6 +348,7 @@ class DroidCoTRldsDataset:
         val_fraction = getattr(config, "val_fraction", 0.02)
         vis_dataset = getattr(config, "vis_dataset", False)
         use_wrist_image = getattr(config, "use_wrist_image", False)
+        apply_idle_filter = getattr(config, "apply_idle_filter", True)
 
         logging.info(
             f"validation_mode: {validation_mode}, val_fraction: {val_fraction}, vis_dataset: {vis_dataset}, \
@@ -443,16 +444,6 @@ class DroidCoTRldsDataset:
         )
 
         print_memory_usage("After building lang_table")
-
-        # ---------------------------------------------------------------------
-        # 3. Episode-ID table  (valid_eids → True)
-        # ---------------------------------------------------------------------
-        keys = tf.constant(episodes, dtype=tf.string)
-        values = tf.ones(len(episodes), dtype=tf.bool)
-        eid_table = tf.lookup.StaticHashTable(
-            tf.lookup.KeyValueTensorInitializer(keys, values),
-            default_value=tf.constant(False, dtype=tf.bool),
-        )
 
         # ---------------------------------------------------------------------
         # 4. Episode-path ↔ Episode-ID table
@@ -562,27 +553,46 @@ class DroidCoTRldsDataset:
             )
 
         # ---------------------------------------------------------------------
-        # 6. Language-instruction tables (3 per episode_id)
+        # 6. Language-instruction table (merged; episode_id → serialized [K])
         # ---------------------------------------------------------------------
-        with tf.io.gfile.GFile(f"{METADATA_PATH}/droid_language_annotations.json", "r") as fp:
-            language_annotations = json.load(fp)
-
-        keys = tf.constant(list(language_annotations.keys()), dtype=tf.string)
-        values_1 = tf.constant([v["language_instruction1"] for v in language_annotations.values()], dtype=tf.string)
-        values_2 = tf.constant([v["language_instruction2"] for v in language_annotations.values()], dtype=tf.string)
-        values_3 = tf.constant([v["language_instruction3"] for v in language_annotations.values()], dtype=tf.string)
-
-        instr_table_1 = tf.lookup.StaticHashTable(
-            tf.lookup.KeyValueTensorInitializer(keys, values_1),
-            default_value="",
-        )
-        instr_table_2 = tf.lookup.StaticHashTable(
-            tf.lookup.KeyValueTensorInitializer(keys, values_2),
-            default_value="",
-        )
-        instr_table_3 = tf.lookup.StaticHashTable(
-            tf.lookup.KeyValueTensorInitializer(keys, values_3),
-            default_value="",
+        instr_cache_path = f"{METADATA_PATH}/droid_instructions.json"
+        _instr_keys_py = []
+        _instr_vals_ser = []
+        if tf.io.gfile.exists(instr_cache_path):
+            with tf.io.gfile.GFile(instr_cache_path, "r") as fp:
+                instr_index = json.load(fp)
+            _instr_keys_py = list(instr_index.keys())
+            for _eid in _instr_keys_py:
+                _arr = instr_index[_eid]
+                if not isinstance(_arr, list):
+                    _arr = []
+                _arr = [s for s in _arr if isinstance(s, str) and len(s) > 0]
+                if len(_arr) == 0:
+                    _instr_vals_ser.append(b"")
+                else:
+                    _instr_vals_ser.append(tf.io.serialize_tensor(tf.constant(_arr, dtype=tf.string)).numpy())
+        else:
+            with tf.io.gfile.GFile(f"{METADATA_PATH}/droid_language_annotations.json", "r") as fp:
+                language_annotations = json.load(fp)
+            _instr_keys_py = list(language_annotations.keys())
+            for _eid in _instr_keys_py:
+                _v = language_annotations[_eid]
+                _arr = [
+                    _v.get("language_instruction1", ""),
+                    _v.get("language_instruction2", ""),
+                    _v.get("language_instruction3", ""),
+                ]
+                _arr = [s for s in _arr if len(s) > 0]
+                if len(_arr) == 0:
+                    _instr_vals_ser.append(b"")
+                else:
+                    _instr_vals_ser.append(tf.io.serialize_tensor(tf.constant(_arr, dtype=tf.string)).numpy())
+        _instr_keys = tf.constant(_instr_keys_py, dtype=tf.string)
+        _instr_vals = tf.constant(_instr_vals_ser, dtype=tf.string)
+        _instr_default = tf.constant(b"", dtype=tf.string)
+        instr_table = tf.lookup.StaticHashTable(
+            tf.lookup.KeyValueTensorInitializer(_instr_keys, _instr_vals),
+            default_value=_instr_default,
         )
         fallback_instructions = tf.constant(
             [
@@ -655,40 +665,20 @@ class DroidCoTRldsDataset:
             lang = lang_table.lookup(episode_id)
             if tf.equal(lang, default_lang_value):
                 return tf.constant(value=False, dtype=tf.bool)
-            return eid_table.lookup(episode_id)
+            return tf.logical_and(tf.not_equal(episode_id, default_ep_value), tf.not_equal(lang, default_lang_value))
 
         def _path_ok(traj):
             file_path = traj["traj_metadata"]["episode_metadata"]["file_path"][0]
             return tf.strings.regex_full_match(file_path, ".*success.*")
 
         # Filter out any unsuccessful trajectories -- we use the file name to check this
-        dataset = (
-            dataset.filter(_id_ok).filter(_path_ok)  # cheap O(1) hash lookup  # regex only on the survivors
-            # .cache() .shuffle() .prefetch(...)  ↳ whatever else you need
-        )
+        # Prefer cheap regex path filter first, then id/lang checks
+        dataset = dataset.filter(_path_ok).filter(_id_ok)
 
         want_val = split == "val"
 
         def _split_filter(traj):
             episode_id = _episode_id_from_traj(traj)  # scalar tf.string
-
-            # # --- Assertions: fail fast if any bad traj leaks through ---
-            # # 1) episode_id must be non-empty (not the default "" from failed lookup)
-            # a1 = tf.debugging.assert_greater(
-            #     tf.strings.length(episode_id),
-            #     0,
-            #     message="[_split_filter] Empty/missing episode_id; expected pre-filtering.",
-            # )
-            # # 2) episode_id must exist in eid_table (has language actions)
-            # a2 = tf.debugging.assert_equal(
-            #     eid_table.lookup(episode_id),
-            #     True,
-            #     message="[_split_filter] episode_id not found in eid_table (no lang actions / bad metadata).",
-            # )
-
-            # # Make sure assertions run before we use episode_id.
-            # with tf.control_dependencies([a1, a2]):
-            #     episode_id = tf.identity(episode_id)
 
             # --- Deterministic hash split ---
             salt = tf.strings.as_string(split_seed)
@@ -706,8 +696,10 @@ class DroidCoTRldsDataset:
 
         dataset = dataset.filter(_split_filter)
 
-        # Repeat dataset so we never run out of data.
-        dataset = dataset.repeat()
+        # Set determinism for validation
+        opts = tf.data.Options()
+        opts.experimental_deterministic = bool(want_val)
+        dataset = dataset.with_options(opts)
 
         with tf.io.gfile.GFile(f"{METADATA_PATH}/keep_ranges_1_0_1.json", "r") as f:
             filter_dict = json.load(f)
@@ -745,23 +737,20 @@ class DroidCoTRldsDataset:
             lang_tensor = tf.io.parse_tensor(lang_bytes, tf.string)
             # Language actions may include an extra terminal step; crop to match action length
             lang_tensor = lang_tensor[:traj_len]
-            instruction_1 = instr_table_1.lookup(episode_id)
-            instruction_2 = instr_table_2.lookup(episode_id)
-            instruction_3 = instr_table_3.lookup(episode_id)
-            # Check which instruction is non-empty, and form a non-empty list of instructions.
-            # If all instrcutions are empty, raise an error. Then sample one instruction from the list.
-            instructions = tf.stack([instruction_1, instruction_2, instruction_3])
-            mask = tf.strings.length(instructions) > 0
-            non_empty = tf.boolean_mask(instructions, mask)
-            num_valid = tf.shape(non_empty)[0]
-
+            # Sample instruction from merged table or fallback
+            instr_bytes = instr_table.lookup(episode_id)
             fallback_index = tf.random.uniform(
                 (), minval=0, maxval=tf.shape(fallback_instructions)[0], dtype=tf.int32, seed=seed
             )
             fallback_instruction = fallback_instructions[fallback_index]
+
+            def _sample_from_table():
+                arr = tf.io.parse_tensor(instr_bytes, out_type=tf.string)
+                return tf.random.shuffle(arr, seed=seed)[0]
+
             instruction = tf.cond(
-                num_valid > 0,
-                lambda: tf.random.shuffle(non_empty, seed=seed)[0],
+                tf.greater(tf.strings.length(instr_bytes), 0),
+                _sample_from_table,
                 lambda: fallback_instruction,
             )
 
@@ -823,9 +812,6 @@ class DroidCoTRldsDataset:
                 _return_dict["observation"]["wrist_image"] = traj["observation"]["wrist_image_left"]
             return _return_dict
 
-        # dataset = dataset.traj_map(restructure, num_parallel_calls)
-
-        # TODO: chunk reasoning as well depending on the frequency ratio between reasoning and actions
         def chunk_actions(traj):
             """Splits episode into action chunks."""
             traj_len = tf.shape(traj["actions"])[0]
@@ -847,32 +833,8 @@ class DroidCoTRldsDataset:
             traj["actions"] = tf.gather(traj["actions"], action_chunk_indices)
             return traj
 
-        if DEBUG_TIMING:
-
-            def _wrap_timed_map(fn, name):
-                def _inner(x):
-                    t0 = tf.timestamp()
-                    y = fn(x)
-                    t1 = tf.timestamp()
-                    ms = (t1 - t0) * 1000.0
-
-                    def _log(ms_np):
-                        try:
-                            logging.info(f"[tf.data] {name} ms={float(ms_np):.1f}")
-                        except Exception:
-                            pass
-                        return np.int64(0)
-
-                    _ = tf.py_function(_log, [ms], Tout=tf.int64)
-                    return y
-
-                return _inner
-
-            dataset = dataset.traj_map(_wrap_timed_map(restructure, "restructure"), num_parallel_calls)
-            dataset = dataset.traj_map(_wrap_timed_map(chunk_actions, "chunk_actions"), num_parallel_calls)
-        else:
-            dataset = dataset.traj_map(restructure, num_parallel_calls)
-            dataset = dataset.traj_map(chunk_actions, num_parallel_calls)
+        dataset = dataset.traj_map(restructure, num_parallel_calls)
+        dataset = dataset.traj_map(chunk_actions, num_parallel_calls)
 
         def group_language_actions(traj):
             """Compute per-timestep summed language actions over future steps.
@@ -928,51 +890,33 @@ class DroidCoTRldsDataset:
         # TODO: chunk action or not
         dataset = dataset.traj_map(group_language_actions, num_parallel_calls)
 
-        def filter_idle(traj):
-            """Filter out chunks with idle actions.
-            --> we filter if at least first half of chunk does not move.
-            """
-            if action_space == DroidActionSpace.CARTESIAN_POSITION:
-                # Compute delta to first position in action chunk
-                return tf.reduce_any(tf.abs(traj["actions"][: action_chunk_size // 2] - traj["actions"][:1]) > 1e-3)
-            return tf.reduce_any(tf.abs(traj["actions"][: action_chunk_size // 2]) > 1e-3)
+        # def filter_idle(traj):
+        #     """Filter out chunks with idle actions.
+        #     --> we filter if at least first half of chunk does not move.
+        #     """
+        #     if action_space == DroidActionSpace.CARTESIAN_POSITION:
+        #         # Compute delta to first position in action chunk
+        #         return tf.reduce_any(tf.abs(traj["actions"][: action_chunk_size // 2] - traj["actions"][:1]) > 1e-3)
+        #     return tf.reduce_any(tf.abs(traj["actions"][: action_chunk_size // 2]) > 1e-3)
 
-        if DEBUG_TIMING:
-
-            def _timed_filter(x):
-                t0 = tf.timestamp()
-                out = filter_idle(x)
-                t1 = tf.timestamp()
-                ms = (t1 - t0) * 1000.0
-
-                def _log(ms_np):
-                    try:
-                        logging.info(f"[tf.data] filter_idle ms={float(ms_np):.1f}")
-                    except Exception:
-                        pass
-                    return np.int64(0)
-
-                _ = tf.py_function(_log, [ms], Tout=tf.int64)
-                return out
-
-            dataset = dataset.filter(_timed_filter)
-        else:
-            dataset = dataset.filter(filter_idle)
+        # dataset = dataset.filter(filter_idle)
 
         # Flatten: map from trajectory dataset to dataset of individual action chunks
         dataset = dataset.flatten(num_parallel_calls=num_parallel_calls)
 
-        def filter_from_dict(frame):
-            return frame["passes_filter"]
+        if apply_idle_filter:
 
-        dataset = dataset.filter(filter_from_dict)
+            def filter_from_dict(frame):
+                return frame["passes_filter"]
 
-        # Remove "passes_filter" key from output
-        def remove_passes_filter(frame):
-            frame.pop("passes_filter")
-            return frame
+            dataset = dataset.filter(filter_from_dict)
 
-        dataset = dataset.map(remove_passes_filter)
+            # Remove "passes_filter" key from output
+            def remove_passes_filter(frame):
+                frame.pop("passes_filter")
+                return frame
+
+            dataset = dataset.map(remove_passes_filter)
 
         # Decode images: RLDS saves encoded images, only decode now for efficiency
         def decode_images(traj):
@@ -998,18 +942,19 @@ class DroidCoTRldsDataset:
             return traj
 
         # Only shuffle during training; validation should be deterministic and cheaper
-        if shuffle and max_samples is None:
+        if (not want_val) and shuffle and max_samples is None:
             dataset = dataset.shuffle(shuffle_buffer_size, seed=seed)
+
+        # Apply repeat after shuffle for better mixing, unless using capped+cached subset
+        if (not want_val) and (max_samples is None):
+            dataset = dataset.repeat()
 
         # If requested, cap the number of flattened samples for overfitting tests.
         # We cache the capped set so repeating yields the same fixed subset.
         if max_samples is not None:
             dataset = dataset.take(int(max_samples)).cache().repeat()
 
-        if DEBUG_TIMING:
-            dataset = dataset.frame_map(_wrap_timed_map(decode_images, "decode_images"), num_parallel_calls)
-        else:
-            dataset = dataset.frame_map(decode_images, num_parallel_calls)
+        dataset = dataset.frame_map(decode_images, num_parallel_calls)
 
         # Shuffle, batch
         dataset = dataset.batch(batch_size)
@@ -1019,25 +964,15 @@ class DroidCoTRldsDataset:
         dataset = dataset.with_ram_budget(1)
 
         self.dataset = dataset
-        self.batch_size = batch_size
-        self.shuffle = shuffle
-        self.action_chunk_size = action_chunk_size
-        self.summation_steps = summation_steps
-        self.max_samples = max_samples
-        self.validation_mode = validation_mode
 
     def __iter__(self):
         it = self.dataset.as_numpy_iterator()
         while True:
-            t0 = time.perf_counter() if DEBUG_TIMING else 0.0
             try:
                 batch = next(it)
             except StopIteration:
                 logging.info("StopIteration")
                 return
-            if DEBUG_TIMING:
-                dt = (time.perf_counter() - t0) * 1000.0
-                logging.info("DroidCoTRldsDataset as_numpy_iterator.next: %.1f ms", dt)
             yield batch
 
     def __len__(self):
