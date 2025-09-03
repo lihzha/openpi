@@ -127,6 +127,7 @@ class DataConfig:
     use_wrist_image: bool = False
     use_text_state: bool = True
     num_state_bins: int = 16
+    apply_idle_filter: bool = True
 
 
 class GroupFactory(Protocol):
@@ -531,6 +532,7 @@ class RLDSDroidCoTDataConfig(DataConfigFactory):
     use_wrist_image: bool = False
     use_text_state: bool = True
     num_state_bins: int = 16
+    apply_idle_filter: bool = True
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
@@ -610,6 +612,7 @@ class RLDSDroidCoTDataConfig(DataConfigFactory):
             vis_dataset=self.vis_dataset,
             use_text_state=self.use_text_state,
             num_state_bins=self.num_state_bins,
+            apply_idle_filter=self.apply_idle_filter,
         )
 
 
@@ -741,6 +744,7 @@ _CONFIGS = [
             val_fraction=0.02,
             use_text_state=True,
             num_state_bins=16,
+            apply_idle_filter=True,
         ),
         num_train_steps=100_000,
         fsdp_devices=4,
@@ -791,6 +795,7 @@ _CONFIGS = [
             val_fraction=0.02,
             use_text_state=True,
             num_state_bins=16,
+            apply_idle_filter=True,
         ),
         num_train_steps=100_000,
         fsdp_devices=8,
@@ -842,6 +847,7 @@ _CONFIGS = [
             val_fraction=0.02,
             use_text_state=False,
             num_state_bins=16,
+            apply_idle_filter=True,
         ),
         num_train_steps=100_000,
         fsdp_devices=8,
