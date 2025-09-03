@@ -199,10 +199,10 @@ fi
 
 # Map TPU_NUM to accelerator type for v5-lite pods
 case "$TPU_NUM" in
-  8)  ACCEL="v5litepod-8" ;;
   16) ACCEL="v5litepod-16" ;;
   32) ACCEL="v5litepod-32" ;;
-  *) echo "Error: unsupported TPU_NUM '$TPU_NUM' (allowed: 8, 16, 32)"; exit 1 ;;
+  64) ACCEL="v5litepod-64" ;;
+  *) echo "Error: unsupported TPU_NUM '$TPU_NUM' (allowed: 16, 32, 64)"; exit 1 ;;
 esac
 
 echo "Starting TPU auto-launcher with:"

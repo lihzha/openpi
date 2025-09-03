@@ -701,24 +701,25 @@ class DroidCoTRldsDataset:
         opts.experimental_deterministic = bool(want_val)
         dataset = dataset.with_options(opts)
 
-        with tf.io.gfile.GFile(f"{METADATA_PATH}/keep_ranges_1_0_1.json", "r") as f:
-            filter_dict = json.load(f)
+        if apply_idle_filter:
+            with tf.io.gfile.GFile(f"{METADATA_PATH}/keep_ranges_1_0_1.json", "r") as f:
+                filter_dict = json.load(f)
 
-        logging.info(f"Using filter dictionary with {len(filter_dict)} episodes")
+            logging.info(f"Using filter dictionary with {len(filter_dict)} episodes")
 
-        keys_tensor = []
-        values_tensor = []
+            keys_tensor = []
+            values_tensor = []
 
-        for episode_key, ranges in filter_dict.items():
-            for start, end in ranges:
-                for t in range(start, end):
-                    frame_key = f"{episode_key}--{t}"
-                    keys_tensor.append(frame_key)
-                    values_tensor.append(True)
-        filter_table = tf.lookup.StaticHashTable(
-            tf.lookup.KeyValueTensorInitializer(keys_tensor, values_tensor), default_value=False
-        )
-        logging.info("Filter hash table initialized")
+            for episode_key, ranges in filter_dict.items():
+                for start, end in ranges:
+                    for t in range(start, end):
+                        frame_key = f"{episode_key}--{t}"
+                        keys_tensor.append(frame_key)
+                        values_tensor.append(True)
+            filter_table = tf.lookup.StaticHashTable(
+                tf.lookup.KeyValueTensorInitializer(keys_tensor, values_tensor), default_value=False
+            )
+            logging.info("Filter hash table initialized")
 
         def restructure(traj):
             """Reformat observation and action keys, sample language instruction."""
@@ -784,15 +785,6 @@ class DroidCoTRldsDataset:
                 intr_b = tf.broadcast_to(intr[None, :], [traj_len, 4])
                 extr_b = tf.broadcast_to(extr[None, :, :], [traj_len, 4, 4])
 
-            step_id = (
-                traj["traj_metadata"]["episode_metadata"]["recording_folderpath"]
-                + "--"
-                + traj["traj_metadata"]["episode_metadata"]["file_path"]
-                + "--"
-                + tf.as_string(tf.range(traj_len))
-            )
-            passes_filter = filter_table.lookup(step_id)
-
             _return_dict = {
                 "actions": actions,
                 "observation": {
@@ -803,8 +795,19 @@ class DroidCoTRldsDataset:
                 "prompt": instruction_vec,
                 "language_actions": lang_tensor,
                 "episode_id": episode_id_vec,
-                "passes_filter": passes_filter,
             }
+
+            if apply_idle_filter:
+                step_id = (
+                    traj["traj_metadata"]["episode_metadata"]["recording_folderpath"]
+                    + "--"
+                    + traj["traj_metadata"]["episode_metadata"]["file_path"]
+                    + "--"
+                    + tf.as_string(tf.range(traj_len))
+                )
+                passes_filter = filter_table.lookup(step_id)
+                _return_dict["passes_filter"] = passes_filter
+
             if vis_dataset:
                 _return_dict["camera_intrinsics"] = intr_b  # [traj_len, 4]
                 _return_dict["camera_extrinsics"] = extr_b  # [traj_len, 4, 4]
@@ -890,17 +893,6 @@ class DroidCoTRldsDataset:
         # TODO: chunk action or not
         dataset = dataset.traj_map(group_language_actions, num_parallel_calls)
 
-        # def filter_idle(traj):
-        #     """Filter out chunks with idle actions.
-        #     --> we filter if at least first half of chunk does not move.
-        #     """
-        #     if action_space == DroidActionSpace.CARTESIAN_POSITION:
-        #         # Compute delta to first position in action chunk
-        #         return tf.reduce_any(tf.abs(traj["actions"][: action_chunk_size // 2] - traj["actions"][:1]) > 1e-3)
-        #     return tf.reduce_any(tf.abs(traj["actions"][: action_chunk_size // 2]) > 1e-3)
-
-        # dataset = dataset.filter(filter_idle)
-
         # Flatten: map from trajectory dataset to dataset of individual action chunks
         dataset = dataset.flatten(num_parallel_calls=num_parallel_calls)
 
@@ -917,6 +909,19 @@ class DroidCoTRldsDataset:
                 return frame
 
             dataset = dataset.map(remove_passes_filter)
+
+        else:
+
+            def filter_idle(traj):
+                """Filter out chunks with idle actions.
+                --> we filter if at least first half of chunk does not move.
+                """
+                if action_space == DroidActionSpace.CARTESIAN_POSITION:
+                    # Compute delta to first position in action chunk
+                    return tf.reduce_any(tf.abs(traj["actions"][: action_chunk_size // 2] - traj["actions"][:1]) > 1e-3)
+                return tf.reduce_any(tf.abs(traj["actions"][: action_chunk_size // 2]) > 1e-3)
+
+            dataset = dataset.filter(filter_idle)
 
         # Decode images: RLDS saves encoded images, only decode now for efficiency
         def decode_images(traj):
