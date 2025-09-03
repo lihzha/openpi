@@ -166,7 +166,14 @@ def log_param_sharding_actual(params):
         logging.info("Actual parameter sharding:\n" + "\n".join(lines))
 
 
-def init_wandb(config: _config.TrainConfig, *, resuming: bool, log_code: bool = False, enabled: bool = True):
+def init_wandb(
+    config: _config.TrainConfig,
+    *,
+    resuming: bool,
+    log_code: bool = False,
+    enabled: bool = True,
+    rewind_to_step: int | None = None,
+):
     if not enabled:
         wandb.init(mode="disabled")
         return
@@ -179,9 +186,14 @@ def init_wandb(config: _config.TrainConfig, *, resuming: bool, log_code: bool = 
     ckpt_dir = config.checkpoint_dir
     if not ckpt_dir.exists():
         raise FileNotFoundError(f"Checkpoint directory {ckpt_dir} does not exist.")
+
     if resuming:
         run_id = (ckpt_dir / "wandb_id.txt").read_text().strip()
-        wandb.init(id=run_id, resume="must", project=config.project_name)
+        if rewind_to_step is not None:
+            # Use wandb's rewind feature to resume from a specific step
+            wandb.init(resume_from=f"{run_id}?_step={rewind_to_step}", project=config.project_name)
+        else:
+            wandb.init(id=run_id, resume="must", project=config.project_name)
     else:
         wandb.init(
             name=config.exp_name,
@@ -408,7 +420,9 @@ def main(config: _config.TrainConfig):
         overwrite=config.overwrite,
         resume=config.resume,
     )
-    init_wandb(config, resuming=resuming, enabled=config.wandb_enabled)
+    init_wandb(
+        config, resuming=resuming, enabled=config.wandb_enabled, rewind_to_step=getattr(config, "rewind_to_step", None)
+    )
 
     data_loader = _data_loader.create_data_loader(
         config,

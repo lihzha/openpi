@@ -675,6 +675,8 @@ class TrainConfig:
 
     # If true, will enable wandb logging.
     wandb_enabled: bool = True
+    # If set, will rewind wandb run to this step when resuming (requires wandb SDK >= 0.17.1)
+    rewind_to_step: int | None = None
 
     # Used to pass metadata to the policy server.
     policy_metadata: dict[str, Any] | None = None
@@ -752,7 +754,7 @@ _CONFIGS = [
         log_interval=50,
         save_interval=5000,
         weight_loader=weight_loaders.WeightLoaderChoice(kind="paligemma"),
-        keep_period=2500,
+        keep_period=10000,
         # weight_loader=weight_loaders.WeightLoaderChoice(kind="checkpoint", params_path="gs://openpi-assets/checkpoints/pi0_base/params"),
         assets_base_dir="gs://pi0-cot/assets",
         checkpoint_base_dir="gs://pi0-cot/checkpoints",
@@ -813,7 +815,7 @@ _CONFIGS = [
             decay_lr=1e-4,
         ),
         # ema_decay=None,
-        keep_period=2500,
+        keep_period=10000,
     ),
     TrainConfig(
         name="pi0_droid_cot_v5",
@@ -865,7 +867,7 @@ _CONFIGS = [
             decay_lr=1e-4,
         ),
         # ema_decay=None,
-        keep_period=2500,
+        keep_period=10000,
     ),
     TrainConfig(
         name="pi0_droid_cot_local",
