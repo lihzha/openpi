@@ -15,10 +15,10 @@ def main():
     # import jax
 
     # 3. Initialize JAX distributed on 2 hosts only
-    jax.distributed.initialize(
-        # coordinator_address=coord,
-        # num_processes=2,
-    )
+    # jax.distributed.initialize(
+    #     # coordinator_address=coord,
+    #     # num_processes=2,
+    # )
 
     # 4. Print device info
     print(f"Local: {jax.local_device_count()} P: {jax.process_count()} i: {jax.process_index()} Devs: {jax.devices()}")
