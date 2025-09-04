@@ -2,25 +2,23 @@ import dataclasses
 import logging
 from math import acos
 from math import pi
+import os
 import re
 import warnings
 
+import etils.epath as epath
 import jax
 import jax.numpy as jnp
 import numpy as np
 from openpi_client import image_tools
-import tyro
-import os
-
-import etils.epath as epath
 from rail_tpu_utils import prevent_cross_region
-
-import openpi.training.config as _config
-import openpi.training.data_loader as _data_loader
-import openpi.training.sharding as sharding
+import tyro
 
 from openpi.policies import policy as _policy
 from openpi.policies import policy_config as _policy_config
+import openpi.training.config as _config
+import openpi.training.data_loader as _data_loader
+import openpi.training.sharding as sharding
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
@@ -153,6 +151,7 @@ class Args:
 
     # Specifies how to load the policy. If not provided, the default policy for the environment will be used.
 
+
 def init_logging():
     """Custom logging format for better readability."""
     level_mapping = {"DEBUG": "D", "INFO": "I", "WARNING": "W", "ERROR": "E", "CRITICAL": "C"}
@@ -171,6 +170,7 @@ def init_logging():
     logger.setLevel(logging.INFO)
     logger.handlers[0].setFormatter(formatter)
 
+
 def create_policy(args: Args, policy_config: _policy_config.PolicyConfig) -> _policy.Policy:
     """Create a policy from the given arguments."""
     if isinstance(args.policy, Checkpoint):
@@ -182,11 +182,13 @@ def create_policy(args: Args, policy_config: _policy_config.PolicyConfig) -> _po
         )
     raise ValueError(f"Invalid policy type. Expected Checkpoint, got: {type(args.policy)}")
 
+
 def _is_tpu_runtime() -> bool:
     try:
         return any(d.platform == "tpu" for d in jax.devices())
     except Exception:
         return False
+
 
 def main(args: Args):
     policy_config = _policy_config.PolicyConfig(
@@ -197,7 +199,7 @@ def main(args: Args):
 
     config = _config.get_config(args.policy.config)
     # config = dc.replace(config, data=dc.replace(config.data, max_samples=150, left_pad=True), batch_size=8)
-    
+
     if ("v6" in config.name and config.fsdp_devices > 8) or ("v4" in config.name and config.fsdp_devices > 4):
         jax.distributed.initialize()
     data_dir = save_dir = config.data.rlds_data_dir
@@ -236,7 +238,6 @@ def main(args: Args):
 
     jax.config.update("jax_compilation_cache_dir", str(epath.Path("~/.cache/jax").expanduser()))
 
-
     mesh = sharding.make_mesh(effective_fsdp_devices)
     data_sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec(sharding.DATA_AXIS))
 
@@ -247,7 +248,7 @@ def main(args: Args):
         seed=config.seed,
         split="val",
     )
-    
+
     tok = data_loader._data_loader._dataset._transform.transforms[-1].tokenizer
     ds = iter(data_loader)
 

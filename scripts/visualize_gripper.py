@@ -1,4 +1,5 @@
 import os
+import re
 
 import cv2 as cv
 import imageio
@@ -203,6 +204,87 @@ def describe_movement(gripper_poses: np.ndarray, gripper_actions: np.ndarray) ->
         sentence = " and ".join(parts) if parts else "(negligible motion)"
         sentences.append(sentence)
     return sentences
+
+
+def reasoning_to_gripper_poses_and_actions(
+    sentences: list[str],
+    start_pose: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Invert `describe_movement`.
+
+    Given a list of reasoning sentences (one per transition), reconstruct the
+    sequence of gripper poses (4x4) and the per-step gripper actions.
+
+    - Each sentence is expected to contain phrases like
+      "move right 1.23 cm and move forward 4.56 cm and move down 7.89 cm and set gripper to 0.50".
+    - Rotation is assumed constant (no rotation changes), matching describe_movement.
+    - The first pose is `start_pose` (defaults to identity), then each sentence
+      adds a translation delta to produce the next pose.
+
+    Returns:
+        (gripper_poses, gripper_actions)
+        - gripper_poses: array of shape (len(sentences)+1, 4, 4)
+        - gripper_actions: array of shape (len(sentences),)
+    """
+    if start_pose is None:
+        start_pose = np.eye(4, dtype=float)
+    else:
+        start_pose = np.array(start_pose, dtype=float)
+
+    num_steps = len(sentences)
+    poses = np.zeros((num_steps + 1, 4, 4), dtype=float)
+    poses[0] = start_pose
+    actions = np.zeros((num_steps,), dtype=float)
+
+    # Regex patterns
+    move_pat = re.compile(r"move\s+(right|left|forward|backward|up|down)\s+([\-\d\.]+)\s*cm", re.IGNORECASE)
+    grip_pat = re.compile(r"set\s+gripper\s+to\s+([\-\d\.]+)", re.IGNORECASE)
+
+    for i, sentence in enumerate(sentences):
+        # Parse movements; accumulate in centimeters along (dx, dy, dz)
+        dx_cm = dy_cm = dz_cm = 0.0
+        for m in move_pat.finditer(sentence):
+            direction = m.group(1).lower()
+            value_cm = float(m.group(2))
+            if direction == "right":
+                dx_cm += value_cm
+            elif direction == "left":
+                dx_cm -= value_cm
+            elif direction == "forward":
+                dy_cm += value_cm
+            elif direction == "backward":
+                dy_cm -= value_cm
+            elif direction == "down":
+                dz_cm += value_cm
+            elif direction == "up":
+                dz_cm -= value_cm
+
+        # Parse gripper action (defaults to previous if missing, else 0.0 for first)
+        grip_match = grip_pat.search(sentence)
+        if grip_match:
+            actions[i] = float(grip_match.group(1))
+        else:
+            actions[i] = actions[i - 1] if i > 0 else 0.0
+
+        # Convert from language (dx,dy,dz) in cm back to camera-frame translation (meters)
+        v_cm = np.array([dx_cm, dy_cm, dz_cm], dtype=float)
+        v_m = v_cm / 100.0
+
+        # Recall: v = (AXIS_SIGN * t_cam[AXIS_PERM]) * 100
+        # Therefore: t_cam[AXIS_PERM] = v_m / AXIS_SIGN
+        t_cam = np.zeros(3, dtype=float)
+        # Avoid division-by-zero if AXIS_SIGN contains zeros (shouldn't, but safe)
+        sign_safe = np.where(AXIS_SIGN == 0, 1.0, AXIS_SIGN.astype(float))
+        t_mapped = v_m / sign_safe
+        t_cam[AXIS_PERM] = t_mapped
+
+        # Integrate translation to form next pose; keep rotation unchanged
+        next_pose = poses[i].copy()
+        next_pose[:3, 3] = poses[i][:3, 3] + t_cam
+        poses[i + 1] = next_pose
+
+    return poses, actions
 
 
 def _draw_arrow(frame: np.ndarray, t_cam: np.ndarray, text: str, scale_px_cm: float) -> np.ndarray:

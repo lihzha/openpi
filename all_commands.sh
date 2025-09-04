@@ -69,3 +69,32 @@ alias TPU0_7="TPU_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 TPU_CHIPS_PER_HOST_BOUNDS=2,2,
 alias TPU8_15="TPU_VISIBLE_DEVICES=8,9,10,11,12,13,14,15 TPU_CHIPS_PER_HOST_BOUNDS=2,2,1 TPU_HOST_BOUNDS=2,1,1 TPU_MESH_CONTROLLER_ADDRESS=localhost:8477 TPU_MESH_CONTROLLER_PORT=8477"
 alias TPU16_23="TPU_VISIBLE_DEVICES=16,17,18,19,20,21,22,23 TPU_CHIPS_PER_HOST_BOUNDS=2,2,1 TPU_HOST_BOUNDS=2,1,1 TPU_MESH_CONTROLLER_ADDRESS=localhost:8478 TPU_MESH_CONTROLLER_PORT=8478"
 alias TPU24_31="TPU_VISIBLE_DEVICES=24,25,26,27,28,29,30,31 TPU_CHIPS_PER_HOST_BOUNDS=2,2,1 TPU_HOST_BOUNDS=2,1,1 TPU_MESH_CONTROLLER_ADDRESS=localhost:8479 TPU_MESH_CONTROLLER_PORT=8479"
+
+
+PORT=8476
+
+gcloud compute tpus tpu-vm ssh pi0 \
+  --project "$TPU_PROJECT" --zone us-central2-b --worker=0 \
+  --command 'source ~/.zshrc && cd openpi && git pull origin tpu && \
+TPU_VISIBLE_DEVICES=0,1,2,3 \
+TPU_CHIPS_PER_PROCESS_BOUNDS=2,2,1 \
+TPU_PROCESS_BOUNDS=2,1,1 \
+TPU_PROCESS_ADDRESSES=10.130.0.19:$PORT,10.130.0.22:$PORT \
+TPU_PROCESS_PORT=$PORT \
+CLOUD_TPU_TASK_ID=0 \
+uv run --group rlds scripts/train.py pi0_droid_cot_v4 --fsdp-devices=32 --batch-size=512 --exp-name v4_bs512_lr3e4_pi0_0f_testlr --data.sum-decimal=0f --weight-loader.kind=checkpoint --weight-loader.params-path=gs://openpi-assets/checkpoints/pi0_base/params --save_interval=500 --log-interval=50 --data.left-pad --data.include_decimal_point --model.number_token_weight=1 --data.val-max-samples=60000 --data.val-fraction=0.02 --data.no-vis-dataset --data.no-use-wrist-image --data.no-use-text-state --resume --lr-schedule.peak-lr=0.0003 --lr-schedule.warmup-steps=5000'
+
+
+
+gcloud compute tpus tpu-vm ssh pi0 \
+  --project "$TPU_PROJECT" --zone us-central2-b --worker=1 \
+  --command 'source ~/.zshrc && cd openpi && git pull origin tpu && \
+TPU_VISIBLE_DEVICES=0,1,2,3 \
+TPU_CHIPS_PER_PROCESS_BOUNDS=2,2,1 \
+TPU_PROCESS_BOUNDS=2,1,1 \
+TPU_PROCESS_ADDRESSES=10.130.0.19:$PORT,10.130.0.22:$PORT \
+TPU_PROCESS_PORT=$PORT \
+CLOUD_TPU_TASK_ID=1 \
+uv run --group rlds scripts/train.py pi0_droid_cot_v4 --fsdp-devices=32 --batch-size=512 --exp-name v4_bs512_lr3e4_pi0_0f_testlr --data.sum-decimal=0f --weight-loader.kind=checkpoint --weight-loader.params-path=gs://openpi-assets/checkpoints/pi0_base/params --save_interval=500 --log-interval=50 --data.left-pad --data.include_decimal_point --model.number_token_weight=1 --data.val-max-samples=60000 --data.val-fraction=0.02 --data.no-vis-dataset --data.no-use-wrist-image --data.no-use-text-state --resume --lr-schedule.peak-lr=0.0003 --lr-schedule.warmup-steps=5000'
+
+
