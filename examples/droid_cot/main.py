@@ -91,8 +91,12 @@ def main(args: Args):
         # Prepare to save video of rollout
         bar = tqdm.tqdm(range(args.max_timesteps))
         print("Running rollout... press Ctrl+C to stop early.")
+        # Maintain a small open-loop action chunk predicted from the latest policy call
+        actions_from_chunk_completed = 0
+        pred_action_chunk = None
+        CHUNK_STEPS = 15
         for t_step in bar:
-            # start_time = time.time()
+            start_time = time.time()
             try:
                 # Get the current observation
                 curr_obs = _extract_observation(
@@ -102,57 +106,71 @@ def main(args: Args):
                     save_to_disk=t_step == 0,
                 )
 
-                request_data = {
-                    "observation/exterior_image_1_left": image_tools.resize_with_pad(
-                        curr_obs["observation/image"], 224, 224
-                    ),
-                    # "observation/wrist_image_left": image_tools.resize_with_pad(
-                    #     curr_obs["observation/wrist_image"], 224, 224
-                    # ),
-                    "observation/cartesian_position": curr_obs["observation/cartesian_position"],
-                    "observation/gripper_position": curr_obs["observation/gripper_position"],
-                    "prompt": instruction,
-                    "batch_size": None,
-                }
+                # Predict a new chunk if needed
+                if pred_action_chunk is None or actions_from_chunk_completed >= CHUNK_STEPS:
+                    actions_from_chunk_completed = 0
 
-                # Wrap the server call in a context manager to prevent Ctrl+C from interrupting it
-                # Ctrl+C will be handled after the server call is complete
-                with prevent_keyboard_interrupt():
-                    # this returns natural language reasoning steps; convert to deltas then to absolute action
-                    st = time.time()
-                    pred = policy_client.infer_reasoning(request_data)["reasoning"]
-                    poses_cam, grip_actions = _reasoning_to_action(pred)
+                    request_data = {
+                        "observation/exterior_image_1_left": image_tools.resize_with_pad(
+                            curr_obs["observation/image"], 224, 224
+                        ),
+                        # "observation/wrist_image_left": image_tools.resize_with_pad(
+                        #     curr_obs["observation/wrist_image"], 224, 224
+                        # ),
+                        "observation/cartesian_position": curr_obs["observation/cartesian_position"],
+                        "observation/gripper_position": curr_obs["observation/gripper_position"],
+                        "prompt": instruction,
+                        "batch_size": None,
+                    }
 
-                    # Take the first step translation in camera frame (meters)
-                    t_cam = poses_cam[1][:3, 3] - poses_cam[0][:3, 3]
-                    # Map translation delta to robot/base frame using rotation only
-                    R_cb = cam_to_base_extrinsics_matrix[:3, :3]
-                    delta_base = R_cb @ t_cam
+                    # Wrap the server call in a context manager to prevent Ctrl+C from interrupting it
+                    # Ctrl+C will be handled after the server call is complete
+                    with prevent_keyboard_interrupt():
+                        # this returns natural language reasoning steps; convert to deltas then to absolute action
+                        st = time.time()
+                        pred = policy_client.infer_reasoning(request_data)["reasoning"]
+                        poses_cam, grip_actions = _reasoning_to_action(pred)
 
-                    # Turn delta into absolute cartesian action using current state (position + euler angles)
-                    curr_state = np.asarray(curr_obs["observation/state"], dtype=float)
-                    curr_pos = curr_state[:3]
-                    curr_rpy = curr_state[3:6] if curr_state.shape[0] >= 6 else np.zeros(3, dtype=float)
-                    next_pos = curr_pos + delta_base
-                    next_grip = float(grip_actions[0]) if grip_actions.size > 0 else float(curr_state[-1])
-                    action = np.concatenate([next_pos, curr_rpy, np.array([next_grip], dtype=float)])
+                        # Use the first delta translation in camera frame (meters)
+                        t_cam = poses_cam[1][:3, 3] - poses_cam[0][:3, 3]
+                        # Map translation delta to robot/base frame using rotation only
+                        R_cb = cam_to_base_extrinsics_matrix[:3, :3]
+                        delta_base = R_cb @ t_cam
 
-                    et = time.time()
-                    print(f"Time taken for inference: {et - st}")
+                        # Build absolute target from current state
+                        curr_pos = np.asarray(curr_obs["observation/cartesian_position"], dtype=float)
+                        curr_rpy = np.zeros(3, dtype=float)
+                        curr_grip = float(
+                            np.asarray(curr_obs["observation/gripper_position"], dtype=float).reshape(-1)[0]
+                        )
+                        next_pos = curr_pos + delta_base
+                        next_grip = float(grip_actions[0]) if grip_actions.size > 0 else curr_grip
+
+                        # Linearly interpolate to CHUNK_STEPS actions
+                        positions = np.linspace(curr_pos, next_pos, CHUNK_STEPS, endpoint=True)
+                        rpy_arr = np.tile(curr_rpy, (CHUNK_STEPS, 1))
+                        grip_vals = np.linspace(curr_grip, next_grip, CHUNK_STEPS, endpoint=True).reshape(-1, 1)
+                        pred_action_chunk = np.concatenate([positions, rpy_arr, grip_vals], axis=1)
+
+                        et = time.time()
+                        print(f"Time taken for inference: {et - st}")
+
+                # Select current action to execute from chunk
+                action = pred_action_chunk[actions_from_chunk_completed]
+                actions_from_chunk_completed += 1
+
                 # Binarize gripper action
                 if action[-1].item() > 0.5:
                     action = np.concatenate([action[:-1], np.ones((1,))])
                 else:
                     action = np.concatenate([action[:-1], np.zeros((1,))])
 
-                # TODO: from delta action to absolute action
-
                 env.step(action)
 
                 # Sleep to match DROID data collection frequency
-                # elapsed_time = time.time() - start_time
-                # if elapsed_time < 1 / DROID_CONTROL_FREQUENCY:
-                #     time.sleep(1 / DROID_CONTROL_FREQUENCY - elapsed_time)
+                elapsed_time = time.time() - start_time
+                if elapsed_time < 1 / DROID_CONTROL_FREQUENCY:
+                    time.sleep(1 / DROID_CONTROL_FREQUENCY - elapsed_time)
             except KeyboardInterrupt:
                 break
 
