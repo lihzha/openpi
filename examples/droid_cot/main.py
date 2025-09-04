@@ -103,11 +103,14 @@ def main(args: Args):
                 )
 
                 request_data = {
-                    "observation/image": image_tools.resize_with_pad(curr_obs["observation/image"], 224, 224),
-                    "observation/wrist_image": image_tools.resize_with_pad(
-                        curr_obs["observation/wrist_image"], 224, 224
+                    "observation/exterior_image_1_left": image_tools.resize_with_pad(
+                        curr_obs["observation/image"], 224, 224
                     ),
-                    "observation/state": curr_obs["observation/state"],
+                    # "observation/wrist_image_left": image_tools.resize_with_pad(
+                    #     curr_obs["observation/wrist_image"], 224, 224
+                    # ),
+                    "observation/cartesian_position": curr_obs["observation/cartesian_position"],
+                    "observation/gripper_position": curr_obs["observation/gripper_position"],
                     "prompt": instruction,
                     "batch_size": None,
                 }
@@ -179,7 +182,8 @@ def _extract_observation(args: Args, obs_dict, *, save_to_disk=False):
     return {
         "observation/image": image_observations["0"],
         "observation/wrist_image": image_observations["1"],
-        "observation/state": np.concatenate([cartesian_position, [gripper_position]]),
+        "observation/cartesian_position": cartesian_position,
+        "observation/gripper_position": np.array([gripper_position]),
     }
 
 
