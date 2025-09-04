@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-import os
+import jax
 
 
 def main():
     # 1. Parse rank from hostname (e.g., "tpu-name-worker-0")
 
     # 2. Read coordinator info from env or defaults
-    coord = (
-        os.environ.get("TPU_MESH_CONTROLLER_ADDRESS", "127.0.0.1")
-        + ":"
-        + os.environ.get("TPU_MESH_CONTROLLER_PORT", "8476")
-    )
-    print(coord)
-    import jax
+    # coord = (
+    #     os.environ.get("TPU_MESH_CONTROLLER_ADDRESS", "127.0.0.1")
+    #     + ":"
+    #     + os.environ.get("TPU_MESH_CONTROLLER_PORT", "8476")
+    # )
+    # print(coord)
+    # import jax
 
     # 3. Initialize JAX distributed on 2 hosts only
     jax.distributed.initialize(
