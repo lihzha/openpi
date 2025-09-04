@@ -185,7 +185,7 @@ def _extract_observation(args: Args, obs_dict, *, save_to_disk=False):
 
 def _reasoning_to_action(
     sentences: list[str],
-    start_pose: np.ndarray | None = None,
+    start_pose: np.ndarray = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Invert `describe_movement`.
