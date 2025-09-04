@@ -16,8 +16,8 @@ def main():
 
     # 3. Initialize JAX distributed on 2 hosts only
     jax.distributed.initialize(
-        coordinator_address=coord,
-        num_processes=2,
+        # coordinator_address=coord,
+        # num_processes=2,
     )
 
     # 4. Print device info
