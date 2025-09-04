@@ -58,7 +58,7 @@ class WebsocketPolicyServer:
                 obs = msgpack_numpy.unpackb(await websocket.recv())
 
                 infer_time = time.monotonic()
-                action = self._policy.infer(obs)
+                action = self._policy.infer_reasoning(obs)
                 infer_time = time.monotonic() - infer_time
 
                 action["server_timing"] = {
