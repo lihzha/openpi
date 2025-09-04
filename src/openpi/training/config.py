@@ -530,7 +530,7 @@ class RLDSDroidCoTDataConfig(DataConfigFactory):
     validation_mode: str = "easy"
     vis_dataset: bool = False
     use_wrist_image: bool = False
-    use_text_state: bool = True
+    use_text_state: bool = False
     num_state_bins: int = 16
     apply_idle_filter: bool = True
 
@@ -744,7 +744,7 @@ _CONFIGS = [
             use_wrist_image=False,
             val_max_samples=60000,
             val_fraction=0.02,
-            use_text_state=True,
+            use_text_state=False,
             num_state_bins=16,
             apply_idle_filter=True,
         ),
@@ -795,7 +795,7 @@ _CONFIGS = [
             use_wrist_image=False,
             val_max_samples=60000,
             val_fraction=0.02,
-            use_text_state=True,
+            use_text_state=False,
             num_state_bins=16,
             apply_idle_filter=True,
         ),

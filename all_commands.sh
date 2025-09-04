@@ -62,3 +62,10 @@ export TPU_NAME=pi0-cot
 ./watch_and_run.sh --exp-name v6_bs256_lr1e4_ss15_paligemma_max110 --fsdp-devices=8 --batch-size=256 --data.summation-steps=15 --weight-loader.kind=paligemma --resume
 ./watch_and_run.sh --exp-name v6_bs256_lr1e4_ss15_pi0_max110 --fsdp-devices=8 --batch-size=256 --data.summation-steps=15 --resume
 ./watch_and_run.sh --exp-name v6_bs256_lr1e4_ss15_pi0_max110_overfit150 --fsdp-devices=8 --batch-size=256 --data.summation-steps=15 --weight-loader.kind=checkpoint --weight-loader.params-path=gs://openpi-assets/checkpoints/pi0_base/params --data.max_samples=150 --resume
+
+
+# 8 chips per process (2 hosts × 4 chips each)
+alias TPU0_7="TPU_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 TPU_CHIPS_PER_HOST_BOUNDS=2,2,1 TPU_HOST_BOUNDS=2,1,1 TPU_MESH_CONTROLLER_ADDRESS=10.130.0.2:8476 TPU_MESH_CONTROLLER_PORT=8476"
+alias TPU8_15="TPU_VISIBLE_DEVICES=8,9,10,11,12,13,14,15 TPU_CHIPS_PER_HOST_BOUNDS=2,2,1 TPU_HOST_BOUNDS=2,1,1 TPU_MESH_CONTROLLER_ADDRESS=localhost:8477 TPU_MESH_CONTROLLER_PORT=8477"
+alias TPU16_23="TPU_VISIBLE_DEVICES=16,17,18,19,20,21,22,23 TPU_CHIPS_PER_HOST_BOUNDS=2,2,1 TPU_HOST_BOUNDS=2,1,1 TPU_MESH_CONTROLLER_ADDRESS=localhost:8478 TPU_MESH_CONTROLLER_PORT=8478"
+alias TPU24_31="TPU_VISIBLE_DEVICES=24,25,26,27,28,29,30,31 TPU_CHIPS_PER_HOST_BOUNDS=2,2,1 TPU_HOST_BOUNDS=2,1,1 TPU_MESH_CONTROLLER_ADDRESS=localhost:8479 TPU_MESH_CONTROLLER_PORT=8479"
