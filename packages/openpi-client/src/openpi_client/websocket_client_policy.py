@@ -8,6 +8,8 @@ from typing_extensions import override
 from openpi_client import base_policy as _base_policy
 from openpi_client import msgpack_numpy
 
+REASONING_RECV_TIMEOUT_S = 300
+
 
 class WebsocketClientPolicy(_base_policy.BasePolicy):
     """Implements the Policy interface by communicating with a server over websocket.
@@ -53,7 +55,7 @@ class WebsocketClientPolicy(_base_policy.BasePolicy):
     def infer_reasoning(self, obs: Dict) -> Dict:  # noqa: UP006
         data = self._packer.pack(obs)
         self._ws.send(data)
-        response = self._ws.recv()
+        response = self._ws.recv(timeout=REASONING_RECV_TIMEOUT_S)
         if isinstance(response, str):
             raise RuntimeError(f"Error in inference server:\n{response}")
         return msgpack_numpy.unpackb(response)
