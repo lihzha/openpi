@@ -506,7 +506,7 @@ class DroidCoTRldsDataset:
             calib_image_idx = IMAGE_LIST.index(calib_image_name)
             eid_to_cam_dict[eid] = calib_image_idx
 
-            if vis_dataset:
+            if need_calib:
                 # Camera intrinsics as [fx, fy, cx, cy]
                 try:
                     fx, cx, fy, cy = intrinsics_json[eid][camera_serial]["cameraMatrix"]
