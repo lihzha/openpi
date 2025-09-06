@@ -524,7 +524,7 @@ class DroidCoTRldsDataset:
                     T[:3, 3] = [tx, ty, tz]
                     eid_to_extr_mat[eid] = T.reshape(-1)
                 except Exception:
-                    eid_to_extr_mat[eid] = np.zeros((16,), dtype=np.float32)
+                    eid_to_extr_mat[eid] = np.eye(4, dtype=np.float32).reshape(-1)
 
         keys = tf.constant(list(eid_to_cam_dict.keys()), dtype=tf.string)
         values = tf.constant(list(eid_to_cam_dict.values()), dtype=tf.int32)
@@ -540,18 +540,22 @@ class DroidCoTRldsDataset:
             intr_ser = []
             extr_ser = []
             for _eid in calib_eids:
-                intr_ser.append(tf.io.serialize_tensor(tf.constant(eid_to_intr_vec[_eid], dtype=tf.float32)).numpy())
-                extr_ser.append(tf.io.serialize_tensor(tf.constant(eid_to_extr_mat[_eid], dtype=tf.float32)).numpy())
+                _intr = eid_to_intr_vec.get(_eid, [0.0, 0.0, 0.0, 0.0])
+                _extr = eid_to_extr_mat.get(_eid, np.zeros((16,), dtype=np.float32))
+                intr_ser.append(tf.io.serialize_tensor(tf.constant(_intr, dtype=tf.float32)).numpy())
+                extr_ser.append(tf.io.serialize_tensor(tf.constant(_extr, dtype=tf.float32)).numpy())
             calib_keys = tf.constant(calib_eids, dtype=tf.string)
             intr_vals = tf.constant(intr_ser, dtype=tf.string)
             extr_vals = tf.constant(extr_ser, dtype=tf.string)
+            default_intr_ser = tf.io.serialize_tensor(tf.zeros([4], tf.float32))
+            default_extr_ser = tf.io.serialize_tensor(tf.reshape(tf.eye(4, dtype=tf.float32), [-1]))
             intr_table = tf.lookup.StaticHashTable(
                 tf.lookup.KeyValueTensorInitializer(calib_keys, intr_vals),
-                default_value=tf.constant(b"", dtype=tf.string),
+                default_value=default_intr_ser,
             )
             extr_table = tf.lookup.StaticHashTable(
                 tf.lookup.KeyValueTensorInitializer(calib_keys, extr_vals),
-                default_value=tf.constant(b"", dtype=tf.string),
+                default_value=default_extr_ser,
             )
 
         # ---------------------------------------------------------------------
@@ -896,9 +900,12 @@ class DroidCoTRldsDataset:
             if drop_gripper_oob:
                 # Expect calibration present; if missing, mark as False to be safe
                 def _project_in_bounds(xyz, intr4, extr44):
+                    xyz = tf.cast(xyz, tf.float32)
+                    intr4 = tf.cast(intr4, tf.float32)
+                    extr44 = tf.cast(extr44, tf.float32)
                     # xyz: [N,3], intr4: [N,4], extr44: [N,4,4]
                     # Compute camera coordinates
-                    ones = tf.ones_like(xyz[..., :1])
+                    ones = tf.ones_like(xyz[..., :1], dtype=tf.float32)
                     p_base = tf.concat([xyz, ones], axis=-1)  # [N,4]
                     base_to_cam = tf.linalg.inv(extr44)
                     p_cam = tf.einsum("nij,nj->ni", base_to_cam, p_base)
@@ -907,15 +914,15 @@ class DroidCoTRldsDataset:
                     fy = intr4[..., 1]
                     cx = intr4[..., 2]
                     cy = intr4[..., 3]
-                    valid = tf.logical_and(z > 1e-6, tf.logical_and(fx > 0.0, fy > 0.0))
+                    valid = tf.logical_and(z > tf.constant(1e-6, tf.float32), tf.logical_and(fx > 0.0, fy > 0.0))
                     # Pixel at calibration resolution
                     u = fx * (p_cam[..., 0] / z) + cx
                     v = fy * (p_cam[..., 1] / z) + cy
                     # Letterbox to 224x224 using same math as resize_with_pad
-                    Wt = tf.constant(224.0)
-                    Ht = tf.constant(224.0)
-                    Wc = tf.maximum(1.0, 2.0 * cx)
-                    Hc = tf.maximum(1.0, 2.0 * cy)
+                    Wt = tf.constant(224.0, dtype=tf.float32)
+                    Ht = tf.constant(224.0, dtype=tf.float32)
+                    Wc = tf.maximum(tf.constant(1.0, tf.float32), 2.0 * cx)
+                    Hc = tf.maximum(tf.constant(1.0, tf.float32), 2.0 * cy)
                     ratio = tf.maximum(Wc / Wt, Hc / Ht)
                     resized_w = Wc / ratio
                     resized_h = Hc / ratio
@@ -923,8 +930,8 @@ class DroidCoTRldsDataset:
                     pad_h0 = (Ht - resized_h) / 2.0
                     x = u * (resized_w / Wc) + pad_w0
                     y = v * (resized_h / Hc) + pad_h0
-                    in_x = tf.logical_and(x >= 0.0, x <= (Wt - 1.0))
-                    in_y = tf.logical_and(y >= 0.0, y <= (Ht - 1.0))
+                    in_x = tf.logical_and(x >= tf.constant(0.0, tf.float32), x <= (Wt - tf.constant(1.0, tf.float32)))
+                    in_y = tf.logical_and(y >= tf.constant(0.0, tf.float32), y <= (Ht - tf.constant(1.0, tf.float32)))
                     return tf.logical_and(valid, tf.logical_and(in_x, in_y))
 
                 # Use start and end positions per window
