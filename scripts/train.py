@@ -4,6 +4,7 @@ import logging
 import math
 import os
 import platform
+import re
 from typing import Any
 
 import etils.epath as epath
@@ -12,6 +13,7 @@ from flax.training import common_utils
 import flax.traverse_util as traverse_util
 import jax
 import jax.numpy as jnp
+import numpy as np
 import optax
 from rail_tpu_utils import prevent_cross_region
 import tqdm_loggable.auto as tqdm
@@ -114,6 +116,165 @@ def log_batch_sharding(batch):
             lines.append(f"{fmt_path(path)}: <error formatting sharding: {e}>")
     if lines:
         logging.info("Batch sharding summary:\n" + "\n".join(lines))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Validation-time helpers for language actions visualization/metric
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def _decode_reasoning_strings(obs: _model.Observation, tokenizer) -> list[str]:
+    """Extract and decode the reasoning (language action) tokens per example.
+
+    Returns one decoded string per example. If reasoning fields are absent, returns [].
+    """
+    if obs.tokenized_prompt is None or obs.tokenized_reasoning_mask is None:
+        return []
+    tokens = jax.device_get(obs.tokenized_prompt)
+    rmask = jax.device_get(obs.tokenized_reasoning_mask)
+    out: list[str] = []
+    for i in range(tokens.shape[0]):
+        sel = tokens[i][rmask[i].astype(bool)]
+        try:
+            text = tokenizer.decode(sel.astype(np.int32))
+        except Exception:
+            text = ""
+        out.append(text)
+    return out
+
+
+def _parse_language_delta_cm(text: str) -> np.ndarray | None:
+    """Parse summed language action text -> net [right, forward, down] in cm.
+
+    Accepts parts joined by " and ", like: "move right 10.3cm and move up 1.2cm and move forward 1.35cm".
+    Recognized directions: left/right, forward/backward, up/down. Units: mm, cm, m.
+    Returns None if no valid movements found.
+    """
+    if text is None:
+        return None
+    totals = {"left": 0.0, "right": 0.0, "forward": 0.0, "backward": 0.0, "up": 0.0, "down": 0.0}
+    any_valid = False
+    for part in filter(None, [p.strip() for p in text.split(" and ")]):
+        m = re.match(r"move\s+(\w+)\s+([-+]?\d*\.?\d+)\s*(\w+)", part, flags=re.IGNORECASE)
+        if not m:
+            continue
+        direction = m.group(1).lower()
+        try:
+            value = float(m.group(2))
+        except Exception:
+            continue
+        unit = m.group(3).lower()
+        # Normalize to cm
+        if unit.startswith("mm"):
+            value = value / 10.0
+        elif unit == "m" or (unit.startswith("m") and not unit.startswith("mm")):
+            value = value * 100.0
+        totals[direction] = totals.get(direction, 0.0) + value
+        any_valid = True
+    if not any_valid:
+        return None
+    right = totals["right"] - totals["left"]
+    forward = totals["forward"] - totals["backward"]
+    down = totals["down"] - totals["up"]
+    return np.array([right, forward, down], dtype=np.float32)
+
+
+def _draw_text_block(img: np.ndarray, lines: list[str]) -> np.ndarray:
+    """Draw a small semi-transparent box with text lines at the bottom-left of the image.
+
+    Uses OpenCV if available; otherwise returns the original image.
+    """
+    try:
+        import cv2
+    except Exception:
+        return img
+
+    out = img.copy()
+    h, w = out.shape[:2]
+    pad = 8
+    line_h = max(14, h // 36)
+    box_h = pad * 2 + line_h * len(lines)
+    y0 = h - box_h - 2
+    x0 = 2
+    x1 = min(w - 2, w - 2)
+    y1 = min(h - 2, h - 2)
+    overlay = out.copy()
+    cv2.rectangle(overlay, (x0, y0), (x1, y1), (0, 0, 0), thickness=-1)
+    out = cv2.addWeighted(overlay, 0.45, out, 0.55, 0)
+    y = y0 + pad + line_h
+    for line in lines:
+        cv2.putText(out, line, (x0 + pad, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+        y += line_h
+    return out
+
+
+def _invert_camera_axis_map(v_cm: np.ndarray) -> np.ndarray:
+    """Invert AXIS_PERM mapping to camera-frame delta in metres.
+
+    Mirrors scripts/visualization/train_vis_gripper.py logic.
+    """
+    AXIS_PERM = np.array([0, 2, 1], dtype=np.int32)
+    AXIS_SIGN = np.array([1.0, 1.0, 1.0], dtype=np.float32)
+    t_cam = np.zeros(3, dtype=np.float32)
+    t_cam[AXIS_PERM] = (v_cm / 100.0) / AXIS_SIGN
+    return t_cam
+
+
+def _project_point(
+    base_xyz: np.ndarray, cam_T_base: np.ndarray, intr: np.ndarray, out_hw: tuple[int, int]
+) -> tuple[int, int] | None:
+    """Project base-frame 3D point to pixel coordinates respecting resize_with_pad letterboxing.
+
+    intr: [fx, fy, cx, cy] measured at calibration resolution (Wc≈2*cx, Hc≈2*cy).
+    """
+    if base_xyz is None or intr is None or cam_T_base is None:
+        return None
+    if intr.shape[-1] != 4 or cam_T_base.shape[-2:] != (4, 4):
+        return None
+    fx, fy, cx, cy = intr.tolist()
+    if fx == 0 or fy == 0:
+        return None
+    base_to_cam = np.linalg.inv(cam_T_base)
+    p_base_h = np.array([base_xyz[0], base_xyz[1], base_xyz[2], 1.0], dtype=np.float32)
+    p_cam = base_to_cam @ p_base_h
+    z = float(p_cam[2])
+    if z <= 1e-6:
+        return None
+    # Calibration pixel coordinates (before resize/pad)
+    u = fx * (p_cam[0] / z) + cx
+    v = fy * (p_cam[1] / z) + cy
+    # Derive calibration resolution from principal point
+    Ht, Wt = int(out_hw[0]), int(out_hw[1])
+    Wc = max(1.0, 2.0 * cx)
+    Hc = max(1.0, 2.0 * cy)
+    # Compute resized (letterboxed) dimensions identical to resize_with_pad
+    ratio = max(Wc / Wt, Hc / Ht)
+    resized_w = int(Wc / ratio)
+    resized_h = int(Hc / ratio)
+    pad_w0 = (Wt - resized_w) // 2
+    pad_h0 = (Ht - resized_h) // 2
+    # Scale and offset
+    x = int(np.round(u * (resized_w / Wc) + pad_w0))
+    y = int(np.round(v * (resized_h / Hc) + pad_h0))
+    x = int(np.clip(x, 0, Wt - 1))
+    y = int(np.clip(y, 0, Ht - 1))
+    return x, y
+
+
+def _draw_dot(img_u8: np.ndarray, xy: tuple[int, int] | None, color: tuple[int, int, int]) -> np.ndarray:
+    out = img_u8.copy()
+    if xy is None:
+        return out
+    x, y = xy
+    H, W = out.shape[:2]
+    rr = 4
+    y0, y1 = max(0, y - rr), min(H, y + rr + 1)
+    x0, x1 = max(0, x - rr), min(W, x + rr + 1)
+    for yy in range(y0, y1):
+        for xx in range(x0, x1):
+            if (yy - y) ** 2 + (xx - x) ** 2 <= rr * rr:
+                out[yy, xx] = color
+    return out
 
 
 def log_param_sharding_planned(state_sharding):
@@ -470,9 +631,32 @@ def main(config: _config.TrainConfig):
             split="val",
             max_samples=getattr(config.data, "val_max_samples", None),
         )
+        # Try to obtain the tokenizer from the transform pipeline for decoding
+        tok = None
+        try:
+            # RLDS path
+            tok = val_loader._data_loader._dataset._transform.transforms[-1].tokenizer  # type: ignore[attr-defined]
+        except Exception:
+            try:
+                # Torch path
+                tok = data_loader._data_loader._dataset._transform.transforms[-1].tokenizer  # type: ignore[attr-defined]
+            except Exception:
+                tok = None
         pval_step = jax.jit(
             functools.partial(val_step, config),
             in_shardings=(replicated_sharding, train_state_sharding, data_sharding),
+        )
+
+        # Jitted reasoning sampler returning only (id_buf, t)
+        def _sample_reasoning_ids_t(state: training_utils.TrainState, observation: _model.Observation):
+            model_local = nnx.merge(state.model_def, state.params)
+            id_buf, t, *_ = model_local.sample_reasoning(observation)
+            return id_buf, t
+
+        psample_reasoning = jax.jit(
+            _sample_reasoning_ids_t,
+            in_shardings=(train_state_sharding, data_sharding),
+            out_shardings=(data_sharding, replicated_sharding),
         )
         # Determine how many validation batches to evaluate each time.
         # If a fixed validation subset size is configured, compute batches from it;
@@ -519,14 +703,119 @@ def main(config: _config.TrainConfig):
             )
             with sharding.set_mesh(mesh):
                 val_infos = []
+                # Collect L2 distances (in cm) between parsed vectors from GT and predicted texts
+                l2_cm_values: list[float] = []
+                # Limit number of annotated images per validation run
+                logged_images = 0
+                max_images_to_log = 8
                 # Recreate a fresh iterator to ensure the same fixed validation subset each time.
                 val_iter = iter(val_loader)
                 for _ in val_pbar:
                     val_batch = next(val_iter)
                     val_info = pval_step(train_rng, train_state, val_batch)
                     val_infos.append(val_info)
+                    # Host-side visualization/metric (non-jitted)
+                    try:
+                        if tok is not None and logged_images < max_images_to_log:
+                            obs = val_batch[0]
+                            # Decode ground-truth reasoning strings
+                            gt_texts = _decode_reasoning_strings(obs, tok)
+                            # Predict reasoning tokens and decode
+                            # Jitted reasoning generation across mesh
+                            id_buf, t_final = psample_reasoning(train_state, obs)
+                            ids = jax.device_get(id_buf)
+                            # Be robust to bounds: clamp final index
+                            t_host = int(np.clip(int(jax.device_get(t_final)), 0, ids.shape[1] - 1))
+                            B = ids.shape[0]
+                            pred_texts: list[str] = []
+                            for bi in range(B):
+                                seq = ids[bi, : t_host + 1, 0].astype(np.int32)
+                                try:
+                                    pred_texts.append(tok.decode(seq))
+                                except Exception:
+                                    pred_texts.append("")
+
+                            # Compute L2 metric over parsed movement vectors (in cm)
+                            for bi in range(min(B, 64)):
+                                gt_vec = _parse_language_delta_cm(gt_texts[bi] if bi < len(gt_texts) else "")
+                                pred_vec = _parse_language_delta_cm(pred_texts[bi] if bi < len(pred_texts) else "")
+                                if gt_vec is None or pred_vec is None:
+                                    continue
+                                l2_cm = float(np.linalg.norm(gt_vec - pred_vec))
+                                l2_cm_values.append(l2_cm)
+
+                            # Prepare annotated images for a subset
+                            # Choose a camera to display
+                            first_cam_key = next(iter(obs.images))
+                            imgs = jax.device_get(obs.images[first_cam_key])
+                            # Convert from [-1,1] to uint8
+                            imgs_u8 = ((np.asarray(imgs) + 1.0) * 0.5 * 255.0).clip(0, 255).astype(np.uint8)
+                            # Optional 3D->2D projection inputs
+                            cart = getattr(obs, "cartesian_position_window", None)
+                            intr_all = getattr(obs, "camera_intrinsics", None)
+                            extr_all = getattr(obs, "camera_extrinsics", None)
+                            cart_np = jax.device_get(cart) if cart is not None else None
+                            intr_np = jax.device_get(intr_all) if intr_all is not None else None
+                            extr_np = jax.device_get(extr_all) if extr_all is not None else None
+                            to_log = []
+                            for bi in range(min(B, max_images_to_log - logged_images)):
+                                vis = imgs_u8[bi]
+                                H, W = vis.shape[:2]
+                                start_xyz = end_xyz = None
+                                intr = extr = None
+                                if cart_np is not None and cart_np.shape[1] >= 1:
+                                    # [T,6]
+                                    seq = np.asarray(cart_np[bi])
+                                    if seq.ndim == 2 and seq.shape[-1] >= 3:
+                                        start_xyz = seq[0, :3]
+                                        end_xyz = seq[-1, :3]
+                                if intr_np is not None:
+                                    ci = np.asarray(intr_np[bi])
+                                    intr = ci[0] if ci.ndim == 2 else ci
+                                if extr_np is not None:
+                                    ce = np.asarray(extr_np[bi])
+                                    extr = ce[0] if ce.ndim == 3 else ce
+                                # Project GT start/end if available
+                                start_xy = (
+                                    _project_point(start_xyz, extr, intr, (H, W)) if start_xyz is not None else None
+                                )
+                                end_true_xy = (
+                                    _project_point(end_xyz, extr, intr, (H, W)) if end_xyz is not None else None
+                                )
+                                # Predicted end via language delta
+                                pred_end_xy = None
+                                v_cm = _parse_language_delta_cm(pred_texts[bi] if bi < len(pred_texts) else "")
+                                if v_cm is not None and extr is not None and start_xyz is not None:
+                                    t_cam = _invert_camera_axis_map(v_cm)
+                                    R_cb = extr[:3, :3]
+                                    t_base = R_cb @ t_cam
+                                    pred_xyz = start_xyz + t_base
+                                    pred_end_xy = _project_point(pred_xyz, extr, intr, (H, W))
+                                # Draw dots
+                                vis2 = vis
+                                if start_xy is not None:
+                                    vis2 = _draw_dot(vis2, start_xy, (0, 255, 255))  # GT start (yellow)
+                                if pred_end_xy is not None:
+                                    vis2 = _draw_dot(vis2, pred_end_xy, (0, 0, 255))  # Pred end (red)
+                                if end_true_xy is not None:
+                                    vis2 = _draw_dot(vis2, end_true_xy, (0, 255, 0))  # GT end (green)
+                                lines = [
+                                    f"GT: {gt_texts[bi] if bi < len(gt_texts) else ''}",
+                                    f"Pred: {pred_texts[bi] if bi < len(pred_texts) else ''}",
+                                ]
+                                vis2 = _draw_text_block(vis2, lines)
+                                to_log.append(wandb.Image(vis2))
+                            if to_log and jax.process_index() == 0:
+                                wandb.log({"val/annotated": to_log}, step=step)
+                                logged_images += len(to_log)
+                    except Exception as _e:
+                        # Avoid breaking validation on visualization errors
+                        pass
                 stacked_val = common_utils.stack_forest(val_infos)
                 reduced_val = jax.device_get(jax.tree.map(jnp.mean, stacked_val))
+                # Add movement L2 metric if any collected
+                if l2_cm_values:
+                    reduced_val = {**reduced_val, "val_movement_l2_cm": float(np.mean(l2_cm_values))}
                 val_info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_val.items())
                 val_pbar.write(f"Step {step} (val): {val_info_str}")
                 if jax.process_index() == 0:

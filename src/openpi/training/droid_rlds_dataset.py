@@ -349,6 +349,7 @@ class DroidCoTRldsDataset:
         vis_dataset = getattr(config, "vis_dataset", False)
         use_wrist_image = getattr(config, "use_wrist_image", False)
         apply_idle_filter = getattr(config, "apply_idle_filter", True)
+        drop_gripper_oob = getattr(config, "drop_gripper_oob", False)
 
         logging.info(
             f"validation_mode: {validation_mode}, val_fraction: {val_fraction}, vis_dataset: {vis_dataset}, \
@@ -468,7 +469,8 @@ class DroidCoTRldsDataset:
             cam2base_extrinsics = json.load(fp)
         with tf.io.gfile.GFile(f"{METADATA_PATH}/camera_serials.json", "r") as fp:
             camera_serials = json.load(fp)
-        if vis_dataset:
+        need_calib = bool(vis_dataset or drop_gripper_oob)
+        if need_calib:
             with tf.io.gfile.GFile(f"{METADATA_PATH}/intrinsics.json", "r") as fp:
                 intrinsics_json = json.load(fp)
             eid_to_intr_vec = {}
@@ -533,7 +535,7 @@ class DroidCoTRldsDataset:
         print_memory_usage("After building cam_table")
 
         # Camera intrinsics/extrinsics lookup tables (serialize tensors to tf.string to avoid shape issues)
-        if vis_dataset:
+        if need_calib:
             calib_eids = list(eid_to_cam_dict.keys())
             intr_ser = []
             extr_ser = []
@@ -777,7 +779,7 @@ class DroidCoTRldsDataset:
             episode_id_vec = tf.fill([traj_len], episode_id)
 
             # Deserialize intrinsics/extrinsics and broadcast across trajectory length
-            if vis_dataset:
+            if need_calib:
                 intr = tf.io.parse_tensor(intr_table.lookup(episode_id), out_type=tf.float32)  # [4]
                 extr = tf.reshape(
                     tf.io.parse_tensor(extr_table.lookup(episode_id), out_type=tf.float32), [4, 4]
@@ -808,7 +810,7 @@ class DroidCoTRldsDataset:
                 passes_filter = filter_table.lookup(step_id)
                 _return_dict["passes_filter"] = passes_filter
 
-            if vis_dataset:
+            if need_calib:
                 _return_dict["camera_intrinsics"] = intr_b  # [traj_len, 4]
                 _return_dict["camera_extrinsics"] = extr_b  # [traj_len, 4, 4]
             if use_wrist_image:
@@ -874,11 +876,13 @@ class DroidCoTRldsDataset:
                     grouped_wrist_images = tf.gather(traj["observation"]["wrist_image"], summation_indices)
                     traj["observation"]["wrist_image"] = grouped_wrist_images
 
-                # Group cartesian positions for start/end projection
+            # Group cartesian positions for start/end projection when needed
+            if vis_dataset or drop_gripper_oob:
                 grouped_cart = tf.gather(traj["observation"]["cartesian_position"], summation_indices)
                 traj["observation"]["cartesian_position_window"] = grouped_cart
 
-                # Also group broadcast calibration to align with the same windowed time dimension
+            # Also group broadcast calibration to align with the same windowed time dimension when needed
+            if vis_dataset or drop_gripper_oob:
                 # camera_intrinsics: [traj_len, 4] -> [traj_len, summation_steps, 4]
                 assert "camera_intrinsics" in traj, "camera_intrinsics not found in traj"
                 traj["camera_intrinsics"] = tf.gather(traj["camera_intrinsics"], summation_indices)
@@ -887,6 +891,54 @@ class DroidCoTRldsDataset:
                 idx = summation_indices
                 T = traj["camera_extrinsics"]
                 traj["camera_extrinsics"] = tf.gather(T, idx)
+
+            # Optional: compute in-view mask using calibration if requested
+            if drop_gripper_oob:
+                # Expect calibration present; if missing, mark as False to be safe
+                def _project_in_bounds(xyz, intr4, extr44):
+                    # xyz: [N,3], intr4: [N,4], extr44: [N,4,4]
+                    # Compute camera coordinates
+                    ones = tf.ones_like(xyz[..., :1])
+                    p_base = tf.concat([xyz, ones], axis=-1)  # [N,4]
+                    base_to_cam = tf.linalg.inv(extr44)
+                    p_cam = tf.einsum("nij,nj->ni", base_to_cam, p_base)
+                    z = p_cam[..., 2]
+                    fx = intr4[..., 0]
+                    fy = intr4[..., 1]
+                    cx = intr4[..., 2]
+                    cy = intr4[..., 3]
+                    valid = tf.logical_and(z > 1e-6, tf.logical_and(fx > 0.0, fy > 0.0))
+                    # Pixel at calibration resolution
+                    u = fx * (p_cam[..., 0] / z) + cx
+                    v = fy * (p_cam[..., 1] / z) + cy
+                    # Letterbox to 224x224 using same math as resize_with_pad
+                    Wt = tf.constant(224.0)
+                    Ht = tf.constant(224.0)
+                    Wc = tf.maximum(1.0, 2.0 * cx)
+                    Hc = tf.maximum(1.0, 2.0 * cy)
+                    ratio = tf.maximum(Wc / Wt, Hc / Ht)
+                    resized_w = Wc / ratio
+                    resized_h = Hc / ratio
+                    pad_w0 = (Wt - resized_w) / 2.0
+                    pad_h0 = (Ht - resized_h) / 2.0
+                    x = u * (resized_w / Wc) + pad_w0
+                    y = v * (resized_h / Hc) + pad_h0
+                    in_x = tf.logical_and(x >= 0.0, x <= (Wt - 1.0))
+                    in_y = tf.logical_and(y >= 0.0, y <= (Ht - 1.0))
+                    return tf.logical_and(valid, tf.logical_and(in_x, in_y))
+
+                # Use start and end positions per window
+                cart = traj["observation"]["cartesian_position_window"]  # [traj_len, summation_steps, 6]
+                start_xyz = cart[:, 0, :3]
+                end_xyz = cart[:, -1, :3]
+
+                intr = traj["camera_intrinsics"][:, 0, :]  # [traj_len, 4]
+                extr = traj["camera_extrinsics"][:, 0, :, :]  # [traj_len, 4,4]
+
+                start_ok = _project_in_bounds(start_xyz, intr, extr)
+                end_ok = _project_in_bounds(end_xyz, intr, extr)
+                keep_vec = tf.logical_and(start_ok, end_ok)  # [traj_len]
+                traj["gripper_in_view"] = keep_vec
 
             return traj
 
@@ -922,6 +974,20 @@ class DroidCoTRldsDataset:
                 return tf.reduce_any(tf.abs(traj["actions"][: action_chunk_size // 2]) > 1e-3)
 
             dataset = dataset.filter(filter_idle)
+
+        # Optional filter: drop samples where gripper projects out of the view
+        if drop_gripper_oob:
+
+            def _filter_in_view(frame):
+                return frame["gripper_in_view"]
+
+            dataset = dataset.filter(_filter_in_view)
+
+            def _remove_in_view(frame):
+                frame.pop("gripper_in_view")
+                return frame
+
+            dataset = dataset.map(_remove_in_view)
 
         # Decode images: RLDS saves encoded images, only decode now for efficiency
         def decode_images(traj):

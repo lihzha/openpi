@@ -158,6 +158,9 @@ class DroidCoTInputs(transforms.DataTransformFn):
     # The action dimension of the model. Will be used to pad state and actions.
     action_dim: int
     sum_decimal: str = "1f"
+    # Train-time dropout probs (set to 0.0 for val/inference)
+    wrist_image_dropout_prob: float = 0.0
+    text_state_dropout_prob: float = 0.0
 
     # Optional global stats for state; used to produce a compact, binned summary in the prompt.
     # Expect stats for the key "state" from normalization assets.
@@ -184,6 +187,11 @@ class DroidCoTInputs(transforms.DataTransformFn):
         else:
             wrist_image = np.zeros_like(base_image)
             wrist_image_mask = np.False_
+
+        # Optional dropout: randomly mask out wrist image
+        if self.wrist_image_dropout_prob > 0.0:
+            if np.random.rand() < float(self.wrist_image_dropout_prob):
+                wrist_image_mask = np.False_
 
         if self.model_type == _model.ModelType.PI0CoT:
             names = ("base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb")
@@ -244,7 +252,10 @@ class DroidCoTInputs(transforms.DataTransformFn):
                     highs = state + widths
 
                 binned = _bin_with_bounds(state, lows, highs, self.num_state_bins)
-                prompt_str = f"{prompt_str} Current robot state: [{','.join(map(str, binned.tolist()))}]"
+                tail = f" Current robot state: [{','.join(map(str, binned.tolist()))}]"
+                # Optional dropout: randomly drop the text-state tail from the prompt
+                if not (self.text_state_dropout_prob > 0.0 and np.random.rand() < float(self.text_state_dropout_prob)):
+                    prompt_str = f"{prompt_str}{tail}"
             inputs["prompt"] = prompt_str
 
         if "language_actions" in data:

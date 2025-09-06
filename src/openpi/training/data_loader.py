@@ -1,4 +1,5 @@
 from collections.abc import Iterator, Sequence
+import dataclasses
 import multiprocessing
 import os
 import typing
@@ -22,6 +23,7 @@ except:
 
 
 import openpi.models.model as _model
+import openpi.policies.droid_cot_policy as droid_cot_policy
 import openpi.training.config as _config
 from openpi.training.droid_rlds_dataset import DroidCoTRldsDataset
 from openpi.training.droid_rlds_dataset import DroidRldsDataset
@@ -289,6 +291,7 @@ def transform_iterable_dataset(
     *,
     skip_norm_stats: bool = False,
     is_batched: bool = False,
+    split: str | None = None,
 ) -> IterableDataset:
     """Transform the dataset by applying the data transforms."""
     norm_stats = {}
@@ -300,14 +303,37 @@ def transform_iterable_dataset(
             )
         norm_stats = data_config.norm_stats
 
+    # If caller passes split and config is RLDSDroidCoTDataConfig, force-disable dropout for non-train splits
+    transforms_inputs = [
+        *data_config.repack_transforms.inputs,
+        *data_config.data_transforms.inputs,
+        _transforms.Normalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
+        *data_config.model_transforms.inputs,
+    ]
+
+    if split is not None and hasattr(data_config, "wrist_image_dropout_prob"):
+        if split != "train":
+            # Create shallow copies of the final model transform if it's DroidCoTInputs to zero probs
+            new_inputs = []
+            for t in transforms_inputs:
+                try:
+                    if isinstance(t, droid_cot_policy.DroidCoTInputs):
+                        new_inputs.append(
+                            dataclasses.replace(
+                                t,
+                                wrist_image_dropout_prob=0.0,
+                                text_state_dropout_prob=0.0,
+                            )
+                        )
+                    else:
+                        new_inputs.append(t)
+                except Exception:
+                    new_inputs.append(t)
+            transforms_inputs = new_inputs
+
     return IterableTransformedDataset(
         dataset,
-        [
-            *data_config.repack_transforms.inputs,
-            *data_config.data_transforms.inputs,
-            _transforms.Normalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
-            *data_config.model_transforms.inputs,
-        ],
+        transforms_inputs,
         is_batched=is_batched,
     )
 
@@ -440,7 +466,13 @@ def create_rlds_data_loader(
         max_samples=(max_samples if max_samples is not None else getattr(data_config, "max_samples", None)),
         split=split,
     )
-    dataset = transform_iterable_dataset(dataset, data_config, skip_norm_stats=skip_norm_stats, is_batched=True)
+    dataset = transform_iterable_dataset(
+        dataset,
+        data_config,
+        skip_norm_stats=skip_norm_stats,
+        is_batched=True,
+        split=split,
+    )
 
     data_loader = RLDSDataLoader(
         dataset,

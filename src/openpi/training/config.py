@@ -128,6 +128,8 @@ class DataConfig:
     use_text_state: bool = True
     num_state_bins: int = 16
     apply_idle_filter: bool = True
+    # If true, will drop samples where projected gripper is outside the resized image bounds.
+    drop_gripper_oob: bool = False
 
 
 class GroupFactory(Protocol):
@@ -533,6 +535,11 @@ class RLDSDroidCoTDataConfig(DataConfigFactory):
     use_text_state: bool = False
     num_state_bins: int = 16
     apply_idle_filter: bool = True
+    # Train-time dropout (applied in DroidCoTInputs). Set nonzero only for training.
+    wrist_image_dropout_prob: float = 0.0
+    text_state_dropout_prob: float = 0.0
+    # Drop samples where gripper is out of view after projection to resized image
+    drop_gripper_oob: bool = True
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
@@ -570,6 +577,8 @@ class RLDSDroidCoTDataConfig(DataConfigFactory):
                     state_norm_stats=state_stats,
                     use_text_state=self.use_text_state,
                     num_state_bins=self.num_state_bins,
+                    wrist_image_dropout_prob=self.wrist_image_dropout_prob,
+                    text_state_dropout_prob=self.text_state_dropout_prob,
                 )
             ],
             outputs=[droid_cot_policy.DroidCoTOutputs()],
@@ -613,6 +622,7 @@ class RLDSDroidCoTDataConfig(DataConfigFactory):
             use_text_state=self.use_text_state,
             num_state_bins=self.num_state_bins,
             apply_idle_filter=self.apply_idle_filter,
+            drop_gripper_oob=self.drop_gripper_oob,
         )
 
 
