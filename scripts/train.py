@@ -130,8 +130,8 @@ def _decode_reasoning_strings(obs: _model.Observation, tokenizer) -> list[str]:
     """
     if obs.tokenized_prompt is None or obs.tokenized_reasoning_mask is None:
         return []
-    tokens = jax.device_get(obs.tokenized_prompt)
-    rmask = jax.device_get(obs.tokenized_reasoning_mask)
+    tokens = _to_local_array(obs.tokenized_prompt)
+    rmask = _to_local_array(obs.tokenized_reasoning_mask)
     out: list[str] = []
     for i in range(tokens.shape[0]):
         sel = tokens[i][rmask[i].astype(bool)]
@@ -206,6 +206,26 @@ def _draw_text_block(img: np.ndarray, lines: list[str]) -> np.ndarray:
         cv2.putText(out, line, (x0 + pad, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
         y += line_h
     return out
+
+
+def _to_local_array(x):
+    """Return a numpy array view of the process-local data for possibly-global jax.Array.
+
+    - If `x` is fully addressable on this process, jax.device_get works.
+    - If `x` spans processes, fall back to concatenating addressable_shards.
+    """
+    if x is None:
+        return None
+    try:
+        return jax.device_get(x)
+    except Exception:
+        try:
+            shards = getattr(x, "addressable_shards", None)
+            if shards:
+                return np.concatenate([np.asarray(s.data) for s in shards], axis=0)
+        except Exception:
+            pass
+        return np.asarray(x)
 
 
 def _invert_camera_axis_map(v_cm: np.ndarray) -> np.ndarray:
@@ -715,14 +735,14 @@ def main(config: _config.TrainConfig):
                     val_info = pval_step(train_rng, train_state, val_batch)
                     val_infos.append(val_info)
                     # Host-side visualization/metric (non-jitted)
-                    if tok is not None and logged_images < max_images_to_log:
+                    if tok is not None and logged_images < max_images_to_log and jax.process_index() == 0:
                         obs = val_batch[0]
                         # Decode ground-truth reasoning strings
                         gt_texts = _decode_reasoning_strings(obs, tok)
                         # Predict reasoning tokens and decode
                         # Jitted reasoning generation across mesh
                         id_buf, t_final = psample_reasoning(train_state, obs)
-                        ids = jax.device_get(id_buf)
+                        ids = _to_local_array(id_buf)
                         # Be robust to bounds: clamp final index
                         t_host = int(np.clip(int(jax.device_get(t_final)), 0, ids.shape[1] - 1))
                         B = ids.shape[0]
@@ -746,16 +766,16 @@ def main(config: _config.TrainConfig):
                         # Prepare annotated images for a subset
                         # Choose a camera to display
                         first_cam_key = next(iter(obs.images))
-                        imgs = jax.device_get(obs.images[first_cam_key])
+                        imgs = _to_local_array(obs.images[first_cam_key])
                         # Convert from [-1,1] to uint8
                         imgs_u8 = ((np.asarray(imgs) + 1.0) * 0.5 * 255.0).clip(0, 255).astype(np.uint8)
                         # Optional 3D->2D projection inputs
                         cart = getattr(obs, "cartesian_position_window", None)
                         intr_all = getattr(obs, "camera_intrinsics", None)
                         extr_all = getattr(obs, "camera_extrinsics", None)
-                        cart_np = jax.device_get(cart) if cart is not None else None
-                        intr_np = jax.device_get(intr_all) if intr_all is not None else None
-                        extr_np = jax.device_get(extr_all) if extr_all is not None else None
+                        cart_np = _to_local_array(cart) if cart is not None else None
+                        intr_np = _to_local_array(intr_all) if intr_all is not None else None
+                        extr_np = _to_local_array(extr_all) if extr_all is not None else None
                         to_log = []
                         for bi in range(min(B, max_images_to_log - logged_images)):
                             vis = imgs_u8[bi]
