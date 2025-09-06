@@ -121,8 +121,8 @@ class CoTPolicy(Policy):
             sample_kwargs=sample_kwargs,
             metadata=metadata,
         )
-        # self._sample_reasoning = nnx_utils.module_jit(model.sample_reasoning)
-        self._sample_reasoning = model.sample_reasoning
+        self._sample_reasoning = nnx_utils.module_jit(model.sample_reasoning)
+        # self._sample_reasoning = model.sample_reasoning
 
     @override
     def infer_reasoning(self, obs: dict) -> dict:  # type: ignore[misc]

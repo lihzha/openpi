@@ -1,4 +1,0 @@
-bs1024 cannot run on 8 v4 chips
-bs512 can run on 8 v4 chips
-bs1024 can run on 16 v4 chips
-bs2048 can run on 32 v6 chips / 32 v4 chips
