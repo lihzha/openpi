@@ -128,8 +128,10 @@ class DataConfig:
     use_text_state: bool = True
     num_state_bins: int = 16
     apply_idle_filter: bool = True
+    wrist_image_dropout_prob: float = 0.0
+    text_state_dropout_prob: float = 0.0
     # If true, will drop samples where projected gripper is outside the resized image bounds.
-    drop_gripper_oob: bool = False
+    drop_gripper_oob: bool = True
 
 
 class GroupFactory(Protocol):
@@ -623,6 +625,8 @@ class RLDSDroidCoTDataConfig(DataConfigFactory):
             num_state_bins=self.num_state_bins,
             apply_idle_filter=self.apply_idle_filter,
             drop_gripper_oob=self.drop_gripper_oob,
+            wrist_image_dropout_prob=self.wrist_image_dropout_prob,
+            text_state_dropout_prob=self.text_state_dropout_prob,
         )
 
 
