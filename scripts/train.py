@@ -767,7 +767,6 @@ def main(config: _config.TrainConfig):
                         # Replicate observation across devices to satisfy jitted in_shardings(None)
                         obs_local = jax.device_put(subsampled_batch[0], replicated_sharding)
                         id_buf, t_final = psample_reasoning(train_state, obs_local)
-                        breakpoint()
                         if jax.process_index() == 0:
                             # Decode ground-truth reasoning strings
                             gt_texts = _decode_reasoning_strings(subsampled_batch[0], tok)
