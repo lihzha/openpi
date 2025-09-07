@@ -560,6 +560,24 @@ def val_step(
     return {"val_loss": loss}
 
 
+def subsample_batch(
+    batch: tuple[_model.Observation, _model.Actions],
+    rng: jax.Array,
+    k: int,
+) -> tuple[_model.Observation, _model.Actions]:
+    obs, acts = batch
+    batch_size = obs.state.shape[0]
+    # Draw indices once, keep obs & acts aligned
+    idx = jax.random.choice(rng, batch_size, shape=(k,), replace=False)
+
+    def take0(x):
+        return jnp.take(x, idx, axis=0)
+
+    obs_k = jax.tree.map(take0, obs)
+    acts_k = jax.tree.map(take0, acts)
+    return obs_k, acts_k
+
+
 def main(config: _config.TrainConfig):
     if (
         ("v6" in config.name and config.fsdp_devices > 8)
@@ -669,16 +687,7 @@ def main(config: _config.TrainConfig):
             max_samples=getattr(config.data, "val_max_samples", None),
         )
         # Try to obtain the tokenizer from the transform pipeline for decoding
-        tok = None
-        try:
-            # RLDS path
-            tok = val_loader._data_loader._dataset._transform.transforms[-1].tokenizer  # type: ignore[attr-defined]
-        except Exception:
-            try:
-                # Torch path
-                tok = data_loader._data_loader._dataset._transform.transforms[-1].tokenizer  # type: ignore[attr-defined]
-            except Exception:
-                tok = None
+        tok = data_loader._data_loader._dataset._transform.transforms[-1].tokenizer  # type: ignore[attr-defined]
         pval_step = jax.jit(
             functools.partial(val_step, config),
             in_shardings=(replicated_sharding, train_state_sharding, data_sharding),
@@ -738,116 +747,118 @@ def main(config: _config.TrainConfig):
                 dynamic_ncols=True,
                 disable=(jax.process_index() != 0),
             )
+            # random a number between 0 and num_val_batches
+            img_log_step_idx = np.random.randint(0, num_val_batches)
+            num_images_to_log = 64
             with sharding.set_mesh(mesh):
                 val_infos = []
                 # Collect L2 distances (in cm) between parsed vectors from GT and predicted texts
                 l2_cm_values: list[float] = []
-                # Limit number of annotated images per validation run
-                logged_images = 0
-                max_images_to_log = 8
                 # Recreate a fresh iterator to ensure the same fixed validation subset each time.
                 val_iter = iter(val_loader)
-                for _ in val_pbar:
+                for val_step_idx in val_pbar:
                     val_batch = next(val_iter)
                     val_info = pval_step(train_rng, train_state, val_batch)
                     val_infos.append(val_info)
-                #     # Always run reasoning sampling across all processes; restrict decoding/logging to process 0.
-                #     obs = val_batch[0]
-                #     if tok is not None and logged_images < max_images_to_log:
-                #         id_buf, t_final = psample_reasoning(train_state, obs)
-                #     # Host-side visualization/metric (non-jitted)
-                #     if tok is not None and logged_images < max_images_to_log and jax.process_index() == 0:
-                #         # Decode ground-truth reasoning strings
-                #         gt_texts = _decode_reasoning_strings(obs, tok)
-                #         # Decode sampled reasoning tokens
-                #         ids = _to_local_array(id_buf)
-                #         # Be robust to bounds: clamp final index
-                #         t_host = int(np.clip(_to_local_scalar(t_final), 0, ids.shape[1] - 1))
-                #         B = ids.shape[0]
-                #         pred_texts: list[str] = []
-                #         for bi in range(B):
-                #             seq = ids[bi, : t_host + 1, 0].astype(np.int32)
-                #             try:
-                #                 pred_texts.append(tok.decode(seq))
-                #             except Exception:
-                #                 pred_texts.append("")
 
-                #         # Compute L2 metric over parsed movement vectors (in cm)
-                #         for bi in range(min(B, 64)):
-                #             gt_vec = _parse_language_delta_cm(gt_texts[bi] if bi < len(gt_texts) else "")
-                #             pred_vec = _parse_language_delta_cm(pred_texts[bi] if bi < len(pred_texts) else "")
-                #             if gt_vec is None or pred_vec is None:
-                #                 continue
-                #             l2_cm = float(np.linalg.norm(gt_vec - pred_vec))
-                #             l2_cm_values.append(l2_cm)
+                    if val_step_idx == img_log_step_idx:
+                        # Always run reasoning sampling across all processes; restrict decoding/logging to process 0.
+                        subsampled_batch = subsample_batch(val_batch, train_rng, num_images_to_log)
+                        id_buf, t_final = psample_reasoning(train_state, subsampled_batch[0])
+                        if jax.process_index() == 0:
+                            # Decode ground-truth reasoning strings
+                            gt_texts = _decode_reasoning_strings(subsampled_batch[0], tok)
+                            # Decode sampled reasoning tokens
+                            ids = _to_local_array(id_buf)
+                            # Be robust to bounds: clamp final index
+                            t_host = int(np.clip(_to_local_scalar(t_final), 0, ids.shape[1] - 1))
+                            pred_texts: list[str] = []
+                            for bi in range(num_images_to_log):
+                                seq = ids[bi, : t_host + 1, 0].astype(np.int32)
+                                try:
+                                    pred_texts.append(tok.decode(seq))
+                                except Exception:
+                                    pred_texts.append("")
 
-                #         # Prepare annotated images for a subset
-                #         # Choose a camera to display
-                #         first_cam_key = next(iter(obs.images))
-                #         imgs = _to_local_array(obs.images[first_cam_key])
-                #         # Convert from [-1,1] to uint8
-                #         imgs_u8 = ((np.asarray(imgs) + 1.0) * 0.5 * 255.0).clip(0, 255).astype(np.uint8)
-                #         # Optional 3D->2D projection inputs
-                #         cart = getattr(obs, "cartesian_position_window", None)
-                #         intr_all = getattr(obs, "camera_intrinsics", None)
-                #         extr_all = getattr(obs, "camera_extrinsics", None)
-                #         cart_np = _to_local_array(cart) if cart is not None else None
-                #         intr_np = _to_local_array(intr_all) if intr_all is not None else None
-                #         extr_np = _to_local_array(extr_all) if extr_all is not None else None
-                #         to_log = []
-                #         for bi in range(min(B, max_images_to_log - logged_images)):
-                #             vis = imgs_u8[bi]
-                #             H, W = vis.shape[:2]
-                #             start_xyz = end_xyz = None
-                #             intr = extr = None
-                #             if cart_np is not None and cart_np.shape[1] >= 1:
-                #                 # [T,6]
-                #                 seq = np.asarray(cart_np[bi])
-                #                 if seq.ndim == 2 and seq.shape[-1] >= 3:
-                #                     start_xyz = seq[0, :3]
-                #                     end_xyz = seq[-1, :3]
-                #             if intr_np is not None:
-                #                 ci = np.asarray(intr_np[bi])
-                #                 intr = ci[0] if ci.ndim == 2 else ci
-                #             if extr_np is not None:
-                #                 ce = np.asarray(extr_np[bi])
-                #                 extr = ce[0] if ce.ndim == 3 else ce
-                #             # Project GT start/end if available
-                #             start_xy = _project_point(start_xyz, extr, intr, (H, W)) if start_xyz is not None else None
-                #             end_true_xy = _project_point(end_xyz, extr, intr, (H, W)) if end_xyz is not None else None
-                #             # Predicted end via language delta
-                #             pred_end_xy = None
-                #             v_cm = _parse_language_delta_cm(pred_texts[bi] if bi < len(pred_texts) else "")
-                #             if v_cm is not None and extr is not None and start_xyz is not None:
-                #                 t_cam = _invert_camera_axis_map(v_cm)
-                #                 R_cb = extr[:3, :3]
-                #                 t_base = R_cb @ t_cam
-                #                 pred_xyz = start_xyz + t_base
-                #                 pred_end_xy = _project_point(pred_xyz, extr, intr, (H, W))
-                #             # Draw dots
-                #             vis2 = vis
-                #             if start_xy is not None:
-                #                 vis2 = _draw_dot(vis2, start_xy, (0, 255, 255))  # GT start (yellow)
-                #             if pred_end_xy is not None:
-                #                 vis2 = _draw_dot(vis2, pred_end_xy, (0, 0, 255))  # Pred end (red)
-                #             if end_true_xy is not None:
-                #                 vis2 = _draw_dot(vis2, end_true_xy, (0, 255, 0))  # GT end (green)
-                #             lines = [
-                #                 f"GT: {gt_texts[bi] if bi < len(gt_texts) else ''}",
-                #                 f"Pred: {pred_texts[bi] if bi < len(pred_texts) else ''}",
-                #             ]
-                #             vis2 = _draw_text_block(vis2, lines)
-                #             to_log.append(wandb.Image(vis2))
-                #         if to_log and jax.process_index() == 0:
-                #             wandb.log({"val/annotated": to_log}, step=step)
-                #             logged_images += len(to_log)
+                            # Compute L2 metric over parsed movement vectors (in cm)
+                            for bi in range(num_images_to_log):
+                                gt_vec = _parse_language_delta_cm(gt_texts[bi] if bi < len(gt_texts) else "")
+                                pred_vec = _parse_language_delta_cm(pred_texts[bi] if bi < len(pred_texts) else "")
+                                if gt_vec is None or pred_vec is None:
+                                    continue
+                                l2_cm = float(np.linalg.norm(gt_vec - pred_vec))
+                                l2_cm_values.append(l2_cm)
+
+                            # Prepare annotated images for a subset
+                            # Choose a camera to display
+                            first_cam_key = next(iter(subsampled_batch[0].images))
+                            imgs = _to_local_array(subsampled_batch[0].images[first_cam_key])
+                            # Convert from [-1,1] to uint8
+                            imgs_u8 = ((np.asarray(imgs) + 1.0) * 0.5 * 255.0).clip(0, 255).astype(np.uint8)
+                            # Optional 3D->2D projection inputs
+                            cart = getattr(subsampled_batch[0], "cartesian_position_window", None)
+                            intr_all = getattr(subsampled_batch[0], "camera_intrinsics", None)
+                            extr_all = getattr(subsampled_batch[0], "camera_extrinsics", None)
+                            cart_np = _to_local_array(cart) if cart is not None else None
+                            intr_np = _to_local_array(intr_all) if intr_all is not None else None
+                            extr_np = _to_local_array(extr_all) if extr_all is not None else None
+                            to_log = []
+                            for bi in range(num_images_to_log):
+                                vis = imgs_u8[bi]
+                                H, W = vis.shape[:2]
+                                start_xyz = end_xyz = None
+                                intr = extr = None
+                                if cart_np is not None and cart_np.shape[1] >= 1:
+                                    # [T,6]
+                                    seq = np.asarray(cart_np[bi])
+                                    if seq.ndim == 2 and seq.shape[-1] >= 3:
+                                        start_xyz = seq[0, :3]
+                                        end_xyz = seq[-1, :3]
+                                if intr_np is not None:
+                                    ci = np.asarray(intr_np[bi])
+                                    intr = ci[0] if ci.ndim == 2 else ci
+                                if extr_np is not None:
+                                    ce = np.asarray(extr_np[bi])
+                                    extr = ce[0] if ce.ndim == 3 else ce
+                                # Project GT start/end if available
+                                start_xy = (
+                                    _project_point(start_xyz, extr, intr, (H, W)) if start_xyz is not None else None
+                                )
+                                end_true_xy = (
+                                    _project_point(end_xyz, extr, intr, (H, W)) if end_xyz is not None else None
+                                )
+                                # Predicted end via language delta
+                                pred_end_xy = None
+                                v_cm = _parse_language_delta_cm(pred_texts[bi] if bi < len(pred_texts) else "")
+                                if v_cm is not None and extr is not None and start_xyz is not None:
+                                    t_cam = _invert_camera_axis_map(v_cm)
+                                    R_cb = extr[:3, :3]
+                                    t_base = R_cb @ t_cam
+                                    pred_xyz = start_xyz + t_base
+                                    pred_end_xy = _project_point(pred_xyz, extr, intr, (H, W))
+                                # Draw dots
+                                vis2 = vis
+                                if start_xy is not None:
+                                    vis2 = _draw_dot(vis2, start_xy, (0, 255, 255))  # GT start (yellow)
+                                if pred_end_xy is not None:
+                                    vis2 = _draw_dot(vis2, pred_end_xy, (0, 0, 255))  # Pred end (red)
+                                if end_true_xy is not None:
+                                    vis2 = _draw_dot(vis2, end_true_xy, (0, 255, 0))  # GT end (green)
+                                lines = [
+                                    f"GT: {gt_texts[bi] if bi < len(gt_texts) else ''}",
+                                    f"Pred: {pred_texts[bi] if bi < len(pred_texts) else ''}",
+                                ]
+                                vis2 = _draw_text_block(vis2, lines)
+                                to_log.append(wandb.Image(vis2))
+                            if to_log and jax.process_index() == 0:
+                                wandb.log({"val/annotated": to_log}, step=step)
                 stacked_val = common_utils.stack_forest(val_infos)
                 reduced_val = jax.device_get(jax.tree.map(jnp.mean, stacked_val))
-                # # Add movement L2 metric if any collected
-                # if l2_cm_values:
-                #     reduced_val = {**reduced_val, "val_movement_l2_cm": float(np.mean(l2_cm_values))}
-                # val_info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_val.items())
-                # val_pbar.write(f"Step {step} (val): {val_info_str}")
+                # Add movement L2 metric if any collected
+                if l2_cm_values:
+                    reduced_val = {**reduced_val, "val_movement_l2_cm": float(np.mean(l2_cm_values))}
+                val_info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_val.items())
+                val_pbar.write(f"Step {step} (val): {val_info_str}")
                 if jax.process_index() == 0:
                     wandb.log(reduced_val, step=step)
 

@@ -407,6 +407,8 @@ class Pi0CoT(_model.BaseModel):
         curr_h = hs[:, -1:, :]
         curr_id = jnp.argmax(self.PaliGemma.llm(curr_h, method="decode"), axis=-1)  # (B,1)
         curr_h = self.PaliGemma.llm(curr_id, method="embed")
+        # Track which sequences have finished (emitted EOS) and keep them finished
+        finished = curr_id == self.EOS_ID
 
         # ───────────────── 3. Static KV cache aligned to tail ─────────────────
         nl, _, _, k, h = kv0[0].shape
@@ -424,7 +426,7 @@ class Pi0CoT(_model.BaseModel):
 
         # ───────────────── 5. Body / Cond (only t_abs changes) ─────────────────
         def step(carry):
-            (curr_h, curr_id, k_cache, v_cache, p_mask, p_ar_mask, h_buf, id_buf, _t) = carry
+            (curr_h, curr_id, finished, k_cache, v_cache, p_mask, p_ar_mask, h_buf, id_buf, _t) = carry
 
             # Sliding window: shift caches and masks left by 1 to free the last slot
             k_cache = jnp.concatenate([k_cache[:, :, 1:], jnp.zeros_like(k_cache[:, :, :1])], axis=2)
@@ -451,8 +453,14 @@ class Pi0CoT(_model.BaseModel):
 
             # Decode → id for next step
             logits = self.PaliGemma.llm(next_h, method="decode")
-            next_id = jnp.argmax(logits, axis=-1)
+            next_id_raw = jnp.argmax(logits, axis=-1)
+            # Update finished mask and force EOS for finished sequences
+            finished = jnp.logical_or(finished, next_id_raw == self.EOS_ID)
+            eos_token = jnp.asarray(self.EOS_ID, dtype=next_id_raw.dtype)
+            next_id = jnp.where(finished, eos_token, next_id_raw)
             next_h = self.PaliGemma.llm(next_id, method="embed")  # (batch, 1, D)
+            # Keep hidden state stable for finished sequences
+            next_h = jnp.where(finished[..., None], curr_h, next_h)
 
             # Write new KV into the last real slot and mark it as real (keep scratch True)
             k_cache = k_cache.at[:, :, -1].set(kv_new[0][:, :, -1])
@@ -464,17 +472,19 @@ class Pi0CoT(_model.BaseModel):
             h_buf = h_buf.at[:, _t].set(next_h.squeeze(1))
             id_buf = id_buf.at[:, _t].set(next_id)
 
-            return (next_h, next_id, k_cache, v_cache, p_mask, p_ar_mask, h_buf, id_buf, _t)
+            return (next_h, next_id, finished, k_cache, v_cache, p_mask, p_ar_mask, h_buf, id_buf, _t)
 
         def cond(carry):
-            _, curr_id, *_, t = carry
-            unfinished = jnp.any(curr_id != self.EOS_ID)
+            _, _, finished, *_, t = carry
+            unfinished = jnp.any(jnp.logical_not(finished))
             return jnp.logical_and(unfinished, t < gen_len - 1)
 
         # ───────────────── 5. While-loop ─────────────────
 
-        carry = (curr_h, curr_id, k_cache, v_cache, p_mask, p_ar_mask, h_buf, id_buf, t0)
-        curr_h, curr_id, k_cache, v_cache, p_mask, p_ar_mask, h_buf, id_buf, t = jax.lax.while_loop(cond, step, carry)
+        carry = (curr_h, curr_id, finished, k_cache, v_cache, p_mask, p_ar_mask, h_buf, id_buf, t0)
+        curr_h, curr_id, finished, k_cache, v_cache, p_mask, p_ar_mask, h_buf, id_buf, t = jax.lax.while_loop(
+            cond, step, carry
+        )
 
         return p_mask, p_ar_mask, h_buf, id_buf, t, k_cache, v_cache
 
