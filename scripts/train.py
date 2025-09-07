@@ -748,8 +748,8 @@ def main(config: _config.TrainConfig):
                 dynamic_ncols=True,
                 disable=(jax.process_index() != 0),
             )
-            # random a number between 0 and num_val_batches
-            img_log_step_idx = np.random.randint(0, num_val_batches)
+            # Use a deterministic logging step across all processes to avoid divergence
+            img_log_step_idx = 0
             num_images_to_log = 64
             with sharding.set_mesh(mesh):
                 val_infos = []
@@ -764,7 +764,9 @@ def main(config: _config.TrainConfig):
 
                     if val_step_idx == img_log_step_idx:
                         # Always run reasoning sampling across all processes; restrict decoding/logging to process 0.
-                        subsampled_batch = subsample_batch(val_batch, train_rng, num_images_to_log)
+                        # Bound to local batch size to avoid indexing errors
+                        k_local = int(min(num_images_to_log, val_batch[0].state.shape[0]))
+                        subsampled_batch = subsample_batch(val_batch, train_rng, k_local)
                         # Replicate observation across devices to satisfy jitted in_shardings(None)
                         obs_local = jax.device_put(subsampled_batch[0], replicated_sharding)
                         id_buf, t_final = psample_reasoning(train_state, obs_local)
@@ -776,7 +778,7 @@ def main(config: _config.TrainConfig):
                             # Be robust to bounds: clamp final index
                             t_host = int(np.clip(_to_local_scalar(t_final), 0, ids.shape[1] - 1))
                             pred_texts: list[str] = []
-                            for bi in range(num_images_to_log):
+                            for bi in range(k_local):
                                 seq = ids[bi, : t_host + 1, 0].astype(np.int32)
                                 try:
                                     pred_texts.append(tok.decode(seq))
@@ -784,7 +786,7 @@ def main(config: _config.TrainConfig):
                                     pred_texts.append("")
 
                             # Compute L2 metric over parsed movement vectors (in cm)
-                            for bi in range(num_images_to_log):
+                            for bi in range(k_local):
                                 gt_vec = _parse_language_delta_cm(gt_texts[bi] if bi < len(gt_texts) else "")
                                 pred_vec = _parse_language_delta_cm(pred_texts[bi] if bi < len(pred_texts) else "")
                                 if gt_vec is None or pred_vec is None:
@@ -806,7 +808,7 @@ def main(config: _config.TrainConfig):
                             intr_np = _to_local_array(intr_all) if intr_all is not None else None
                             extr_np = _to_local_array(extr_all) if extr_all is not None else None
                             to_log = []
-                            for bi in range(num_images_to_log):
+                            for bi in range(k_local):
                                 vis = imgs_u8[bi]
                                 H, W = vis.shape[:2]
                                 start_xyz = end_xyz = None
