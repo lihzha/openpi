@@ -209,23 +209,40 @@ def _draw_text_block(img: np.ndarray, lines: list[str]) -> np.ndarray:
 
 
 def _to_local_array(x):
-    """Return a numpy array view of the process-local data for possibly-global jax.Array.
+    """Return a numpy view of the process-local portion of a possibly-global jax.Array.
 
-    - If `x` is fully addressable on this process, jax.device_get works.
-    - If `x` spans processes, fall back to concatenating addressable_shards.
+    Avoids jax.device_get on non-addressable arrays by using addressable_shards.
+    Assumes leading axis is batch when concatenating shards.
     """
     if x is None:
         return None
     try:
-        return jax.device_get(x)
+        shards = getattr(x, "addressable_shards", None)
+        if shards is not None and len(shards) > 0:
+            # Scalar case: pick first shard
+            arr0 = np.asarray(shards[0].data)
+            if arr0.ndim == 0:
+                return arr0
+            return np.concatenate([np.asarray(s.data) for s in shards], axis=0)
     except Exception:
-        try:
-            shards = getattr(x, "addressable_shards", None)
-            if shards:
-                return np.concatenate([np.asarray(s.data) for s in shards], axis=0)
-        except Exception:
-            pass
+        pass
+    try:
         return np.asarray(x)
+    except Exception:
+        return x
+
+
+def _to_local_scalar(x) -> int:
+    """Extract a Python scalar from a possibly-global jax.Array, process-local only."""
+    if x is None:
+        return 0
+    try:
+        shards = getattr(x, "addressable_shards", None)
+        if shards is not None and len(shards) > 0:
+            return int(np.asarray(shards[0].data).item())
+    except Exception:
+        pass
+    return int(np.asarray(x).item())
 
 
 def _invert_camera_axis_map(v_cm: np.ndarray) -> np.ndarray:
@@ -734,17 +751,18 @@ def main(config: _config.TrainConfig):
                     val_batch = next(val_iter)
                     val_info = pval_step(train_rng, train_state, val_batch)
                     val_infos.append(val_info)
+                    # Always run reasoning sampling across all processes; restrict decoding/logging to process 0.
+                    obs = val_batch[0]
+                    if tok is not None and logged_images < max_images_to_log:
+                        id_buf, t_final = psample_reasoning(train_state, obs)
                     # Host-side visualization/metric (non-jitted)
                     if tok is not None and logged_images < max_images_to_log and jax.process_index() == 0:
-                        obs = val_batch[0]
                         # Decode ground-truth reasoning strings
                         gt_texts = _decode_reasoning_strings(obs, tok)
-                        # Predict reasoning tokens and decode
-                        # Jitted reasoning generation across mesh
-                        id_buf, t_final = psample_reasoning(train_state, obs)
+                        # Decode sampled reasoning tokens
                         ids = _to_local_array(id_buf)
                         # Be robust to bounds: clamp final index
-                        t_host = int(np.clip(int(jax.device_get(t_final)), 0, ids.shape[1] - 1))
+                        t_host = int(np.clip(_to_local_scalar(t_final), 0, ids.shape[1] - 1))
                         B = ids.shape[0]
                         pred_texts: list[str] = []
                         for bi in range(B):
