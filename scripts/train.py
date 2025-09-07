@@ -150,8 +150,6 @@ def _parse_language_delta_cm(text: str) -> np.ndarray | None:
     Recognized directions: left/right, forward/backward, up/down. Units: mm, cm, m.
     Returns None if no valid movements found.
     """
-    if text is None:
-        return None
     totals = {"left": 0.0, "right": 0.0, "forward": 0.0, "backward": 0.0, "up": 0.0, "down": 0.0}
     any_valid = False
     for part in filter(None, [p.strip() for p in text.split(" and ")]):
@@ -748,8 +746,7 @@ def main(config: _config.TrainConfig):
                 dynamic_ncols=True,
                 disable=(jax.process_index() != 0),
             )
-            # Use a deterministic logging step across all processes to avoid divergence
-            img_log_step_idx = 0
+            img_log_step_idx = np.random.randint(0, num_val_batches)
             num_images_to_log = 64
             with sharding.set_mesh(mesh):
                 val_infos = []
@@ -773,85 +770,69 @@ def main(config: _config.TrainConfig):
                         if jax.process_index() == 0:
                             # Decode ground-truth reasoning strings
                             gt_texts = _decode_reasoning_strings(subsampled_batch[0], tok)
+                            logging.info(f"GT texts: {gt_texts}")
                             # Decode sampled reasoning tokens
                             ids = _to_local_array(id_buf)
                             # Be robust to bounds: clamp final index
                             t_host = int(np.clip(_to_local_scalar(t_final), 0, ids.shape[1] - 1))
+                            # Prepare images now to compute consistent local count
+                            first_cam_key = next(iter(subsampled_batch[0].images))
+                            imgs = _to_local_array(subsampled_batch[0].images[first_cam_key])
+                            imgs_u8 = ((np.asarray(imgs) + 1.0) * 0.5 * 255.0).clip(0, 255).astype(np.uint8)
+                            # Derive safe local loop bound across all sources
+                            k_decode = int(min(k_local, ids.shape[0], imgs_u8.shape[0], len(gt_texts)))
                             pred_texts: list[str] = []
-                            for bi in range(k_local):
+                            for bi in range(k_decode):
                                 seq = ids[bi, : t_host + 1, 0].astype(np.int32)
-                                try:
-                                    pred_texts.append(tok.decode(seq))
-                                except Exception:
-                                    pred_texts.append("")
+                                pred_texts.append(tok.decode(seq))
 
                             # Compute L2 metric over parsed movement vectors (in cm)
-                            for bi in range(k_local):
-                                gt_vec = _parse_language_delta_cm(gt_texts[bi] if bi < len(gt_texts) else "")
-                                pred_vec = _parse_language_delta_cm(pred_texts[bi] if bi < len(pred_texts) else "")
-                                if gt_vec is None or pred_vec is None:
-                                    continue
+                            for bi in range(k_decode):
+                                gt_vec = _parse_language_delta_cm(gt_texts[bi])
+                                pred_vec = _parse_language_delta_cm(pred_texts[bi])
                                 l2_cm = float(np.linalg.norm(gt_vec - pred_vec))
                                 l2_cm_values.append(l2_cm)
 
                             # Prepare annotated images for a subset
                             # Choose a camera to display
-                            first_cam_key = next(iter(subsampled_batch[0].images))
-                            imgs = _to_local_array(subsampled_batch[0].images[first_cam_key])
-                            # Convert from [-1,1] to uint8
-                            imgs_u8 = ((np.asarray(imgs) + 1.0) * 0.5 * 255.0).clip(0, 255).astype(np.uint8)
                             # Optional 3D->2D projection inputs
-                            cart = getattr(subsampled_batch[0], "cartesian_position_window", None)
-                            intr_all = getattr(subsampled_batch[0], "camera_intrinsics", None)
-                            extr_all = getattr(subsampled_batch[0], "camera_extrinsics", None)
-                            cart_np = _to_local_array(cart) if cart is not None else None
-                            intr_np = _to_local_array(intr_all) if intr_all is not None else None
-                            extr_np = _to_local_array(extr_all) if extr_all is not None else None
+                            cart = subsampled_batch[0].cartesian_position_window
+                            intr_all = subsampled_batch[0].camera_intrinsics
+                            extr_all = subsampled_batch[0].camera_extrinsics
+                            cart_np = _to_local_array(cart)
+                            intr_np = _to_local_array(intr_all)
+                            extr_np = _to_local_array(extr_all)
                             to_log = []
-                            for bi in range(k_local):
+                            for bi in range(k_decode):
                                 vis = imgs_u8[bi]
                                 H, W = vis.shape[:2]
-                                start_xyz = end_xyz = None
-                                intr = extr = None
-                                if cart_np is not None and cart_np.shape[1] >= 1:
+                                if cart_np.shape[1] >= 1:
                                     # [T,6]
                                     seq = np.asarray(cart_np[bi])
                                     if seq.ndim == 2 and seq.shape[-1] >= 3:
                                         start_xyz = seq[0, :3]
                                         end_xyz = seq[-1, :3]
-                                if intr_np is not None:
-                                    ci = np.asarray(intr_np[bi])
-                                    intr = ci[0] if ci.ndim == 2 else ci
-                                if extr_np is not None:
-                                    ce = np.asarray(extr_np[bi])
-                                    extr = ce[0] if ce.ndim == 3 else ce
-                                # Project GT start/end if available
-                                start_xy = (
-                                    _project_point(start_xyz, extr, intr, (H, W)) if start_xyz is not None else None
-                                )
-                                end_true_xy = (
-                                    _project_point(end_xyz, extr, intr, (H, W)) if end_xyz is not None else None
-                                )
+                                ci = np.asarray(intr_np[bi])
+                                intr = ci[0] if ci.ndim == 2 else ci
+                                ce = np.asarray(extr_np[bi])
+                                extr = ce[0] if ce.ndim == 3 else ce
+                                start_xy = _project_point(start_xyz, extr, intr, (H, W))
+                                end_true_xy = _project_point(end_xyz, extr, intr, (H, W))
                                 # Predicted end via language delta
-                                pred_end_xy = None
-                                v_cm = _parse_language_delta_cm(pred_texts[bi] if bi < len(pred_texts) else "")
-                                if v_cm is not None and extr is not None and start_xyz is not None:
-                                    t_cam = _invert_camera_axis_map(v_cm)
-                                    R_cb = extr[:3, :3]
-                                    t_base = R_cb @ t_cam
-                                    pred_xyz = start_xyz + t_base
-                                    pred_end_xy = _project_point(pred_xyz, extr, intr, (H, W))
+                                v_cm = _parse_language_delta_cm(pred_texts[bi])
+                                t_cam = _invert_camera_axis_map(v_cm)
+                                R_cb = extr[:3, :3]
+                                t_base = R_cb @ t_cam
+                                pred_xyz = start_xyz + t_base
+                                pred_end_xy = _project_point(pred_xyz, extr, intr, (H, W))
                                 # Draw dots
                                 vis2 = vis
-                                if start_xy is not None:
-                                    vis2 = _draw_dot(vis2, start_xy, (0, 255, 255))  # GT start (yellow)
-                                if pred_end_xy is not None:
-                                    vis2 = _draw_dot(vis2, pred_end_xy, (0, 0, 255))  # Pred end (red)
-                                if end_true_xy is not None:
-                                    vis2 = _draw_dot(vis2, end_true_xy, (0, 255, 0))  # GT end (green)
+                                vis2 = _draw_dot(vis2, start_xy, (0, 255, 255))  # GT start (yellow)
+                                vis2 = _draw_dot(vis2, pred_end_xy, (0, 0, 255))  # Pred end (red)
+                                vis2 = _draw_dot(vis2, end_true_xy, (0, 255, 0))  # GT end (green)
                                 lines = [
-                                    f"GT: {gt_texts[bi] if bi < len(gt_texts) else ''}",
-                                    f"Pred: {pred_texts[bi] if bi < len(pred_texts) else ''}",
+                                    f"GT: {gt_texts[bi]}",
+                                    f"Pred: {pred_texts[bi]}",
                                 ]
                                 vis2 = _draw_text_block(vis2, lines)
                                 to_log.append(wandb.Image(vis2))
