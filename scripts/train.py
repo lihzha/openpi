@@ -701,8 +701,9 @@ def main(config: _config.TrainConfig):
 
         psample_reasoning = jax.jit(
             _sample_reasoning_ids_t,
-            in_shardings=(train_state_sharding, data_sharding),
-            out_shardings=(data_sharding, replicated_sharding),
+            # Allow observation to have any sharding (e.g., replicated after subsampling)
+            in_shardings=(train_state_sharding, None),
+            out_shardings=(None, replicated_sharding),
         )
         # Determine how many validation batches to evaluate each time.
         # If a fixed validation subset size is configured, compute batches from it;
@@ -764,7 +765,9 @@ def main(config: _config.TrainConfig):
                     if val_step_idx == img_log_step_idx:
                         # Always run reasoning sampling across all processes; restrict decoding/logging to process 0.
                         subsampled_batch = subsample_batch(val_batch, train_rng, num_images_to_log)
-                        id_buf, t_final = psample_reasoning(train_state, subsampled_batch[0])
+                        # Replicate observation across devices to satisfy jitted in_shardings(None)
+                        obs_local = jax.device_put(subsampled_batch[0], replicated_sharding)
+                        id_buf, t_final = psample_reasoning(train_state, obs_local)
                         if jax.process_index() == 0:
                             # Decode ground-truth reasoning strings
                             gt_texts = _decode_reasoning_strings(subsampled_batch[0], tok)
