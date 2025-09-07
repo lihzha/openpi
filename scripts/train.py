@@ -769,6 +769,7 @@ def main(config: _config.TrainConfig):
                         id_buf, t_final = psample_reasoning(train_state, obs_local)
                         if jax.process_index() == 0:
                             # Decode ground-truth reasoning strings
+                            breakpoint()
                             gt_texts = _decode_reasoning_strings(subsampled_batch[0], tok)
                             logging.info(f"GT texts: {gt_texts}")
                             # Decode sampled reasoning tokens
