@@ -352,10 +352,10 @@ class DroidCoTRldsDataset:
         drop_gripper_oob = getattr(config, "drop_gripper_oob", False)
 
         logging.info(
-            f"validation_mode: {validation_mode}, val_fraction: {val_fraction}, vis_dataset: {vis_dataset}, \
-                use_wrist_image: {use_wrist_image}, summation_steps: {summation_steps}, max_samples: {max_samples}, \
-                    sum_decimal: {config.sum_decimal}, left_pad: {config.left_pad}, include_decimal_point: {config.include_decimal_point}, \
-                        batch_size: {batch_size}"
+            f"validation_mode: {validation_mode}, val_fraction: {val_fraction}, vis_dataset: {vis_dataset}, use_wrist_image: {use_wrist_image}, summation_steps: {summation_steps}, max_samples: {max_samples}, sum_decimal: {config.sum_decimal}, left_pad: {config.left_pad}, include_decimal_point: {config.include_decimal_point}, batch_size: {batch_size}",
+        )
+        logging.info(
+            f"apply_idle_filter: {apply_idle_filter}, drop_gripper_oob: {drop_gripper_oob}, repo_id: {config.repo_id}"
         )
 
         # ------------------------------------------------------------------
@@ -397,7 +397,7 @@ class DroidCoTRldsDataset:
         if num_parallel_calls == -1:
             num_parallel_calls = tf.data.AUTOTUNE
 
-        builder = tfds.builder("droid", data_dir=data_dir)
+        builder = tfds.builder(config.repo_id, data_dir=data_dir)
         dataset = dl.DLataset.from_rlds(
             builder,
             split="train",

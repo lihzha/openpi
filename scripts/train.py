@@ -827,22 +827,18 @@ def main(config: _config.TrainConfig):
             in_shardings=(replicated_sharding, train_state_sharding, data_sharding),
         )
 
-        # Conditionally enable reasoning sampling if the model supports it
-        _model_instance = nnx.merge(train_state.model_def, train_state.params)
-        do_reasoning_sampling = hasattr(_model_instance, "sample_reasoning")
-        if do_reasoning_sampling:
-            # Jitted reasoning sampler returning only (id_buf, t)
-            def _sample_reasoning_ids_t(state: training_utils.TrainState, observation: _model.Observation):
-                model_local = nnx.merge(state.model_def, state.params)
-                id_buf, t, *_ = model_local.sample_reasoning(observation)
-                return id_buf, t
+        # Jitted reasoning sampler returning only (id_buf, t)
+        def _sample_reasoning_ids_t(state: training_utils.TrainState, observation: _model.Observation):
+            model_local = nnx.merge(state.model_def, state.params)
+            id_buf, t, *_ = model_local.sample_reasoning(observation)
+            return id_buf, t
 
-            psample_reasoning = jax.jit(
-                _sample_reasoning_ids_t,
-                # Expect observation replicated; return replicated outputs for consistent host access
-                in_shardings=(train_state_sharding, replicated_sharding),
-                out_shardings=(replicated_sharding, replicated_sharding),
-            )
+        psample_reasoning = jax.jit(
+            _sample_reasoning_ids_t,
+            # Expect observation replicated; return replicated outputs for consistent host access
+            in_shardings=(train_state_sharding, replicated_sharding),
+            out_shardings=(replicated_sharding, replicated_sharding),
+        )
         # Determine how many validation batches to evaluate each time.
         # If a fixed validation subset size is configured, compute batches from it;
         # otherwise fall back to a heuristic constant divided by global batch size.
@@ -900,7 +896,7 @@ def main(config: _config.TrainConfig):
                     val_info = pval_step(train_rng, train_state, val_batch)
                     val_infos.append(val_info)
 
-                    if do_reasoning_sampling and val_step_idx == img_log_step_idx:
+                    if val_step_idx == img_log_step_idx:
                         # Always run reasoning sampling across all processes; restrict decoding/logging to process 0.
                         # Bound to local batch size to avoid indexing errors
                         k_local = int(min(num_images_to_log, val_batch[0].state.shape[0]))
