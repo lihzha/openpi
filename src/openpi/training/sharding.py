@@ -16,14 +16,12 @@ class _MeshState:
 
 
 def make_mesh(fsdp_devices: int) -> jax.sharding.Mesh:
-    P = jax.process_count()        # number of hosts
-    D = jax.local_device_count()   # devices per host
-    N = jax.device_count()         # total devices (P * D)
+    P = jax.process_count()  # number of hosts
+    D = jax.local_device_count()  # devices per host
+    N = jax.device_count()  # total devices (P * D)
 
     if N % fsdp_devices != 0:
-        raise ValueError(
-            f"Total devices {N} must be divisible by fsdp_devices {fsdp_devices}."
-        )
+        raise ValueError(f"Total devices {N} must be divisible by fsdp_devices {fsdp_devices}.")
 
     # Host-major device layout: shape [P, D] with each row = one host's devices.
     # This has no "data/model" meaning by itself; it's just a physical arrangement.
@@ -32,9 +30,7 @@ def make_mesh(fsdp_devices: int) -> jax.sharding.Mesh:
     if fsdp_devices <= D:
         # Intra-host FSDP: split each host's devices into [dp_per_host, fsdp_devices]
         if D % fsdp_devices != 0:
-            raise ValueError(
-                f"local_device_count {D} not divisible by fsdp_devices {fsdp_devices}"
-            )
+            raise ValueError(f"local_device_count {D} not divisible by fsdp_devices {fsdp_devices}")
         dp_per_host = D // fsdp_devices
         # Final mesh: collapse hosts and dp_per_host into one DATA axis; FSDP axis is local.
         # Shape: (P * dp_per_host, fsdp_devices)
@@ -51,11 +47,10 @@ def make_mesh(fsdp_devices: int) -> jax.sharding.Mesh:
         fsdp_hosts = fsdp_devices // D
         if P % fsdp_hosts != 0:
             raise ValueError(
-                f"process_count {P} must be divisible by fsdp_hosts {fsdp_hosts} "
-                f"(= fsdp_devices/local_device_count)."
+                f"process_count {P} must be divisible by fsdp_hosts {fsdp_hosts} (= fsdp_devices/local_device_count)."
             )
         dp_groups = P // fsdp_hosts
-        
+
         # Special case: when fsdp_devices equals total devices, we want pure FSDP
         # with no data parallelism across hosts
         if fsdp_devices == N:
