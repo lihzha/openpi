@@ -397,7 +397,8 @@ class DroidCoTRldsDataset:
         if num_parallel_calls == -1:
             num_parallel_calls = tf.data.AUTOTUNE
 
-        builder = tfds.builder(config.repo_id, data_dir=data_dir)
+        # builder = tfds.builder(config.repo_id, data_dir=data_dir)
+        builder = tfds.builder_from_directory(builder_dir=f"{data_dir}/{config.repo_id}/1.0.1")
         dataset = dl.DLataset.from_rlds(
             builder,
             split="train",
