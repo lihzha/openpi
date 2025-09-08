@@ -931,6 +931,8 @@ def main(config: _config.TrainConfig):
 
                             # Compute L2 metric over parsed movement vectors (in cm)
                             for bi in range(k_decode):
+                                logging.info(f"GT text: {gt_texts[bi]}")
+                                logging.info(f"Pred text: {pred_texts[bi]}")
                                 gt_vec = _parse_language_delta_cm(gt_texts[bi])
                                 pred_vec = _parse_language_delta_cm(pred_texts[bi])
                                 l2_cm = float(np.linalg.norm(gt_vec - pred_vec))
