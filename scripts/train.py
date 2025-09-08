@@ -128,8 +128,6 @@ def _decode_reasoning_strings(obs: _model.Observation, tokenizer) -> list[str]:
 
     Returns one decoded string per example. If reasoning fields are absent, returns [].
     """
-    if obs.tokenized_prompt is None or obs.tokenized_reasoning_mask is None:
-        return []
     tokens = _to_local_array(obs.tokenized_prompt)
     rmask = _to_local_array(obs.tokenized_reasoning_mask)
     out: list[str] = []
@@ -310,6 +308,148 @@ def _draw_dot(img_u8: np.ndarray, xy: tuple[int, int] | None, color: tuple[int, 
             if (yy - y) ** 2 + (xx - x) ** 2 <= rr * rr:
                 out[yy, xx] = color
     return out
+
+
+def _draw_line(
+    img_u8: np.ndarray, xy0: tuple[int, int] | None, xy1: tuple[int, int] | None, color: tuple[int, int, int]
+) -> np.ndarray:
+    """Draw a simple line between two points. Uses OpenCV if available, otherwise a fallback.
+
+    Args:
+        img_u8: Image array uint8 [H,W,3]
+        xy0: Start point (x, y) or None
+        xy1: End point (x, y) or None
+        color: BGR color tuple
+    """
+    out = img_u8.copy()
+    if xy0 is None or xy1 is None:
+        return out
+    try:
+        import cv2
+
+        cv2.line(out, xy0, xy1, color=color, thickness=2, lineType=cv2.LINE_AA)
+        return out
+    except Exception:
+        pass
+
+    # Fallback: simple DDA interpolation
+    x0, y0 = xy0
+    x1, y1 = xy1
+    H, W = out.shape[:2]
+    dx = x1 - x0
+    dy = y1 - y0
+    steps = int(max(abs(dx), abs(dy)))
+    if steps <= 0:
+        if 0 <= y0 < H and 0 <= x0 < W:
+            out[y0, x0] = color
+        return out
+    for i in range(steps + 1):
+        t = i / steps
+        x = int(round(x0 + t * dx))
+        y = int(round(y0 + t * dy))
+        if 0 <= y < H and 0 <= x < W:
+            out[y, x] = color
+    return out
+
+
+def prepare_eval_batch(batch):
+    # Process the batch to remove reasoning and update masks
+    obs, actions = batch
+
+    # Find position 108 (start of reasoning) in each batch item
+    batch_size = obs.tokenized_prompt.shape[0]
+    new_tokenized_prompts = []
+    new_tokenized_prompt_masks = []
+    new_tokenized_reasoning_masks = []
+
+    for i in range(batch_size):
+        prompt_tokens = obs.tokenized_prompt[i]
+
+        # Find position of token 108 (start of reasoning)
+        # Ensure prompt_tokens is int32 for the comparison
+        prompt_tokens_int32 = prompt_tokens.astype(jnp.int32)
+        pos_108 = jnp.where(prompt_tokens_int32 == 108, size=1, fill_value=-1)[0]
+
+        # Log tensor types for debugging
+        logging.info(
+            f"Batch {i}: prompt_tokens dtype: {prompt_tokens.dtype}, prompt_tokens_int32 dtype: {prompt_tokens_int32.dtype}, pos_108: {pos_108}"
+        )
+
+        if pos_108[0] >= 0:
+            # Remove everything after token 108 (inclusive)
+            prompt_without_reasoning = prompt_tokens[: pos_108[0] + 1]
+            original_length = prompt_tokens.shape[0]
+
+            # Left pad to maintain the same length
+            padding_length = original_length - prompt_without_reasoning.shape[0]
+            # Ensure consistent dtype for concatenation
+            padding_zeros = jnp.zeros(padding_length, dtype=prompt_tokens.dtype)
+            prompt_without_reasoning = prompt_without_reasoning.astype(prompt_tokens.dtype)
+            padded_prompt = jnp.concatenate([padding_zeros, prompt_without_reasoning])
+
+            # Create new mask: True for non-zero tokens, False for padding
+            new_mask = (padded_prompt != 0).astype(jnp.bool_)
+
+            # Create reasoning mask: all False - ensure consistent dtype
+            reasoning_mask = jnp.zeros(original_length, dtype=jnp.bool_)
+
+            # Log the processing for debugging
+            logging.info(
+                f"Batch {i}: Removed reasoning after position {pos_108[0]}, original length: {original_length}, new length: {prompt_without_reasoning.shape[0]}"
+            )
+        else:
+            # No token 108 found, keep original
+            padded_prompt = prompt_tokens
+            # Ensure consistent dtype for the mask
+            if obs.tokenized_prompt_mask is not None:
+                new_mask = obs.tokenized_prompt_mask[i].astype(jnp.bool_)
+            else:
+                # Create a boolean mask of the same length as prompt_tokens
+                new_mask = jnp.ones(prompt_tokens.shape[0], dtype=jnp.bool_)
+            # Create reasoning mask with consistent dtype - use original length instead of zeros_like
+            reasoning_mask = jnp.zeros(prompt_tokens.shape[0], dtype=jnp.bool_)
+
+            logging.info(f"Batch {i}: No token 108 found, keeping original prompt")
+
+        # Log mask types for debugging
+        logging.info(f"Batch {i}: new_mask dtype: {new_mask.dtype}, reasoning_mask dtype: {reasoning_mask.dtype}")
+
+        new_tokenized_prompts.append(padded_prompt)
+        new_tokenized_prompt_masks.append(new_mask)
+        new_tokenized_reasoning_masks.append(reasoning_mask)
+
+    # Ensure all tensors have consistent types before stacking
+    # All masks should be boolean, all prompts should be int32
+    new_tokenized_prompts = [p.astype(jnp.int32) for p in new_tokenized_prompts]
+    new_tokenized_prompt_masks = [m.astype(jnp.bool_) for m in new_tokenized_prompt_masks]
+    new_tokenized_reasoning_masks = [r.astype(jnp.bool_) for r in new_tokenized_reasoning_masks]
+
+    # Stack the processed tensors
+    new_tokenized_prompt = jnp.stack(new_tokenized_prompts)
+    new_tokenized_prompt_mask = jnp.stack(new_tokenized_prompt_masks)
+    new_tokenized_reasoning_mask = jnp.stack(new_tokenized_reasoning_masks)
+
+    # Log tensor types for debugging
+    logging.info(
+        f"Stacked tensor types - prompt: {new_tokenized_prompt.dtype}, prompt_mask: {new_tokenized_prompt_mask.dtype}, reasoning_mask: {new_tokenized_reasoning_mask.dtype}"
+    )
+
+    # Create new observation with modified prompts and masks
+    new_obs = _model.Observation(
+        images=obs.images,
+        image_masks=obs.image_masks,
+        state=obs.state,
+        tokenized_prompt=new_tokenized_prompt,
+        tokenized_prompt_mask=new_tokenized_prompt_mask,
+        tokenized_reasoning_mask=new_tokenized_reasoning_mask,
+        token_ar_mask=obs.token_ar_mask,
+        token_loss_mask=obs.token_loss_mask,
+        example_mask=obs.example_mask,
+    )
+
+    # Create new batch with modified observation
+    new_batch = (new_obs, actions)
+    return new_batch
 
 
 def log_param_sharding_planned(state_sharding):
@@ -560,13 +700,9 @@ def val_step(
 
 def subsample_batch(
     batch: tuple[_model.Observation, _model.Actions],
-    rng: jax.Array,
-    k: int,
+    idx: jax.Array,
 ) -> tuple[_model.Observation, _model.Actions]:
     obs, acts = batch
-    batch_size = obs.state.shape[0]
-    # Draw indices once, keep obs & acts aligned
-    idx = jax.random.choice(rng, batch_size, shape=(k,), replace=False)
 
     def take0(x):
         return jnp.take(x, idx, axis=0)
@@ -691,18 +827,22 @@ def main(config: _config.TrainConfig):
             in_shardings=(replicated_sharding, train_state_sharding, data_sharding),
         )
 
-        # Jitted reasoning sampler returning only (id_buf, t)
-        def _sample_reasoning_ids_t(state: training_utils.TrainState, observation: _model.Observation):
-            model_local = nnx.merge(state.model_def, state.params)
-            id_buf, t, *_ = model_local.sample_reasoning(observation)
-            return id_buf, t
+        # Conditionally enable reasoning sampling if the model supports it
+        _model_instance = nnx.merge(train_state.model_def, train_state.params)
+        do_reasoning_sampling = hasattr(_model_instance, "sample_reasoning")
+        if do_reasoning_sampling:
+            # Jitted reasoning sampler returning only (id_buf, t)
+            def _sample_reasoning_ids_t(state: training_utils.TrainState, observation: _model.Observation):
+                model_local = nnx.merge(state.model_def, state.params)
+                id_buf, t, *_ = model_local.sample_reasoning(observation)
+                return id_buf, t
 
-        psample_reasoning = jax.jit(
-            _sample_reasoning_ids_t,
-            # Allow observation to have any sharding (e.g., replicated after subsampling)
-            in_shardings=(train_state_sharding, None),
-            out_shardings=(None, replicated_sharding),
-        )
+            psample_reasoning = jax.jit(
+                _sample_reasoning_ids_t,
+                # Expect observation replicated; return replicated outputs for consistent host access
+                in_shardings=(train_state_sharding, replicated_sharding),
+                out_shardings=(replicated_sharding, replicated_sharding),
+            )
         # Determine how many validation batches to evaluate each time.
         # If a fixed validation subset size is configured, compute batches from it;
         # otherwise fall back to a heuristic constant divided by global batch size.
@@ -746,7 +886,8 @@ def main(config: _config.TrainConfig):
                 dynamic_ncols=True,
                 disable=(jax.process_index() != 0),
             )
-            img_log_step_idx = np.random.randint(0, num_val_batches)
+            # img_log_step_idx = np.random.randint(0, num_val_batches)
+            img_log_step_idx = 0
             num_images_to_log = 64
             with sharding.set_mesh(mesh):
                 val_infos = []
@@ -759,25 +900,27 @@ def main(config: _config.TrainConfig):
                     val_info = pval_step(train_rng, train_state, val_batch)
                     val_infos.append(val_info)
 
-                    if val_step_idx == img_log_step_idx:
+                    if do_reasoning_sampling and val_step_idx == img_log_step_idx:
                         # Always run reasoning sampling across all processes; restrict decoding/logging to process 0.
                         # Bound to local batch size to avoid indexing errors
                         k_local = int(min(num_images_to_log, val_batch[0].state.shape[0]))
-                        subsampled_batch = subsample_batch(val_batch, train_rng, k_local)
-                        # Replicate observation across devices to satisfy jitted in_shardings(None)
-                        obs_local = jax.device_put(subsampled_batch[0], replicated_sharding)
+                        eval_batch = prepare_eval_batch(val_batch)
+                        eval_idx = jax.random.choice(rng, eval_batch[0].state.shape[0], shape=(k_local,), replace=False)
+                        eval_batch = subsample_batch(eval_batch, eval_idx)
+                        gt_batch = subsample_batch(val_batch, eval_idx)
+                        # Ensure observation for sampling is replicated across devices
+                        obs_local = jax.device_put(eval_batch[0], replicated_sharding)
                         id_buf, t_final = psample_reasoning(train_state, obs_local)
                         if jax.process_index() == 0:
-                            # Decode ground-truth reasoning strings
-                            gt_texts = _decode_reasoning_strings(subsampled_batch[0], tok)
+                            gt_texts = _decode_reasoning_strings(gt_batch[0], tok)
                             logging.info(f"GT texts: {gt_texts}")
                             # Decode sampled reasoning tokens
                             ids = _to_local_array(id_buf)
                             # Be robust to bounds: clamp final index
                             t_host = int(np.clip(_to_local_scalar(t_final), 0, ids.shape[1] - 1))
                             # Prepare images now to compute consistent local count
-                            first_cam_key = next(iter(subsampled_batch[0].images))
-                            imgs = _to_local_array(subsampled_batch[0].images[first_cam_key])
+                            first_cam_key = next(iter(gt_batch[0].images))
+                            imgs = _to_local_array(gt_batch[0].images[first_cam_key])
                             imgs_u8 = ((np.asarray(imgs) + 1.0) * 0.5 * 255.0).clip(0, 255).astype(np.uint8)
                             # Derive safe local loop bound across all sources
                             k_decode = int(min(k_local, ids.shape[0], imgs_u8.shape[0], len(gt_texts)))
@@ -796,9 +939,9 @@ def main(config: _config.TrainConfig):
                             # Prepare annotated images for a subset
                             # Choose a camera to display
                             # Optional 3D->2D projection inputs
-                            cart = subsampled_batch[0].cartesian_position_window
-                            intr_all = subsampled_batch[0].camera_intrinsics
-                            extr_all = subsampled_batch[0].camera_extrinsics
+                            cart = gt_batch[0].cartesian_position_window
+                            intr_all = gt_batch[0].camera_intrinsics
+                            extr_all = gt_batch[0].camera_extrinsics
                             cart_np = _to_local_array(cart)
                             intr_np = _to_local_array(intr_all)
                             extr_np = _to_local_array(extr_all)
@@ -830,11 +973,9 @@ def main(config: _config.TrainConfig):
                                 vis2 = _draw_dot(vis2, start_xy, (0, 255, 255))  # GT start (yellow)
                                 vis2 = _draw_dot(vis2, pred_end_xy, (0, 0, 255))  # Pred end (red)
                                 vis2 = _draw_dot(vis2, end_true_xy, (0, 255, 0))  # GT end (green)
-                                lines = [
-                                    f"GT: {gt_texts[bi]}",
-                                    f"Pred: {pred_texts[bi]}",
-                                ]
-                                vis2 = _draw_text_block(vis2, lines)
+                                # TODO: draw a line between the start and end points
+                                vis2 = _draw_line(vis2, start_xy, end_true_xy, (0, 255, 0))
+                                vis2 = _draw_line(vis2, start_xy, pred_end_xy, (0, 0, 255))
                                 to_log.append(wandb.Image(vis2))
                             if to_log and jax.process_index() == 0:
                                 wandb.log({"val/annotated": to_log}, step=step)
