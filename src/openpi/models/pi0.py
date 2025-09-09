@@ -141,8 +141,9 @@ class Pi0(_model.BaseModel):
             if "history_" in name:
                 # Group by camera type prefix for histories
                 if name.startswith("base_history_"):
+                    raise ValueError("Base history is not supported for Pi0")
                     key = "base_history"
-                elif name.startswith("left_wrist_history_"):
+                if name.startswith("left_wrist_history_"):
                     key = "left_wrist_history"
                 elif name.startswith("right_wrist_history_"):
                     key = "right_wrist_history"

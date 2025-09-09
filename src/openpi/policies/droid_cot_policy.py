@@ -208,9 +208,13 @@ class DroidCoTInputs(transforms.DataTransformFn):
                 wrist_image_mask = np.False_
 
         if self.model_type == _model.ModelType.PI0CoT or self.model_type == _model.ModelType.PI0:
-            names_list: list[str] = ["base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb"]
-            images_list: list[np.ndarray] = [base_image, wrist_image, np.zeros_like(base_image)]
-            image_masks_list: list[np.bool_] = [base_image_mask, wrist_image_mask, np.False_]
+            # names_list: list[str] = ["base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb"]
+            # images_list: list[np.ndarray] = [base_image, wrist_image, np.zeros_like(base_image)]
+            # image_masks_list: list[np.bool_] = [base_image_mask, wrist_image_mask, np.False_]
+            assert wrist_image is not None
+            names_list: list[str] = ["left_wrist_0_rgb"]
+            images_list: list[np.ndarray] = [wrist_image]
+            image_masks_list: list[np.bool_] = [wrist_image_mask]
 
             # History images (optional)
             if self.use_history:
@@ -250,13 +254,13 @@ class DroidCoTInputs(transforms.DataTransformFn):
                     image_masks_list.append(wrist_hist_mask)
 
                 # Base history (optional if provided)
-                base_hist = data.get("observation/exterior_image_1_left_history")
-                if base_hist is not None:
-                    base_hist_seq = _maybe_get_history("observation/exterior_image_1_left_history", base_image)
-                    for idx, img in enumerate(base_hist_seq, start=1):
-                        names_list.append(f"base_history_{idx}_rgb")
-                        images_list.append(img)
-                        image_masks_list.append(base_image_mask)
+                # base_hist = data.get("observation/exterior_image_1_left_history")
+                # if base_hist is not None:
+                #     base_hist_seq = _maybe_get_history("observation/exterior_image_1_left_history", base_image)
+                #     for idx, img in enumerate(base_hist_seq, start=1):
+                #         names_list.append(f"base_history_{idx}_rgb")
+                #         images_list.append(img)
+                #         image_masks_list.append(base_image_mask)
 
             names = tuple(names_list)
             images = tuple(images_list)
