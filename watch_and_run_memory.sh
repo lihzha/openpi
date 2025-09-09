@@ -325,9 +325,8 @@ while true; do
         echo 'export WANDB_API_KEY=9d133998a3d44bf5dd2d827a5d8e2710dc91a19b' >> ~/.zshrc && \
         echo 'export OPENPI_DATA_HOME=\"$TPU_BUCKET/cache\"' >> ~/.zshrc && \
         source ~/.zshrc && \
+        git clone --branch memory https://github.com/lihzha/openpi.git || true && \
         cd openpi && \
-        git fetch origin memory && \
-        git checkout memory && \
         GIT_LFS_SKIP_SMUDGE=1 uv sync && \
         GIT_LFS_SKIP_SMUDGE=1 uv pip install -e ."; then
       echo "$(ts) - Setup failed/SSH timed out. Back to state check."
@@ -338,7 +337,7 @@ while true; do
     if ! safe_v6_tmux "source ~/.zshrc && cd openpi && \
             git pull origin memory && \
             XLA_PYTHON_CLIENT_MEM_FRACTION=0.95 \
-            uv run --group rlds scripts/train.py pi0_droid_cot_v6 $EXTRA_ARGS_STR \
+            uv run --group rlds scripts/train.py pi0_droid_memory_v6 $EXTRA_ARGS_STR \
     "; then
       echo "$(ts) - Launch failed/SSH timed out. Back to state check."
       sleep_backoff "$SLEEP_SECS"; continue

@@ -207,7 +207,7 @@ class DroidCoTInputs(transforms.DataTransformFn):
             if np.random.rand() < float(self.wrist_image_dropout_prob):
                 wrist_image_mask = np.False_
 
-        if self.model_type == _model.ModelType.PI0CoT:
+        if self.model_type == _model.ModelType.PI0CoT or self.model_type == _model.ModelType.PI0:
             names_list: list[str] = ["base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb"]
             images_list: list[np.ndarray] = [base_image, wrist_image, np.zeros_like(base_image)]
             image_masks_list: list[np.bool_] = [base_image_mask, wrist_image_mask, np.False_]

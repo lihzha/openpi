@@ -214,8 +214,29 @@ class CoTModelTransformFactory(GroupFactory):
                         )
                     ],
                 )
-            case _:
-                raise ValueError(f"Unsupported model type: {model_config.model_type}")
+            case _model.ModelType.PI0:
+                return _transforms.Group(
+                    inputs=[
+                        _transforms.InjectDefaultPrompt(self.default_prompt),
+                        _transforms.ResizeImages(224, 224),
+                        _transforms.TokenizePromptAndReasoning(
+                            _tokenizer.PaligemmaTokenizer(
+                                model_config.max_token_len,
+                                left_pad=self.left_pad,
+                                include_decimal_point=self.include_decimal_point,
+                            )
+                        ),
+                    ],
+                    outputs=[
+                        _transforms.DetokenizeReasoning(
+                            _tokenizer.PaligemmaTokenizer(
+                                model_config.max_token_len,
+                                left_pad=self.left_pad,
+                                include_decimal_point=self.include_decimal_point,
+                            )
+                        )
+                    ],
+                )
 
 
 @dataclasses.dataclass(frozen=True)
