@@ -326,3 +326,6 @@ class Pi0(_model.BaseModel):
 
         x_0, _ = jax.lax.while_loop(cond, step, (noise, 1.0))
         return x_0
+
+    def sample_reasoning(self, observation: _model.Observation) -> _model.Actions:
+        raise NotImplementedError("Reasoning sampling not implemented for Pi0")
