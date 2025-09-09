@@ -954,7 +954,8 @@ class DroidCoTRldsDataset:
         dataset = dataset.traj_map(group_language_actions, num_parallel_calls)
 
         def group_history(traj):
-            traj_len = tf.shape(traj["step_actions"])[0]
+            # Use observation length to define history window length
+            traj_len = tf.shape(traj["observation"]["image"])[0]
             # Build indices of the form [t - (H-1) ... t], clipped to [0, traj_len-1]
             base = tf.range(traj_len)[:, None] - (history_steps - 1)
             idx = base + tf.range(history_steps)[None, :]
@@ -974,8 +975,7 @@ class DroidCoTRldsDataset:
             )
             traj["observation"]["gripper_position_history"] = tf.gather(traj["observation"]["gripper_position"], idx)
 
-            # Actions history (per-step actions)
-            traj["action_history"] = tf.gather(traj["step_actions"], idx)
+            # Note: we do not require per-step action history for current use cases
 
             # Optionally align calibration with window for OOB projection
             if need_calib:
@@ -1027,8 +1027,7 @@ class DroidCoTRldsDataset:
                 keep_vec = tf.logical_and(start_ok, end_ok)
                 traj["gripper_in_view"] = keep_vec
 
-            # Remove helper
-            traj.pop("step_actions")
+            # No temporary keys to remove here
             return traj
 
         if config.use_history:
