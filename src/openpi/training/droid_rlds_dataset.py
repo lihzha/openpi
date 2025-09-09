@@ -1082,6 +1082,9 @@ class DroidCoTRldsDataset:
             def _decode_single(img_bytes):
                 return tf.io.decode_image(img_bytes, expand_animations=False, dtype=tf.uint8)
 
+            def _decode_seq(img_bytes_seq):
+                return tf.map_fn(_decode_single, img_bytes_seq, fn_output_signature=tf.uint8)
+
             if vis_dataset:
                 traj["observation"]["image"] = tf.map_fn(
                     _decode_single,
@@ -1094,10 +1097,28 @@ class DroidCoTRldsDataset:
                         traj["observation"]["wrist_image"],
                         fn_output_signature=tf.uint8,
                     )
+                # Decode histories if present
+                if "image_history" in traj["observation"]:
+                    traj["observation"]["image_history"] = tf.map_fn(
+                        _decode_seq,
+                        traj["observation"]["image_history"],
+                        fn_output_signature=tf.uint8,
+                    )
+                if use_wrist_image and ("wrist_image_history" in traj["observation"]):
+                    traj["observation"]["wrist_image_history"] = tf.map_fn(
+                        _decode_seq,
+                        traj["observation"]["wrist_image_history"],
+                        fn_output_signature=tf.uint8,
+                    )
             else:
                 traj["observation"]["image"] = _decode_single(traj["observation"]["image"])
                 if use_wrist_image:
                     traj["observation"]["wrist_image"] = _decode_single(traj["observation"]["wrist_image"])
+                # Decode histories if present
+                if "image_history" in traj["observation"]:
+                    traj["observation"]["image_history"] = _decode_seq(traj["observation"]["image_history"])
+                if use_wrist_image and ("wrist_image_history" in traj["observation"]):
+                    traj["observation"]["wrist_image_history"] = _decode_seq(traj["observation"]["wrist_image_history"])
             return traj
 
         # Only shuffle during training; validation should be deterministic and cheaper
