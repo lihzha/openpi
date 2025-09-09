@@ -14,6 +14,7 @@ import tensorflow as tf  # new
 
 # Environment variable to control cache directory path, ~/.cache/openpi will be used by default.
 _OPENPI_DATA_HOME = "OPENPI_DATA_HOME"
+DEFAULT_CACHE_DIR = "~/.cache/openpi"
 
 logger = logging.getLogger(__name__)
 

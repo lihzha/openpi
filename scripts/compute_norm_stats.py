@@ -27,6 +27,7 @@ def create_torch_dataloader(
     action_horizon: int,
     batch_size: int,
     model_config: _model.BaseModelConfig,
+    num_workers: int,
     max_frames: int | None = None,
 ) -> tuple[_data_loader.Dataset, int]:
     if data_config.repo_id is None:
@@ -50,7 +51,7 @@ def create_torch_dataloader(
     data_loader = _data_loader.TorchDataLoader(
         dataset,
         local_batch_size=batch_size,
-        num_workers=8,
+        num_workers=num_workers,
         shuffle=shuffle,
         num_batches=num_batches,
     )
@@ -77,6 +78,7 @@ def create_rlds_dataloader(
     if max_frames is not None and max_frames < len(dataset):
         num_batches = max_frames // batch_size
     else:
+        # NOTE: this length is currently hard-coded for DROID.
         num_batches = len(dataset) // batch_size
     data_loader = _data_loader.RLDSDataLoader(
         dataset,
@@ -99,7 +101,7 @@ def main(config_name: str, max_frames: int | None = None):
         )
     else:
         data_loader, num_batches = create_torch_dataloader(
-            data_config, config.model.action_horizon, config.batch_size, config.model, max_frames
+            data_config, config.model.action_horizon, config.batch_size, config.model, config.num_workers, max_frames
         )
 
     keys = ["state", "actions"]
@@ -107,8 +109,7 @@ def main(config_name: str, max_frames: int | None = None):
 
     for batch in tqdm.tqdm(data_loader, total=num_batches, desc="Computing stats"):
         for key in keys:
-            values = np.asarray(batch[key][0])
-            stats[key].update(values.reshape(-1, values.shape[-1]))
+            stats[key].update(np.asarray(batch[key]))
 
     norm_stats = {key: stats.get_statistics() for key, stats in stats.items()}
 
