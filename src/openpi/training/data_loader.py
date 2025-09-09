@@ -238,7 +238,7 @@ def create_rlds_dataset(
     # Use per-host batching to avoid duplicative slicing work in the loader
     # and reduce memory pressure when running multi-process (e.g., multi-host TPU).
     local_batch_size = max(1, batch_size // jax.process_count())
-    if data_config.cot:
+    if data_config.cot or data_config.use_memory:
         return DroidCoTRldsDataset(
             data_dir=data_config.rlds_data_dir,
             language_action_dir=data_config.language_action_dir,

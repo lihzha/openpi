@@ -7,15 +7,16 @@ import flax.nnx.bridge as nnx_bridge
 import jax
 import jax.numpy as jnp
 from typing_extensions import override
-from openpi.models.helpers import make_attn_mask, posemb_sincos
+
 from openpi.models import model as _model
 import openpi.models.gemma as _gemma
+from openpi.models.helpers import make_attn_mask
+from openpi.models.helpers import posemb_sincos
 import openpi.models.siglip as _siglip
 from openpi.shared import array_typing as at
 import openpi.shared.nnx_utils as nnx_utils
 
 logger = logging.getLogger("openpi")
-
 
 
 @dataclasses.dataclass(frozen=True)
@@ -132,10 +133,30 @@ class Pi0(_model.BaseModel):
         input_mask = []
         ar_mask = []
         tokens = []
-        # embed images
-        for name in obs.images:
-            image_tokens, _ = self.PaliGemma.img(obs.images[name], train=False)
+        # Separate normal and history image keys
+        normal_image_keys: list[str] = []
+        history_groups: dict[str, list[str]] = {}
 
+        for name in obs.images:
+            if "history_" in name:
+                # Group by camera type prefix for histories
+                if name.startswith("base_history_"):
+                    key = "base_history"
+                elif name.startswith("left_wrist_history_"):
+                    key = "left_wrist_history"
+                elif name.startswith("right_wrist_history_"):
+                    key = "right_wrist_history"
+                else:
+                    # Unknown history naming, treat as normal
+                    normal_image_keys.append(name)
+                    continue
+                history_groups.setdefault(key, []).append(name)
+            else:
+                normal_image_keys.append(name)
+
+        # 1) Encode normal images
+        for name in normal_image_keys:
+            image_tokens, _ = self.PaliGemma.img(obs.images[name], train=False)
             tokens.append(image_tokens)
             input_mask.append(
                 einops.repeat(
@@ -146,6 +167,34 @@ class Pi0(_model.BaseModel):
             )
             # image tokens attend to each other
             ar_mask += [False] * image_tokens.shape[1]
+
+        # 2) Encode history groups by averaging tokens across history steps and appending
+        for _, names in history_groups.items():
+            if len(names) == 0:
+                continue
+            # Keep ordering stable by sorting lexicographically (assumes *_1_*, *_2_* ...)
+            names_sorted = sorted(names)
+            hist_tokens_list = []
+            hist_masks = []
+            for name in names_sorted:
+                image_tokens, _ = self.PaliGemma.img(obs.images[name], train=False)
+                hist_tokens_list.append(image_tokens)
+                hist_masks.append(obs.image_masks[name])
+            # Average tokens across history dimension (shape: [H, b, s, emb] -> [b, s, emb])
+            stacked = jnp.stack(hist_tokens_list, axis=0)
+            avg_tokens = jnp.mean(stacked, axis=0)
+            tokens.append(avg_tokens)
+            # Combine masks with OR across history
+            combined_mask = jnp.logical_or.reduce(jnp.stack(hist_masks, axis=0), axis=0)
+            input_mask.append(
+                einops.repeat(
+                    combined_mask,
+                    "b -> b s",
+                    s=avg_tokens.shape[1],
+                )
+            )
+            # Non-autoregressive for history tokens as well
+            ar_mask += [False] * avg_tokens.shape[1]
 
         # add language (aka tokenized inputs)
         if obs.tokenized_prompt is not None:

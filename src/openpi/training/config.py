@@ -132,6 +132,9 @@ class DataConfig:
     text_state_dropout_prob: float = 0.0
     # If true, will drop samples where projected gripper is outside the resized image bounds.
     drop_gripper_oob: bool = True
+    # Number of previous steps to include in memory windows
+    history_steps: int = 8
+    use_history: bool = False
 
 
 class GroupFactory(Protocol):
@@ -460,56 +463,6 @@ class RLDSDroidDataConfig(DataConfigFactory):
 
 
 @dataclasses.dataclass(frozen=True)
-class DroidCoTTestDataConfig(DataConfigFactory):
-    @override
-    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
-        repack_transform = _transforms.Group(
-            inputs=[
-                _transforms.RepackTransform(
-                    {
-                        "observation/image": "image",
-                        "observation/state": "state",
-                        "actions": "actions",
-                        "language_actions": "language_actions",
-                        "prompt": "prompt",
-                    }
-                )
-            ]
-        )
-
-        data_transforms = _transforms.Group(
-            inputs=[
-                droid_cot_policy.DroidCoTTestInputs(
-                    action_dim=model_config.action_dim, model_type=model_config.model_type
-                )
-            ],
-            outputs=[droid_cot_policy.DroidCoTTestOutputs()],
-        )
-
-        # if self.action_space == droid_rlds_dataset.DroidActionSpace.JOINT_POSITION:
-        #     # Data loader returns absolute joint position actions -- convert to delta actions for training.
-        #     delta_action_mask = _transforms.make_bool_mask(7, -1)
-        #     data_transforms = data_transforms.push(
-        #         inputs=[_transforms.DeltaActions(delta_action_mask)],
-        #         outputs=[_transforms.AbsoluteActions(delta_action_mask)],
-        #     )
-
-        model_transforms = CoTModelTransformFactory()(model_config)
-
-        # assert self.rlds_data_dir is not None, "Need to set rlds data dir for RLDS data loader."
-
-        return dataclasses.replace(
-            self.create_base_config(assets_dirs),
-            repack_transforms=repack_transform,
-            data_transforms=data_transforms,
-            model_transforms=model_transforms,
-            use_quantile_norm=model_config.model_type == ModelType.PI0_FAST,
-            # rlds_data_dir=self.rlds_data_dir,
-            # action_space=self.action_space,
-        )
-
-
-@dataclasses.dataclass(frozen=True)
 class RLDSDroidCoTDataConfig(DataConfigFactory):
     """
     Config for training on DROID, using RLDS data format (for efficient training on larger datasets).
@@ -542,6 +495,8 @@ class RLDSDroidCoTDataConfig(DataConfigFactory):
     text_state_dropout_prob: float = 0.0
     # Drop samples where gripper is out of view after projection to resized image
     drop_gripper_oob: bool = True
+    use_history: bool = False
+    history_steps: int = 8
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
@@ -550,13 +505,22 @@ class RLDSDroidCoTDataConfig(DataConfigFactory):
 
         repack_dict = {
             # lihan: always name base image as "exterior_image_1_left", though it should come from the camera which language action is annotated.
-            "observation/exterior_image_1_left": "observation/image",
             "observation/cartesian_position": "observation/cartesian_position",
             "observation/gripper_position": "observation/gripper_position",
             "actions": "actions",
             "prompt": "prompt",
             "language_actions": "language_actions",
         }
+
+        if self.use_history:
+            assert self.history_steps > 0, "history_steps must be greater than 0"
+            assert self.use_wrist_image, "use_wrist_image must be True when use_history is True"
+            # Map history tensors from dataset into standardized keys expected by policy inputs
+            repack_dict["observation/exterior_image_1_left_history"] = "observation/image_history"
+            repack_dict["observation/wrist_image_left_history"] = "observation/wrist_image_history"
+        else:
+            repack_dict["observation/exterior_image_1_left"] = "observation/image"
+
         if self.vis_dataset:
             repack_dict["camera_intrinsics"] = "camera_intrinsics"
             repack_dict["camera_extrinsics"] = "camera_extrinsics"
@@ -581,6 +545,8 @@ class RLDSDroidCoTDataConfig(DataConfigFactory):
                     num_state_bins=self.num_state_bins,
                     wrist_image_dropout_prob=self.wrist_image_dropout_prob,
                     text_state_dropout_prob=self.text_state_dropout_prob,
+                    use_history=self.use_history,
+                    history_steps=self.history_steps,
                 )
             ],
             outputs=[droid_cot_policy.DroidCoTOutputs()],
@@ -627,6 +593,8 @@ class RLDSDroidCoTDataConfig(DataConfigFactory):
             drop_gripper_oob=self.drop_gripper_oob,
             wrist_image_dropout_prob=self.wrist_image_dropout_prob,
             text_state_dropout_prob=self.text_state_dropout_prob,
+            use_history=self.use_history,
+            history_steps=self.history_steps,
         )
 
 
@@ -729,6 +697,58 @@ class TrainConfig:
 # Use `get_config` if you need to get a config by name in your code.
 _CONFIGS = [
     TrainConfig(
+        name="pi0_droid_memory_v6",
+        do_val=True,
+        model=pi0.Pi0Config(action_horizon=10, max_token_len=110),
+        data=RLDSDroidCoTDataConfig(
+            repo_id="droid",
+            rlds_data_dir="gs://v6_east1d",
+            language_action_dir="gs://v6_east1d/droid-lang-actions",
+            action_space=droid_rlds_dataset.DroidActionSpace.CARTESIAN_POSITION,
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+            shuffle_buffer_size=250_000,
+            assets=AssetsConfig(
+                assets_dir="gs://v6_east1d/assets/pi0_droid_cot_v4",
+                asset_id="droid",
+            ),
+            summation_steps=15,
+            sum_decimal="0f",
+            left_pad=True,
+            include_decimal_point=False,
+            validation_mode="easy",
+            vis_dataset=False,
+            use_wrist_image=True,
+            val_max_samples=60000,
+            val_fraction=0.02,
+            use_text_state=False,
+            num_state_bins=16,
+            apply_idle_filter=True,
+            wrist_image_dropout_prob=0.0,
+            text_state_dropout_prob=0.0,
+            use_history=True,
+            history_steps=8,
+            drop_gripper_oob=False,
+        ),
+        num_train_steps=100_000,
+        fsdp_devices=4,
+        batch_size=256,
+        log_interval=50,
+        save_interval=5000,
+        weight_loader=weight_loaders.WeightLoaderChoice(kind="paligemma"),
+        keep_period=10000,
+        # weight_loader=weight_loaders.WeightLoaderChoice(kind="checkpoint", params_path="gs://openpi-assets/checkpoints/pi0_base/params"),
+        assets_base_dir="gs://v6_east1d/assets",
+        checkpoint_base_dir="gs://v6_east1d/checkpoints",
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=1e-4,
+            decay_steps=1_000_000,
+            decay_lr=1e-4,
+        ),
+    ),
+    TrainConfig(
         name="pi0_droid_cot_v4",
         do_val=True,
         model=pi0_cot.Pi0CoTConfig(
@@ -750,7 +770,7 @@ _CONFIGS = [
                 asset_id="droid",
             ),
             summation_steps=15,
-            sum_decimal="2f",
+            sum_decimal="0f",
             left_pad=True,
             include_decimal_point=True,
             validation_mode="easy",
@@ -761,6 +781,7 @@ _CONFIGS = [
             use_text_state=False,
             num_state_bins=16,
             apply_idle_filter=True,
+            drop_gripper_oob=False,
         ),
         num_train_steps=100_000,
         fsdp_devices=4,
@@ -801,7 +822,7 @@ _CONFIGS = [
                 asset_id="droid",
             ),
             summation_steps=15,
-            sum_decimal="2f",
+            sum_decimal="0f",
             left_pad=True,
             include_decimal_point=True,
             validation_mode="easy",
@@ -853,7 +874,7 @@ _CONFIGS = [
                 asset_id="droid",
             ),
             summation_steps=15,
-            sum_decimal="2f",
+            sum_decimal="0f",
             left_pad=True,
             include_decimal_point=True,
             validation_mode="easy",

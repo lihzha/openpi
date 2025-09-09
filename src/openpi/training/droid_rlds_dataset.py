@@ -350,12 +350,13 @@ class DroidCoTRldsDataset:
         use_wrist_image = getattr(config, "use_wrist_image", False)
         apply_idle_filter = getattr(config, "apply_idle_filter", True)
         drop_gripper_oob = getattr(config, "drop_gripper_oob", False)
+        history_steps = getattr(config, "history_steps", 8)
 
         logging.info(
             f"validation_mode: {validation_mode}, val_fraction: {val_fraction}, vis_dataset: {vis_dataset}, \
                 use_wrist_image: {use_wrist_image}, summation_steps: {summation_steps}, max_samples: {max_samples}, \
                     sum_decimal: {config.sum_decimal}, left_pad: {config.left_pad}, include_decimal_point: {config.include_decimal_point}, \
-                        batch_size: {batch_size}"
+                        batch_size: {batch_size}, history_steps: {history_steps}"
         )
 
         # ------------------------------------------------------------------
@@ -951,6 +952,87 @@ class DroidCoTRldsDataset:
 
         # TODO: chunk action or not
         dataset = dataset.traj_map(group_language_actions, num_parallel_calls)
+
+        def group_history(traj):
+            traj_len = tf.shape(traj["step_actions"])[0]
+            # Build indices of the form [t - (H-1) ... t], clipped to [0, traj_len-1]
+            base = tf.range(traj_len)[:, None] - (history_steps - 1)
+            idx = base + tf.range(history_steps)[None, :]
+            idx = tf.clip_by_value(idx, 0, traj_len - 1)
+
+            # Images history (bytes)
+            img_hist = tf.gather(traj["observation"]["image"], idx)
+            traj["observation"]["image_history"] = img_hist
+
+            # Wrist images history (optional)
+            if use_wrist_image and ("wrist_image" in traj["observation"]):
+                traj["observation"]["wrist_image_history"] = tf.gather(traj["observation"]["wrist_image"], idx)
+
+            # States history
+            traj["observation"]["cartesian_position_history"] = tf.gather(
+                traj["observation"]["cartesian_position"], idx
+            )
+            traj["observation"]["gripper_position_history"] = tf.gather(traj["observation"]["gripper_position"], idx)
+
+            # Actions history (per-step actions)
+            traj["action_history"] = tf.gather(traj["step_actions"], idx)
+
+            # Optionally align calibration with window for OOB projection
+            if need_calib:
+                traj["camera_intrinsics_history"] = tf.gather(traj["camera_intrinsics"], idx)
+                T = traj["camera_extrinsics"]
+                traj["camera_extrinsics_history"] = tf.gather(T, idx)
+
+            # Optional: compute in-view mask using calibration on first/last of history
+            if drop_gripper_oob and need_calib:
+
+                def _project_in_bounds(xyz, intr4, extr44):
+                    xyz = tf.cast(xyz, tf.float32)
+                    intr4 = tf.cast(intr4, tf.float32)
+                    extr44 = tf.cast(extr44, tf.float32)
+                    ones = tf.ones_like(xyz[..., :1], dtype=tf.float32)
+                    p_base = tf.concat([xyz, ones], axis=-1)
+                    base_to_cam = tf.linalg.inv(extr44)
+                    p_cam = tf.einsum("nij,nj->ni", base_to_cam, p_base)
+                    z = p_cam[..., 2]
+                    fx = intr4[..., 0]
+                    fy = intr4[..., 1]
+                    cx = intr4[..., 2]
+                    cy = intr4[..., 3]
+                    valid = tf.logical_and(z > tf.constant(1e-6, tf.float32), tf.logical_and(fx > 0.0, fy > 0.0))
+                    u = fx * (p_cam[..., 0] / z) + cx
+                    v = fy * (p_cam[..., 1] / z) + cy
+                    Wt = tf.constant(224.0, dtype=tf.float32)
+                    Ht = tf.constant(224.0, dtype=tf.float32)
+                    Wc = tf.maximum(tf.constant(1.0, tf.float32), 2.0 * cx)
+                    Hc = tf.maximum(tf.constant(1.0, tf.float32), 2.0 * cy)
+                    ratio = tf.maximum(Wc / Wt, Hc / Ht)
+                    resized_w = Wc / ratio
+                    resized_h = Hc / ratio
+                    pad_w0 = (Wt - resized_w) / 2.0
+                    pad_h0 = (Ht - resized_h) / 2.0
+                    x = u * (resized_w / Wc) + pad_w0
+                    y = v * (resized_h / Hc) + pad_h0
+                    in_x = tf.logical_and(x >= tf.constant(0.0, tf.float32), x <= (Wt - tf.constant(1.0, tf.float32)))
+                    in_y = tf.logical_and(y >= tf.constant(0.0, tf.float32), y <= (Ht - tf.constant(1.0, tf.float32)))
+                    return tf.logical_and(valid, tf.logical_and(in_x, in_y))
+
+                cart = traj["observation"]["cartesian_position_history"]  # [traj_len, H, 6]
+                start_xyz = cart[:, 0, :3]
+                end_xyz = cart[:, -1, :3]
+                intr = traj["camera_intrinsics_history"][:, -1, :]  # use last step intrinsics
+                extr = traj["camera_extrinsics_history"][:, -1, :, :]
+                start_ok = _project_in_bounds(start_xyz, intr, extr)
+                end_ok = _project_in_bounds(end_xyz, intr, extr)
+                keep_vec = tf.logical_and(start_ok, end_ok)
+                traj["gripper_in_view"] = keep_vec
+
+            # Remove helper
+            traj.pop("step_actions")
+            return traj
+
+        if config.use_history:
+            dataset = dataset.traj_map(group_history, num_parallel_calls)
 
         # Flatten: map from trajectory dataset to dataset of individual action chunks
         dataset = dataset.flatten(num_parallel_calls=num_parallel_calls)

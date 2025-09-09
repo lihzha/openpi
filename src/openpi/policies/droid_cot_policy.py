@@ -162,6 +162,10 @@ class DroidCoTInputs(transforms.DataTransformFn):
     wrist_image_dropout_prob: float = 0.0
     text_state_dropout_prob: float = 0.0
 
+    # Optional history support (when enabled in config)
+    use_history: bool = False
+    history_steps: int = 8
+
     # Optional global stats for state; used to produce a compact, binned summary in the prompt.
     # Expect stats for the key "state" from normalization assets.
     state_norm_stats: transforms.NormStats | None = None
@@ -179,14 +183,24 @@ class DroidCoTInputs(transforms.DataTransformFn):
         # Possibly need to parse images to uint8 (H,W,C) since LeRobot automatically
         # stores as float32 (C,H,W), gets skipped for policy inference
         # lihan: always name base image as "exterior_image_1_left", though it should come from the camera which language action is annotated.
-        assert "observation/exterior_image_1_left" in data
-        base_image = _parse_image(data["observation/exterior_image_1_left"])
+        base_image = None
+        wrist_image = None
+        base_image_mask = np.False_
+        wrist_image_mask = np.False_
+        if "observation/exterior_image_1_left" in data:
+            base_image = _parse_image(data["observation/exterior_image_1_left"])
+            base_image_mask = np.True_
         if "observation/wrist_image_left" in data:
             wrist_image = _parse_image(data["observation/wrist_image_left"])
             wrist_image_mask = np.True_
-        else:
+
+        if base_image is None:
+            assert wrist_image is not None
+            base_image = np.zeros_like(wrist_image)
+
+        if wrist_image is None:
+            assert base_image is not None
             wrist_image = np.zeros_like(base_image)
-            wrist_image_mask = np.False_
 
         # Optional dropout: randomly mask out wrist image
         if self.wrist_image_dropout_prob > 0.0:
@@ -194,9 +208,59 @@ class DroidCoTInputs(transforms.DataTransformFn):
                 wrist_image_mask = np.False_
 
         if self.model_type == _model.ModelType.PI0CoT:
-            names = ("base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb")
-            images = (base_image, wrist_image, np.zeros_like(base_image))
-            image_masks = (np.True_, wrist_image_mask, np.False_)
+            names_list: list[str] = ["base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb"]
+            images_list: list[np.ndarray] = [base_image, wrist_image, np.zeros_like(base_image)]
+            image_masks_list: list[np.bool_] = [base_image_mask, wrist_image_mask, np.False_]
+
+            # History images (optional)
+            if self.use_history:
+                # If wrist dropout is applied, drop all wrist histories too
+                wrist_hist_mask = wrist_image_mask
+
+                # Try to fetch explicit history arrays if present; otherwise, repeat the current image
+                def _maybe_get_history(key: str, fallback_image: np.ndarray) -> list[np.ndarray]:
+                    hist = data.get(key)
+                    if hist is None:
+                        # Fallback: repeat the current frame
+                        return [np.array(fallback_image) for _ in range(int(self.history_steps))]
+                    # hist could be a list/tuple/np.ndarray of images
+                    if isinstance(hist, np.ndarray):
+                        # Accept shapes [T,H,W,C] or [T,C,H,W]
+                        if hist.ndim == 4 and hist.shape[-1] in (1, 3):
+                            seq = [hist[i] for i in range(hist.shape[0])]
+                        elif hist.ndim == 4 and hist.shape[1] in (1, 3):
+                            seq = [einops.rearrange(hist[i], "c h w -> h w c") for i in range(hist.shape[0])]
+                        else:
+                            seq = [hist]
+                    elif isinstance(hist, (list, tuple)):
+                        seq = list(hist)
+                    else:
+                        seq = [hist]
+                    # Normalize and cap length
+                    seq = [_parse_image(img) for img in seq]
+                    if len(seq) > int(self.history_steps):
+                        seq = seq[-int(self.history_steps) :]
+                    return seq
+
+                # Wrist history
+                wrist_hist_seq = _maybe_get_history("observation/wrist_image_left_history", wrist_image)
+                for idx, img in enumerate(wrist_hist_seq, start=1):
+                    names_list.append(f"left_wrist_history_{idx}_rgb")
+                    images_list.append(img)
+                    image_masks_list.append(wrist_hist_mask)
+
+                # Base history (optional if provided)
+                base_hist = data.get("observation/exterior_image_1_left_history")
+                if base_hist is not None:
+                    base_hist_seq = _maybe_get_history("observation/exterior_image_1_left_history", base_image)
+                    for idx, img in enumerate(base_hist_seq, start=1):
+                        names_list.append(f"base_history_{idx}_rgb")
+                        images_list.append(img)
+                        image_masks_list.append(base_image_mask)
+
+            names = tuple(names_list)
+            images = tuple(images_list)
+            image_masks = tuple(image_masks_list)
         else:
             raise ValueError(f"Unsupported model type: {self.model_type}")
 

@@ -177,8 +177,10 @@ def preprocess_observation(
 
     batch_shape = observation.state.shape[:-1]
 
+    # Process all provided images (including optional history keys),
+    # but still verify the required keys are present via the check above.
     out_images = {}
-    for key in image_keys:
+    for key in observation.images:
         image = observation.images[key]
         if image.shape[1:3] != image_resolution:
             logger.info(f"Resizing image {key} from {image.shape[1:3]} to {image_resolution}")
