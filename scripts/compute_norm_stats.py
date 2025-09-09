@@ -6,6 +6,7 @@ to the config assets directory.
 """
 
 import numpy as np
+from rail_tpu_utils import prevent_cross_region
 import tqdm
 import tyro
 
@@ -86,6 +87,10 @@ def create_rlds_dataloader(
 
 def main(config_name: str, max_frames: int | None = None):
     config = _config.get_config(config_name)
+
+    data_dir = save_dir = config.data.rlds_data_dir
+    prevent_cross_region(data_dir, save_dir)
+
     data_config = config.data.create(config.assets_dirs, config.model)
 
     if data_config.rlds_data_dir is not None:

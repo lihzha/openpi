@@ -2,6 +2,7 @@ import dataclasses
 import logging
 import re
 from typing import Protocol, runtime_checkable
+from typing import Literal
 
 import flax.traverse_util
 import numpy as np
@@ -49,7 +50,29 @@ class CheckpointWeightLoader(WeightLoader):
 
     def load(self, params: at.Params) -> at.Params:
         # We are loading np.ndarray and relying on the training code to properly convert and shard the params.
-        loaded_params = _model.restore_params(download.maybe_download(self.params_path), restore_type=np.ndarray)
+        # Preferred logic: use remote cache if present, otherwise mirror upstream into cache and load from there.
+        params_path_str = str(self.params_path)
+
+        if params_path_str.startswith("gs://"):
+            # If this is already a cache path, try it; if missing or incomplete, fall back to upstream and mirror.
+            if "/cache/" in params_path_str:
+                cache_candidate = params_path_str
+                upstream = params_path_str.split("/cache/", 1)[1]
+                upstream = upstream if upstream.startswith("gs://") else f"gs://{upstream}"
+                # Prefer existing cache; if present, ensure commit_success marker and use it.
+                # Otherwise, mirror upstream into cache and use the mirror.
+                try:
+                    download.ensure_commit_success(cache_candidate)
+                    params_source = cache_candidate
+                except Exception:
+                    params_source = download.mirror_checkpoint_to_remote_cache(upstream)
+            else:
+                # Not in cache yet; mirror upstream into cache to standardize layout.
+                params_source = download.mirror_checkpoint_to_remote_cache(params_path_str)
+        else:
+            params_source = str(download.maybe_download(params_path_str))
+
+        loaded_params = _model.restore_params(params_source, restore_type=np.ndarray)
         # Add all missing LoRA weights.
         return _merge_params(loaded_params, params, missing_regex=".*lora.*")
 
@@ -72,6 +95,40 @@ class PaliGemmaWeightLoader(WeightLoader):
         # Add all missing weights.
         return _merge_params(loaded_params, params, missing_regex=".*")
 
+
+@dataclasses.dataclass(frozen=True)
+class WeightLoaderChoice(WeightLoader):
+    """CLI-friendly wrapper to choose a weight loader without nested subcommands.
+
+    This class implements the WeightLoader protocol and forwards to a concrete
+    loader based on the selected kind. It allows setting the loader type and its
+    arguments via flat flags like:
+
+      --weight-loader.kind=checkpoint --weight-loader.params-path=gs://...
+      --weight-loader.kind=paligemma
+      --weight-loader.kind=none
+    """
+
+    # Which loader to use.
+    kind: Literal["none", "checkpoint", "paligemma"] = "none"
+    # Only used when kind == "checkpoint".
+    params_path: str | None = None
+
+    def _resolve(self) -> WeightLoader:
+        match self.kind:
+            case "checkpoint":
+                if not self.params_path:
+                    raise ValueError("--weight-loader.params-path must be set when kind=checkpoint")
+                return CheckpointWeightLoader(self.params_path)
+            case "paligemma":
+                return PaliGemmaWeightLoader()
+            case "none":
+                return NoOpWeightLoader()
+            case _:
+                raise ValueError(f"Unknown weight loader kind: {self.kind}")
+
+    def load(self, params: at.Params) -> at.Params:
+        return self._resolve().load(params)
 
 def _merge_params(loaded_params: at.Params, params: at.Params, *, missing_regex: str) -> at.Params:
     """Merges the loaded parameters with the reference parameters.

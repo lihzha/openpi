@@ -1,4 +1,3 @@
-from collections.abc import Sequence
 import dataclasses
 import logging
 import pathlib
@@ -16,18 +15,12 @@ import openpi.transforms as transforms
 
 @dataclasses.dataclass
 class PolicyConfig:
-    model: _model.BaseModel
-    norm_stats: dict[str, transforms.NormStats]
-
-    input_layers: Sequence[transforms.DataTransformFn]
-    output_layers: Sequence[transforms.DataTransformFn]
-
-    model_type: _model.ModelType = _model.ModelType.PI0
-    default_prompt: str | None = None
-    sample_kwargs: dict[str, Any] | None = None
+    policy_type: _policy.PolicyType = _policy.PolicyType.Policy
+    use_norm_stats: bool = True
 
 
 def create_trained_policy(
+    policy_config: PolicyConfig,
     train_config: _config.TrainConfig,
     checkpoint_dir: pathlib.Path | str,
     *,
@@ -63,21 +56,45 @@ def create_trained_policy(
             raise ValueError("Asset id is required to load norm stats.")
         norm_stats = _checkpoints.load_norm_stats(checkpoint_dir / "assets", data_config.asset_id)
 
-    return _policy.Policy(
-        model,
-        transforms=[
-            *repack_transforms.inputs,
-            transforms.InjectDefaultPrompt(default_prompt),
-            *data_config.data_transforms.inputs,
-            transforms.Normalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
-            *data_config.model_transforms.inputs,
-        ],
-        output_transforms=[
-            *data_config.model_transforms.outputs,
-            transforms.Unnormalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
-            *data_config.data_transforms.outputs,
-            *repack_transforms.outputs,
-        ],
-        sample_kwargs=sample_kwargs,
-        metadata=train_config.policy_metadata,
-    )
+    match policy_config.policy_type:
+        case _policy.PolicyType.CoTPolicy:
+            if not policy_config.use_norm_stats:
+                norm_stats = None
+            return _policy.CoTPolicy(
+                model,
+                transforms=[
+                    *repack_transforms.inputs,
+                    transforms.InjectDefaultPrompt(default_prompt),
+                    *data_config.data_transforms.inputs,
+                    transforms.Normalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
+                    *data_config.model_transforms.inputs,
+                ],
+                output_transforms=[
+                    *data_config.model_transforms.outputs,
+                    transforms.Unnormalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
+                    *data_config.data_transforms.outputs,
+                    *repack_transforms.outputs,
+                ],
+                sample_kwargs=sample_kwargs,
+                metadata=train_config.policy_metadata,
+            )
+        case _:
+            assert policy_config.use_norm_stats
+            return _policy.Policy(
+                model,
+                transforms=[
+                    *repack_transforms.inputs,
+                    transforms.InjectDefaultPrompt(default_prompt),
+                    *data_config.data_transforms.inputs,
+                    transforms.Normalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
+                    *data_config.model_transforms.inputs,
+                ],
+                output_transforms=[
+                    *data_config.model_transforms.outputs,
+                    transforms.Unnormalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
+                    *data_config.data_transforms.outputs,
+                    *repack_transforms.outputs,
+                ],
+                sample_kwargs=sample_kwargs,
+                metadata=train_config.policy_metadata,
+            )
