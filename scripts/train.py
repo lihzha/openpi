@@ -1,6 +1,8 @@
 import dataclasses
 import functools
 import logging
+import math
+import os
 import platform
 from typing import Any
 
@@ -9,16 +11,17 @@ import flax.nnx as nnx
 from flax.training import common_utils
 import flax.traverse_util as traverse_util
 import jax
-import jax.experimental
 import jax.numpy as jnp
 import numpy as np
 import optax
+from rail_tpu_utils import prevent_cross_region
 import tqdm_loggable.auto as tqdm
 import wandb
 
 import openpi.models.model as _model
 import openpi.shared.array_typing as at
 import openpi.shared.nnx_utils as nnx_utils
+from openpi.training import eval_helper as _eval_helper
 import openpi.training.checkpoints as _checkpoints
 import openpi.training.config as _config
 import openpi.training.data_loader as _data_loader
@@ -47,17 +50,39 @@ def init_logging():
     logger.handlers[0].setFormatter(formatter)
 
 
-def init_wandb(config: _config.TrainConfig, *, resuming: bool, log_code: bool = False, enabled: bool = True):
+# ──────────────────────────────────────────────────────────────────────────────
+# Validation-time helpers for language actions visualization/metric
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def init_wandb(
+    config: _config.TrainConfig,
+    *,
+    resuming: bool,
+    log_code: bool = False,
+    enabled: bool = True,
+    rewind_to_step: int | None = None,
+):
     if not enabled:
+        wandb.init(mode="disabled")
+        return
+
+    # Only initialize wandb in the main process
+    if jax.process_index() != 0:
         wandb.init(mode="disabled")
         return
 
     ckpt_dir = config.checkpoint_dir
     if not ckpt_dir.exists():
         raise FileNotFoundError(f"Checkpoint directory {ckpt_dir} does not exist.")
+
     if resuming:
         run_id = (ckpt_dir / "wandb_id.txt").read_text().strip()
-        wandb.init(id=run_id, resume="must", project=config.project_name)
+        if rewind_to_step is not None:
+            # Use wandb's rewind feature to resume from a specific step
+            wandb.init(resume_from=f"{run_id}?_step={rewind_to_step}", project=config.project_name)
+        else:
+            wandb.init(id=run_id, resume="must", project=config.project_name)
     else:
         wandb.init(
             name=config.exp_name,
@@ -68,6 +93,13 @@ def init_wandb(config: _config.TrainConfig, *, resuming: bool, log_code: bool = 
 
     if log_code:
         wandb.run.log_code(epath.Path(__file__).parent.parent)
+
+
+def _is_tpu_runtime() -> bool:
+    try:
+        return any(d.platform == "tpu" for d in jax.devices())
+    except Exception:
+        return False
 
 
 def _load_weights_and_validate(loader: _weight_loaders.WeightLoader, params_shape: at.Params) -> at.Params:
@@ -191,23 +223,83 @@ def train_step(
     return new_state, info
 
 
-def main(config: _config.TrainConfig):
-    init_logging()
-    logging.info(f"Running on: {platform.node()}")
+@at.typecheck
+def val_step(
+    config: _config.TrainConfig,
+    rng: at.KeyArrayLike,
+    state: training_utils.TrainState,
+    batch: tuple[_model.Observation, _model.Actions],
+) -> dict[str, at.Array]:
+    model = nnx.merge(state.model_def, state.params)
+    model.eval()
 
-    if config.batch_size % jax.device_count() != 0:
-        raise ValueError(
-            f"Batch size {config.batch_size} must be divisible by the number of devices {jax.device_count()}."
-        )
+    @at.typecheck
+    def loss_fn(
+        model: _model.BaseModel, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions
+    ):
+        # compute_loss may return per-example; reduce to scalar
+        val_loss = model.compute_loss(rng, observation, actions, train=False)
+        return jnp.mean(val_loss)
+
+    eval_rng = jax.random.fold_in(rng, state.step)
+    observation, actions = batch
+    if hasattr(model, "compute_eval_metrics"):
+        return model.compute_eval_metrics(eval_rng, observation, actions)
+    loss = loss_fn(model, eval_rng, observation, actions)
+    return {"val_loss": loss}
+
+
+def main(config: _config.TrainConfig):
+    if (
+        ("v6" in config.name and config.fsdp_devices > 8)
+        or ("v4" in config.name and config.fsdp_devices > 4)
+        or ("v5" in config.name and config.fsdp_devices > 8)
+    ):
+        jax.distributed.initialize()
+    data_dir = save_dir = config.data.rlds_data_dir
+    cache_dir = os.environ.get("OPENPI_DATA_HOME", None)
+    if _is_tpu_runtime() and (str(data_dir).startswith("gs://") or str(save_dir).startswith("gs://")):
+        prevent_cross_region(data_dir, save_dir)
+        if cache_dir is not None:
+            prevent_cross_region(cache_dir, save_dir)
+    # Determine effective FSDP devices for single-process GPU/CPU runs.
+    process_count = getattr(jax, "process_count", lambda: 1)()
+    local_devices = getattr(jax, "local_device_count", lambda: 1)()
+    global_devices = getattr(jax, "device_count", lambda: local_devices)()
+    init_logging()
+    logging.info(f"Local devices: {local_devices}, Global devices: {global_devices}, Process count: {process_count}")
+    if process_count == 1:
+        # Choose the largest divisor of available devices not exceeding configured fsdp_devices
+        target = min(config.fsdp_devices, max(1, local_devices))
+        effective_fsdp_devices = 1
+        for d in range(target, 0, -1):
+            if global_devices % d == 0:
+                effective_fsdp_devices = d
+                break
+        if effective_fsdp_devices != config.fsdp_devices:
+            logging.info(
+                "Using fsdp_devices=%d for single-process run (available devices=%d)",
+                effective_fsdp_devices,
+                global_devices,
+            )
+    else:
+        effective_fsdp_devices = config.fsdp_devices
+        assert global_devices % effective_fsdp_devices == 0
+
+    logging.info(f"Running on: {platform.node()}")
 
     jax.config.update("jax_compilation_cache_dir", str(epath.Path("~/.cache/jax").expanduser()))
 
     rng = jax.random.key(config.seed)
     train_rng, init_rng = jax.random.split(rng)
 
-    mesh = sharding.make_mesh(config.fsdp_devices)
+    mesh = sharding.make_mesh(effective_fsdp_devices)
     data_sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec(sharding.DATA_AXIS))
     replicated_sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec())
+    # Human-readable mesh overview
+    sharding.log_mesh_and_sharding_header(mesh, title="Device mesh")
+    logging.info("Data sharding spec: %s", sharding.format_sharding(data_sharding))
+    logging.info("Replicated sharding spec: %s", sharding.format_sharding(replicated_sharding))
 
     checkpoint_manager, resuming = _checkpoints.initialize_checkpoint_dir(
         config.checkpoint_dir,
@@ -215,27 +307,43 @@ def main(config: _config.TrainConfig):
         overwrite=config.overwrite,
         resume=config.resume,
     )
-    init_wandb(config, resuming=resuming, enabled=config.wandb_enabled)
+    init_wandb(
+        config, resuming=resuming, enabled=config.wandb_enabled, rewind_to_step=getattr(config, "rewind_to_step", None)
+    )
 
     data_loader = _data_loader.create_data_loader(
         config,
         sharding=data_sharding,
         shuffle=True,
+        seed=config.seed,
     )
-    data_iter = iter(data_loader)
-    batch = next(data_iter)
-    logging.info(f"Initialized data loader:\n{training_utils.array_tree_to_info(batch)}")
 
-    # Log images from first batch to sanity check.
-    images_to_log = [
-        wandb.Image(np.concatenate([np.array(img[i]) for img in batch[0].images.values()], axis=1))
-        for i in range(min(5, len(next(iter(batch[0].images.values())))))
-    ]
-    wandb.log({"camera_views": images_to_log}, step=0)
+    data_iter = iter(data_loader)
+    # Fetch the correct first batch, advancing the iterator on resume
+    logging.info("Before getting batch")
+    # if resuming and start_step > 0:
+    #     # Fast-forward the iterator so that step `start_step` uses batch index `start_step`.
+    #     for _ in range(start_step):
+    #         _ = next(data_iter)
+    batch = next(data_iter)
+    # images_to_log = [
+    #     wandb.Image(
+    #         np.concatenate([np.array(_utils.to_local_array(img[i])) for img in batch[0].images.values()], axis=1)
+    #     )
+    #     for i in range(min(5, len(next(iter(batch[0].images.values())))))
+    # ]
+    # wandb.log({"camera_views": images_to_log}, step=0)
+    logging.info("After getting batch")
+    logging.info(f"Initialized data loader (shapes):\n{training_utils.array_tree_to_info(batch)}")
+    # Sharding details for the first batch
+    sharding.log_batch_sharding(batch)
 
     train_state, train_state_sharding = init_train_state(config, init_rng, mesh, resume=resuming)
     jax.block_until_ready(train_state)
-    logging.info(f"Initialized train state:\n{training_utils.array_tree_to_info(train_state.params)}")
+    logging.info(f"Initialized train state (param shapes):\n{training_utils.array_tree_to_info(train_state.params)}")
+    # Planned vs actual parameter sharding
+    sharding.log_param_sharding_planned(train_state_sharding)
+    sharding.log_param_sharding_actual(train_state.params)
 
     if resuming:
         train_state = _checkpoints.restore_state(checkpoint_manager, train_state, data_loader)
@@ -247,12 +355,51 @@ def main(config: _config.TrainConfig):
         donate_argnums=(1,),
     )
 
+    if config.do_val:
+        # Validation data loader (non-shuffled, val split)
+        val_loader = _data_loader.create_data_loader(
+            config,
+            sharding=data_sharding,
+            shuffle=False,
+            split="val",
+            max_samples=getattr(config.data, "val_max_samples", None),
+        )
+        # Try to obtain the tokenizer from the transform pipeline for decoding
+        tok = data_loader._data_loader._dataset._transform.transforms[-1].tokenizer  # type: ignore[attr-defined]
+        pval_step = jax.jit(
+            functools.partial(val_step, config),
+            in_shardings=(replicated_sharding, train_state_sharding, data_sharding),
+        )
+
+        # Jitted reasoning sampler returning only (id_buf, t)
+        def _sample_reasoning_ids_t(state: training_utils.TrainState, observation: _model.Observation):
+            model_local = nnx.merge(state.model_def, state.params)
+            id_buf, t, *_ = model_local.sample_reasoning(observation)
+            return id_buf, t
+
+        psample_reasoning = jax.jit(
+            _sample_reasoning_ids_t,
+            # Expect observation replicated; return replicated outputs for consistent host access
+            in_shardings=(train_state_sharding, replicated_sharding),
+            out_shardings=(replicated_sharding, replicated_sharding),
+        )
+        # Determine how many validation batches to evaluate each time.
+        # If a fixed validation subset size is configured, compute batches from it;
+        # otherwise fall back to a heuristic constant divided by global batch size.
+        if getattr(config.data, "val_max_samples", None):
+            # local batch size per host mirrors RLDS dataset batching
+            process_count = getattr(jax, "process_count", lambda: 1)()
+            local_bs = max(1, config.batch_size // process_count)
+            num_val_batches = math.ceil(config.data.val_max_samples / local_bs)
+        else:
+            num_val_batches = int(60000 / config.batch_size)  # adjust if needed
     start_step = int(train_state.step)
     pbar = tqdm.tqdm(
         range(start_step, config.num_train_steps),
         initial=start_step,
         total=config.num_train_steps,
         dynamic_ncols=True,
+        disable=(jax.process_index() != 0),
     )
 
     infos = []
@@ -261,15 +408,64 @@ def main(config: _config.TrainConfig):
             train_state, info = ptrain_step(train_rng, train_state, batch)
         infos.append(info)
         if step % config.log_interval == 0:
+            # infos.append(info)
             stacked_infos = common_utils.stack_forest(infos)
             reduced_info = jax.device_get(jax.tree.map(jnp.mean, stacked_infos))
             info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_info.items())
             pbar.write(f"Step {step}: {info_str}")
-            wandb.log(reduced_info, step=step)
+            if jax.process_index() == 0:
+                wandb.log(reduced_info, step=step)
             infos = []
+        # Periodic validation
+        if config.do_val and step % getattr(config, "val_interval", 500) == 0:
+            # use a pbar to track the validation progress
+            val_pbar = tqdm.tqdm(
+                range(num_val_batches),
+                initial=0,
+                total=num_val_batches,
+                dynamic_ncols=True,
+                disable=(jax.process_index() != 0),
+            )
+            # img_log_step_idx = np.random.randint(0, num_val_batches)
+            img_log_step_idx = 0
+            num_images_to_log = 64
+            with sharding.set_mesh(mesh):
+                val_infos = []
+                # Collect L2 distances (in cm) between parsed vectors from GT and predicted texts
+                l2_cm_values: list[float] = []
+                # Recreate a fresh iterator to ensure the same fixed validation subset each time.
+                val_iter = iter(val_loader)
+                for val_step_idx in val_pbar:
+                    val_batch = next(val_iter)
+                    val_info = pval_step(train_rng, train_state, val_batch)
+                    val_infos.append(val_info)
+
+                    if val_step_idx == img_log_step_idx:
+                        k_local = int(min(num_images_to_log, val_batch[0].state.shape[0]))
+                        eval_batch = _eval_helper.prepare_eval_batch(val_batch)
+                        eval_idx = jax.random.choice(rng, eval_batch[0].state.shape[0], shape=(k_local,), replace=False)
+                        eval_batch = _eval_helper.subsample_batch(eval_batch, eval_idx)
+                        gt_batch = _eval_helper.subsample_batch(val_batch, eval_idx)
+                        # Ensure observation for sampling is replicated across devices
+                        obs_local = jax.device_put(eval_batch[0], replicated_sharding)
+                        id_buf, t_final = psample_reasoning(train_state, obs_local)
+                        l2_cm_values, to_log = _eval_helper.eval_step(gt_batch, id_buf, t_final, tok, k_local)
+                        if to_log and jax.process_index() == 0:
+                            wandb.log({"val/annotated": to_log}, step=step)
+
+                stacked_val = common_utils.stack_forest(val_infos)
+                reduced_val = jax.device_get(jax.tree.map(jnp.mean, stacked_val))
+                # Add movement L2 metric if any collected
+                if l2_cm_values:
+                    reduced_val = {**reduced_val, "val_movement_l2_cm": float(np.mean(l2_cm_values))}
+                val_info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_val.items())
+                val_pbar.write(f"Step {step} (val): {val_info_str}")
+                if jax.process_index() == 0:
+                    wandb.log(reduced_val, step=step)
+
         batch = next(data_iter)
 
-        if (step % config.save_interval == 0 and step > start_step) or step == config.num_train_steps - 1:
+        if (step % config.save_interval == 0 and step > start_step) or step == config.num_train_steps:
             _checkpoints.save_state(checkpoint_manager, train_state, data_loader, step)
 
     logging.info("Waiting for checkpoint manager to finish")

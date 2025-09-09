@@ -14,13 +14,15 @@ from typing_extensions import override
 import tyro
 
 import openpi.models.model as _model
+import openpi.models.pi0 as pi0
+import openpi.models.pi0_cot as pi0_cot
 import openpi.models.pi0_config as pi0_config
 import openpi.models.pi0_fast as pi0_fast
 import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
+import openpi.policies.droid_cot_policy as droid_cot_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
-import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
 import openpi.training.droid_rlds_dataset as droid_rlds_dataset
 import openpi.training.misc.roboarena_config as roboarena_config
@@ -31,6 +33,19 @@ import openpi.transforms as _transforms
 ModelType: TypeAlias = _model.ModelType
 # Work around a tyro issue with using nnx.filterlib.Filter directly.
 Filter: TypeAlias = nnx.filterlib.Filter
+
+
+def _to_path(base: str | pathlib.Path, *extra: str) -> pathlib.Path | epath.Path:
+    """
+    Join `base` with any `extra` segments, returning:
+      • `pathlib.Path` for normal file-system paths
+      • `epath.Path`   for `gs://` URIs
+    """
+    base = str(base)  # in case the attr is already a Path object
+    if base.startswith("gs://"):
+        # epath.Path already mimics pathlib semantics (`/`, `.joinpath`, etc.)
+        return epath.Path(base).joinpath(*extra)  # no `.resolve()` on GCS
+    return (pathlib.Path(base).joinpath(*extra)).resolve()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -95,6 +110,32 @@ class DataConfig:
     action_space: droid_rlds_dataset.DroidActionSpace | None = None
     # Path to the data filter file for DROID dataset
     filter_dict_path: str | None = None
+
+    # For DROID-CoT (optional; used only when `cot` is True)
+    cot: bool = False
+    language_action_dir: str | None = None
+    shuffle_buffer_size: int = 250_000
+    # For CoT-style datasets (e.g., DROID-CoT): number of future steps to sum over for language actions
+    summation_steps: int = 15
+    # Optional cap on number of unique flattened samples for overfitting tests
+    max_samples: int | None = None
+    # Tokenization / formatting controls for CoT numeric aggregation
+    sum_decimal: str = "2f"
+    left_pad: bool = True
+    include_decimal_point: bool = True
+    # Validation controls for RLDS-CoT dataset splitting/visualization
+    val_max_samples: int | None = None
+    val_fraction: float | None = None
+    validation_mode: str = "easy"
+    vis_dataset: bool = False
+    use_wrist_image: bool = False
+    use_text_state: bool = True
+    num_state_bins: int = 16
+    apply_idle_filter: bool = True
+    wrist_image_dropout_prob: float = 0.0
+    text_state_dropout_prob: float = 0.0
+    # If true, will drop samples where projected gripper is outside the resized image bounds.
+    drop_gripper_oob: bool = True
 
 
 class GroupFactory(Protocol):
@@ -163,6 +204,44 @@ class ModelTransformFactory(GroupFactory):
 
 
 @dataclasses.dataclass(frozen=True)
+class CoTModelTransformFactory(GroupFactory):
+    """Creates model transforms for standard pi0 models."""
+
+    # If provided, will determine the default prompt that be used by the model.
+    default_prompt: str | None = None
+    left_pad: bool = True
+    include_decimal_point: bool = True
+
+    def __call__(self, model_config: _model.BaseModelConfig) -> _transforms.Group:
+        match model_config.model_type:
+            case _model.ModelType.PI0CoT:
+                return _transforms.Group(
+                    inputs=[
+                        _transforms.InjectDefaultPrompt(self.default_prompt),
+                        _transforms.ResizeImages(224, 224),
+                        _transforms.TokenizePromptAndReasoning(
+                            _tokenizer.PaligemmaTokenizer(
+                                model_config.max_token_len,
+                                left_pad=self.left_pad,
+                                include_decimal_point=self.include_decimal_point,
+                            )
+                        ),
+                    ],
+                    outputs=[
+                        _transforms.DetokenizeReasoning(
+                            _tokenizer.PaligemmaTokenizer(
+                                model_config.max_token_len,
+                                left_pad=self.left_pad,
+                                include_decimal_point=self.include_decimal_point,
+                            )
+                        )
+                    ],
+                )
+            case _:
+                raise ValueError(f"Unsupported model type: {model_config.model_type}")
+
+
+@dataclasses.dataclass(frozen=True)
 class DataConfigFactory(abc.ABC):
     # The LeRobot repo id.
     repo_id: str = tyro.MISSING
@@ -191,7 +270,8 @@ class DataConfigFactory(abc.ABC):
             return None
         try:
             data_assets_dir = str(assets_dir / asset_id)
-            norm_stats = _normalize.load(_download.maybe_download(data_assets_dir))
+            # norm_stats = _normalize.load(_download.maybe_download(data_assets_dir))
+            norm_stats = _normalize.load(data_assets_dir)
             logging.info(f"Loaded norm stats from {data_assets_dir}")
             return norm_stats
         except FileNotFoundError:
@@ -454,6 +534,177 @@ class LeRobotDROIDDataConfig(DataConfigFactory):
 
 
 @dataclasses.dataclass(frozen=True)
+class DroidCoTTestDataConfig(DataConfigFactory):
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        repack_transform = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "observation/image": "image",
+                        "observation/state": "state",
+                        "actions": "actions",
+                        "language_actions": "language_actions",
+                        "prompt": "prompt",
+                    }
+                )
+            ]
+        )
+
+        data_transforms = _transforms.Group(
+            inputs=[
+                droid_cot_policy.DroidCoTTestInputs(
+                    action_dim=model_config.action_dim, model_type=model_config.model_type
+                )
+            ],
+            outputs=[droid_cot_policy.DroidCoTTestOutputs()],
+        )
+
+        # if self.action_space == droid_rlds_dataset.DroidActionSpace.JOINT_POSITION:
+        #     # Data loader returns absolute joint position actions -- convert to delta actions for training.
+        #     delta_action_mask = _transforms.make_bool_mask(7, -1)
+        #     data_transforms = data_transforms.push(
+        #         inputs=[_transforms.DeltaActions(delta_action_mask)],
+        #         outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+        #     )
+
+        model_transforms = CoTModelTransformFactory()(model_config)
+
+        # assert self.rlds_data_dir is not None, "Need to set rlds data dir for RLDS data loader."
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            use_quantile_norm=model_config.model_type == ModelType.PI0_FAST,
+            # rlds_data_dir=self.rlds_data_dir,
+            # action_space=self.action_space,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class RLDSDroidCoTDataConfig(DataConfigFactory):
+    """
+    Config for training on DROID, using RLDS data format (for efficient training on larger datasets).
+    """
+
+    rlds_data_dir: str | None = None
+    action_space: droid_rlds_dataset.DroidActionSpace | None = None
+    cot: bool = True
+    language_action_dir: str = "/n/fs/robot-data/vlm-syn/posed_droid"
+    shuffle_buffer_size: int = 250_000
+    # Number of future steps to sum over for language actions
+    summation_steps: int = 15
+    max_samples: int | None = None
+    sum_decimal: str = "2f"
+    left_pad: bool = True
+    include_decimal_point: bool = True
+
+    # If set, validation loader will materialize a fixed subset of this many
+    # flattened samples via take(K).cache().repeat(), ensuring consistent val batches.
+    val_max_samples: int | None = None
+    val_fraction: float | None = None
+    validation_mode: str = "easy"
+    vis_dataset: bool = False
+    use_wrist_image: bool = False
+    use_text_state: bool = False
+    num_state_bins: int = 16
+    apply_idle_filter: bool = True
+    # Train-time dropout (applied in DroidCoTInputs). Set nonzero only for training.
+    wrist_image_dropout_prob: float = 0.0
+    text_state_dropout_prob: float = 0.0
+    # Drop samples where gripper is out of view after projection to resized image
+    drop_gripper_oob: bool = True
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        # Load base config first to access norm stats (for state binning in prompt augmentation)
+        base_cfg = self.create_base_config(assets_dirs)
+
+        repack_dict = {
+            # lihan: always name base image as "exterior_image_1_left", though it should come from the camera which language action is annotated.
+            "observation/exterior_image_1_left": "observation/image",
+            "observation/cartesian_position": "observation/cartesian_position",
+            "observation/gripper_position": "observation/gripper_position",
+            "actions": "actions",
+            "prompt": "prompt",
+            "language_actions": "language_actions",
+        }
+        if self.vis_dataset:
+            repack_dict["camera_intrinsics"] = "camera_intrinsics"
+            repack_dict["camera_extrinsics"] = "camera_extrinsics"
+            repack_dict["observation/cartesian_position_window"] = "observation/cartesian_position_window"
+        if self.use_wrist_image:
+            repack_dict["observation/wrist_image_left"] = "observation/wrist_image"
+        repack_transform = _transforms.Group(inputs=[_transforms.RepackTransform(repack_dict)])
+
+        # Extract state norm stats (if available) to pass into the DroidCoTInputs for binning
+        state_stats = None
+        if base_cfg.norm_stats is not None and "state" in base_cfg.norm_stats:
+            state_stats = base_cfg.norm_stats["state"]
+
+        data_transforms = _transforms.Group(
+            inputs=[
+                droid_cot_policy.DroidCoTInputs(
+                    action_dim=model_config.action_dim,
+                    model_type=model_config.model_type,
+                    sum_decimal=self.sum_decimal,
+                    state_norm_stats=state_stats,
+                    use_text_state=self.use_text_state,
+                    num_state_bins=self.num_state_bins,
+                    wrist_image_dropout_prob=self.wrist_image_dropout_prob,
+                    text_state_dropout_prob=self.text_state_dropout_prob,
+                )
+            ],
+            outputs=[droid_cot_policy.DroidCoTOutputs()],
+        )
+
+        assert self.action_space == droid_rlds_dataset.DroidActionSpace.CARTESIAN_POSITION
+        # Data loader returns absolute joint position actions -- convert to delta actions for training.
+        delta_action_mask = _transforms.make_bool_mask(6, -1)
+        data_transforms = data_transforms.push(
+            inputs=[_transforms.DeltaActions(delta_action_mask)],
+            outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+        )
+
+        model_transforms = CoTModelTransformFactory(
+            left_pad=self.left_pad, include_decimal_point=self.include_decimal_point
+        )(model_config)
+
+        assert self.rlds_data_dir is not None, "Need to set rlds data dir for RLDS data loader."
+
+        return dataclasses.replace(
+            base_cfg,
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            use_quantile_norm=model_config.model_type == ModelType.PI0_FAST,
+            rlds_data_dir=self.rlds_data_dir,
+            action_space=self.action_space,
+            cot=self.cot,
+            language_action_dir=self.language_action_dir,
+            shuffle_buffer_size=self.shuffle_buffer_size,
+            summation_steps=self.summation_steps,
+            max_samples=self.max_samples,
+            sum_decimal=self.sum_decimal,
+            left_pad=self.left_pad,
+            include_decimal_point=self.include_decimal_point,
+            use_wrist_image=self.use_wrist_image,
+            val_max_samples=self.val_max_samples,
+            val_fraction=self.val_fraction,
+            validation_mode=self.validation_mode,
+            vis_dataset=self.vis_dataset,
+            use_text_state=self.use_text_state,
+            num_state_bins=self.num_state_bins,
+            apply_idle_filter=self.apply_idle_filter,
+            drop_gripper_oob=self.drop_gripper_oob,
+            wrist_image_dropout_prob=self.wrist_image_dropout_prob,
+            text_state_dropout_prob=self.text_state_dropout_prob,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
 class TrainConfig:
     # Name of the config. Must be unique. Will be used to reference this config.
     name: tyro.conf.Suppress[str]
@@ -468,7 +719,10 @@ class TrainConfig:
     model: _model.BaseModelConfig = dataclasses.field(default_factory=pi0_config.Pi0Config)
 
     # A weight loader can optionally load (possibly partial) weights from disk after the model is initialized.
-    weight_loader: weight_loaders.WeightLoader = dataclasses.field(default_factory=weight_loaders.NoOpWeightLoader)
+    # Uses a CLI-friendly choice wrapper to avoid nested subcommands.
+    weight_loader: weight_loaders.WeightLoaderChoice = dataclasses.field(
+        default_factory=weight_loaders.WeightLoaderChoice
+    )
 
     # Optional path to a PyTorch checkpoint to load weights from.
     pytorch_weight_path: str | None = None
@@ -515,6 +769,8 @@ class TrainConfig:
 
     # If true, will enable wandb logging.
     wandb_enabled: bool = True
+    # If set, will rewind wandb run to this step when resuming (requires wandb SDK >= 0.17.1)
+    rewind_to_step: int | None = None
 
     # Used to pass metadata to the policy server.
     policy_metadata: dict[str, Any] | None = None
@@ -525,17 +781,20 @@ class TrainConfig:
     # data parallel between 2 groups of devices.
     fsdp_devices: int = 1
 
-    @property
-    def assets_dirs(self) -> pathlib.Path:
-        """Get the assets directory for this config."""
-        return (pathlib.Path(self.assets_base_dir) / self.name).resolve()
+    # Do validation or not
+    do_val: bool = False
 
     @property
-    def checkpoint_dir(self) -> pathlib.Path:
-        """Get the checkpoint directory for this config."""
+    def assets_dirs(self) -> pathlib.Path | epath.Path:
+        """Assets directory (works for local paths and gs://…)."""
+        return _to_path(self.assets_base_dir, self.name)
+
+    @property
+    def checkpoint_dir(self) -> pathlib.Path | epath.Path:
+        """Checkpoint directory (local or Cloud Storage)."""
         if not self.exp_name:
             raise ValueError("--exp_name must be set")
-        return (pathlib.Path(self.checkpoint_base_dir) / self.name / self.exp_name).resolve()
+        return _to_path(self.checkpoint_base_dir, self.name, self.exp_name)
 
     @property
     def trainable_filter(self) -> nnx.filterlib.Filter:
@@ -549,6 +808,201 @@ class TrainConfig:
 
 # Use `get_config` if you need to get a config by name in your code.
 _CONFIGS = [
+    TrainConfig(
+        name="pi0_droid_cot_v4",
+        do_val=True,
+        model=pi0_cot.Pi0CoTConfig(
+            action_horizon=10,
+            max_token_len=110,
+            number_token_weight=1.0,
+        ),
+        data=RLDSDroidCoTDataConfig(
+            repo_id="droid",
+            rlds_data_dir="gs://pi0-cot",
+            language_action_dir="gs://pi0-cot/droid-lang-actions",
+            action_space=droid_rlds_dataset.DroidActionSpace.CARTESIAN_POSITION,
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+            shuffle_buffer_size=250_000,
+            assets=AssetsConfig(
+                assets_dir="gs://pi0-cot/assets/pi0_droid_cot_v4",
+                asset_id="droid",
+            ),
+            summation_steps=15,
+            sum_decimal="2f",
+            left_pad=True,
+            include_decimal_point=True,
+            validation_mode="easy",
+            vis_dataset=False,
+            use_wrist_image=False,
+            val_max_samples=60000,
+            val_fraction=0.02,
+            use_text_state=False,
+            num_state_bins=16,
+            apply_idle_filter=True,
+            drop_gripper_oob=False,
+        ),
+        num_train_steps=100_000,
+        fsdp_devices=4,
+        batch_size=256,
+        log_interval=50,
+        save_interval=5000,
+        weight_loader=weight_loaders.WeightLoaderChoice(kind="paligemma"),
+        keep_period=10000,
+        # weight_loader=weight_loaders.WeightLoaderChoice(kind="checkpoint", params_path="gs://openpi-assets/checkpoints/pi0_base/params"),
+        assets_base_dir="gs://pi0-cot/assets",
+        checkpoint_base_dir="gs://pi0-cot/checkpoints",
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=1e-4,
+            decay_steps=1_000_000,
+            decay_lr=1e-4,
+        ),
+    ),
+    TrainConfig(
+        name="pi0_droid_cot_v6",
+        do_val=True,
+        model=pi0_cot.Pi0CoTConfig(
+            action_horizon=10,
+            max_token_len=110,
+            number_token_weight=1.0,
+        ),
+        data=RLDSDroidCoTDataConfig(
+            repo_id="droid",
+            rlds_data_dir="gs://v6_east1d",
+            language_action_dir="gs://v6_east1d/droid-lang-actions",
+            action_space=droid_rlds_dataset.DroidActionSpace.CARTESIAN_POSITION,
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+            shuffle_buffer_size=250_000,
+            assets=AssetsConfig(
+                assets_dir="gs://v6_east1d/assets/pi0_droid_cot_v4",
+                asset_id="droid",
+            ),
+            summation_steps=15,
+            sum_decimal="2f",
+            left_pad=True,
+            include_decimal_point=True,
+            validation_mode="easy",
+            vis_dataset=False,
+            use_wrist_image=False,
+            val_max_samples=60000,
+            val_fraction=0.02,
+            use_text_state=False,
+            num_state_bins=16,
+            apply_idle_filter=True,
+        ),
+        num_train_steps=100_000,
+        fsdp_devices=8,
+        batch_size=256,
+        save_interval=1000,
+        log_interval=50,
+        weight_loader=weight_loaders.WeightLoaderChoice(kind="paligemma"),
+        # weight_loader=weight_loaders.WeightLoaderChoice(kind="checkpoint", params_path="gs://openpi-assets/checkpoints/pi0_base/params"),
+        assets_base_dir="gs://v6_east1d/assets",
+        checkpoint_base_dir="gs://v6_east1d/checkpoints",
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=1e-4,
+            decay_steps=1_000_000,
+            decay_lr=1e-4,
+        ),
+        # ema_decay=None,
+        keep_period=10000,
+    ),
+    TrainConfig(
+        name="pi0_droid_cot_v5",
+        do_val=True,
+        model=pi0_cot.Pi0CoTConfig(
+            action_horizon=10,
+            max_token_len=110,
+            number_token_weight=1.0,
+        ),
+        data=RLDSDroidCoTDataConfig(
+            repo_id="droid",
+            rlds_data_dir="gs://v5_central1_a",
+            language_action_dir="gs://v5_central1_a/droid-lang-actions",
+            action_space=droid_rlds_dataset.DroidActionSpace.CARTESIAN_POSITION,
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+            shuffle_buffer_size=250_000,
+            assets=AssetsConfig(
+                assets_dir="gs://v5_central1_a/assets/pi0_droid_cot_v4",
+                asset_id="droid",
+            ),
+            summation_steps=15,
+            sum_decimal="2f",
+            left_pad=True,
+            include_decimal_point=True,
+            validation_mode="easy",
+            vis_dataset=False,
+            use_wrist_image=False,
+            val_max_samples=60000,
+            val_fraction=0.02,
+            use_text_state=False,
+            num_state_bins=16,
+            apply_idle_filter=True,
+        ),
+        num_train_steps=100_000,
+        fsdp_devices=8,
+        batch_size=256,
+        save_interval=1000,
+        log_interval=50,
+        weight_loader=weight_loaders.WeightLoaderChoice(kind="paligemma"),
+        # weight_loader=weight_loaders.WeightLoaderChoice(kind="checkpoint", params_path="gs://openpi-assets/checkpoints/pi0_base/params"),
+        assets_base_dir="gs://v5_central1_a/assets",
+        checkpoint_base_dir="gs://v5_central1_a/checkpoints",
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=1e-4,
+            decay_steps=1_000_000,
+            decay_lr=1e-4,
+        ),
+        # ema_decay=None,
+        keep_period=10000,
+    ),
+    TrainConfig(
+        name="pi0_droid_cot_local",
+        do_val=True,
+        model=pi0_cot.Pi0CoTConfig(
+            action_horizon=10,
+            max_token_len=110,
+        ),
+        data=RLDSDroidCoTDataConfig(
+            repo_id="droid",
+            rlds_data_dir="/n/fs/robot-data/data/",
+            language_action_dir="/n/fs/robot-data/vlm-syn/droid-lang-actions",
+            action_space=droid_rlds_dataset.DroidActionSpace.CARTESIAN_POSITION,
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+            shuffle_buffer_size=250_000,
+            assets=AssetsConfig(
+                assets_dir="/n/fs/robot-data/pi0-cot/assets/pi0_droid_cot_v4",
+                asset_id="droid",
+            ),
+        ),
+        num_train_steps=100_000,
+        fsdp_devices=8,
+        batch_size=1,
+        save_interval=1000,
+        log_interval=50,
+        weight_loader=weight_loaders.WeightLoaderChoice(
+            kind="checkpoint", params_path="/n/fs/robot-data/cache/openpi/openpi-assets/checkpoints/pi0_base/params"
+        ),
+        assets_base_dir="/n/fs/robot-data/pi0-cot/assets",
+        checkpoint_base_dir="/n/fs/robot-data/pi0-cot/checkpoints",
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=1e-4,
+            decay_steps=1_000_000,
+            decay_lr=1e-4,
+        ),
+        # keep_period=20_000,
+    ),
     #
     # Inference Aloha configs.
     #
@@ -661,7 +1115,9 @@ _CONFIGS = [
         ),
         # Here you define which pre-trained checkpoint you want to load to initialize the model.
         # This should match the model config you chose above -- i.e. in this case we use the pi0 base model.
-        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
+        weight_loader=weight_loaders.WeightLoaderChoice(
+            kind="checkpoint", params_path="gs://openpi-assets/checkpoints/pi0_base/params"
+        ),
         # Below you can define other hyperparameters like the learning rate, number of training steps, etc.
         # Check the base TrainConfig class for a full list of available hyperparameters.
         num_train_steps=30_000,
@@ -675,7 +1131,9 @@ _CONFIGS = [
             base_config=DataConfig(prompt_from_task=True),
             extra_delta_transform=True,
         ),
-        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
+        weight_loader=weight_loaders.WeightLoaderChoice(
+            kind="checkpoint", params_path="gs://openpi-assets/checkpoints/pi0_base/params"
+        ),
         num_train_steps=30_000,
         # The freeze filter defines which parameters should be frozen during training.
         # We have a convenience function in the model config that returns the default freeze filter
@@ -706,7 +1164,9 @@ _CONFIGS = [
             extra_delta_transform=True,
         ),
         # Note that we load the pi0-FAST base model checkpoint here.
-        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_fast_base/params"),
+        weight_loader=weight_loaders.WeightLoaderChoice(
+            kind="checkpoint", params_path="gs://openpi-assets/checkpoints/pi0_fast_base/params"
+        ),
         num_train_steps=30_000,
     ),
     TrainConfig(
@@ -721,7 +1181,9 @@ _CONFIGS = [
             base_config=DataConfig(prompt_from_task=True),
             extra_delta_transform=True,
         ),
-        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_fast_base/params"),
+        weight_loader=weight_loaders.WeightLoaderChoice(
+            kind="checkpoint", params_path="gs://openpi-assets/checkpoints/pi0_fast_base/params"
+        ),
         num_train_steps=30_000,
         # Again, make sure to match the model config above when extracting the freeze filter
         # that specifies which parameters should be frozen during LoRA finetuning.
@@ -783,7 +1245,9 @@ _CONFIGS = [
                 ]
             ),
         ),
-        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
+        weight_loader=weight_loaders.WeightLoaderChoice(
+            kind="checkpoint", params_path="gs://openpi-assets/checkpoints/pi0_base/params"
+        ),
         num_train_steps=20_000,
     ),
     TrainConfig(
@@ -835,7 +1299,9 @@ _CONFIGS = [
             rlds_data_dir="<path_to_droid_rlds_dataset>",
             action_space=droid_rlds_dataset.DroidActionSpace.JOINT_POSITION,
         ),
-        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_fast_base/params"),
+        weight_loader=weight_loaders.WeightLoaderChoice(
+            kind="checkpoint", params_path="gs://openpi-assets/checkpoints/pi0_fast_base/params"
+        ),
         lr_schedule=_optimizer.CosineDecaySchedule(
             warmup_steps=1_000,
             peak_lr=5e-5,
@@ -918,7 +1384,9 @@ _CONFIGS = [
             default_prompt="Transfer cube",
             use_delta_joint_actions=False,
         ),
-        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
+        weight_loader=weight_loaders.WeightLoaderChoice(
+            kind="checkpoint", params_path="gs://openpi-assets/checkpoints/pi0_base/params"
+        ),
         num_train_steps=20_000,
     ),
     #
@@ -939,8 +1407,10 @@ _CONFIGS = [
         name="debug_restore",
         data=FakeDataConfig(),
         batch_size=2,
-        model=pi0_config.Pi0Config(paligemma_variant="dummy", action_expert_variant="dummy"),
-        weight_loader=weight_loaders.CheckpointWeightLoader("./checkpoints/debug/debug/9/params"),
+        model=pi0.Pi0Config(paligemma_variant="dummy", action_expert_variant="dummy"),
+        weight_loader=weight_loaders.WeightLoaderChoice(
+            kind="checkpoint", params_path="./checkpoints/debug/debug/9/params"
+        ),
         overwrite=True,
         exp_name="debug",
         num_train_steps=10,
@@ -969,6 +1439,16 @@ _CONFIGS_DICT = {config.name: config for config in _CONFIGS}
 
 def cli() -> TrainConfig:
     return tyro.extras.overridable_config_cli({k: (k, v) for k, v in _CONFIGS_DICT.items()})
+
+
+# def cli() -> TrainConfig:
+#     # Build a real subcommand type from your default instances by name.
+#     # prefix_names=False keeps your current flat flag names.
+#     SubType = _tx.subcommand_type_from_defaults(
+#         {cfg.name: cfg for cfg in _CONFIGS},  # or _CONFIGS_DICT if you already have it
+#         prefix_names=False,
+#     )
+#     return tyro.cli(SubType)
 
 
 def get_config(config_name: str) -> TrainConfig:

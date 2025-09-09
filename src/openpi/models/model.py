@@ -32,6 +32,7 @@ class ModelType(enum.Enum):
 
     PI0 = "pi0"
     PI0_FAST = "pi0_fast"
+    PI0CoT = "pi0_cot"
     PI05 = "pi05"
 
 
@@ -78,6 +79,8 @@ IMAGE_RESOLUTION = (224, 224)
 #   s = state dimension
 #   l = sequence length
 #
+
+
 @at.typecheck
 @struct.dataclass
 class Observation(Generic[ArrayT]):
@@ -94,10 +97,19 @@ class Observation(Generic[ArrayT]):
     # Low-dimensional robot state.
     state: at.Float[ArrayT, "*b s"]
 
-    # Tokenized prompt.
+    # Tokenized prompt. Also contains reasoning tokens for CoT models.
     tokenized_prompt: at.Int[ArrayT, "*b l"] | None = None
-    # Tokenized prompt mask.
+    # Tokenized prompt mask. When using CoT, also contains masks for reasoning tokens.
     tokenized_prompt_mask: at.Bool[ArrayT, "*b l"] | None = None
+
+    # Optional reasoning tokens for CoT models.
+    tokenized_reasoning_mask: at.Bool[ArrayT, "*b l"] | None = None
+
+    # Optional numeric-token mask (True where token piece contains digits) for CoT models.
+    tokenized_numeric_mask: at.Bool[ArrayT, "*b l"] | None = None
+
+    # Optional per-example mask to exclude idle samples from loss.
+    example_mask: at.Bool[ArrayT, "*b"] | None = None
 
     # pi0-fast model specific fields.
 
@@ -105,6 +117,14 @@ class Observation(Generic[ArrayT]):
     token_ar_mask: at.Int[ArrayT, "*b l"] | None = None
     # Token loss mask (for FAST autoregressive model).
     token_loss_mask: at.Bool[ArrayT, "*b l"] | None = None
+
+    # Optional calibration and trajectory context for visualization/debugging
+    # Camera intrinsics as [fx, fy, cx, cy] per-timestep (aligned with images time dim)
+    camera_intrinsics: at.Float[ArrayT, "*b t 4"] | None = None
+    # Camera-to-base extrinsics as 4x4 matrix per-timestep
+    camera_extrinsics: at.Float[ArrayT, "*b t 4 4"] | None = None
+    # Optional grouped cartesian positions for windowed visualization: [T, 6]
+    cartesian_position_window: at.Float[ArrayT, "*b t 6"] | None = None
 
     @classmethod
     def from_dict(cls, data: at.PyTree[ArrayT]) -> "Observation[ArrayT]":
@@ -126,6 +146,12 @@ class Observation(Generic[ArrayT]):
             tokenized_prompt_mask=data.get("tokenized_prompt_mask"),
             token_ar_mask=data.get("token_ar_mask"),
             token_loss_mask=data.get("token_loss_mask"),
+            tokenized_reasoning_mask=data.get("tokenized_reasoning_mask"),
+            tokenized_numeric_mask=data.get("tokenized_numeric_mask"),
+            example_mask=data.get("example_mask"),
+            camera_intrinsics=data.get("camera_intrinsics"),
+            camera_extrinsics=data.get("camera_extrinsics"),
+            cartesian_position_window=data.get("cartesian_position_window"),
         )
 
     def to_dict(self) -> at.PyTree[ArrayT]:
@@ -170,7 +196,8 @@ def preprocess_observation(
             image = image / 2.0 + 0.5
 
             transforms = []
-            if "wrist" not in key:
+            # if "wrist" not in key:
+            if True:
                 height, width = image.shape[1:3]
                 transforms += [
                     augmax.RandomCrop(int(width * 0.95), int(height * 0.95)),
@@ -205,6 +232,11 @@ def preprocess_observation(
         tokenized_prompt_mask=observation.tokenized_prompt_mask,
         token_ar_mask=observation.token_ar_mask,
         token_loss_mask=observation.token_loss_mask,
+        tokenized_reasoning_mask=observation.tokenized_reasoning_mask,
+        tokenized_numeric_mask=getattr(observation, "tokenized_numeric_mask", None),
+        camera_intrinsics=getattr(observation, "camera_intrinsics", None),
+        camera_extrinsics=getattr(observation, "camera_extrinsics", None),
+        cartesian_position_window=getattr(observation, "cartesian_position_window", None),
     )
 
 
@@ -282,6 +314,9 @@ class BaseModel(nnx.Module, abc.ABC):
     @abc.abstractmethod
     def sample_actions(self, rng: at.KeyArrayLike, observation: Observation, **kwargs) -> Actions: ...
 
+    @abc.abstractmethod
+    def sample_reasoning(self, observation: Observation) -> tuple: ...
+
 
 def restore_params(
     params_path: pathlib.Path | str,
@@ -304,25 +339,79 @@ def restore_params(
     Returns:
         The restored params.
     """
-    params_path = pathlib.Path(params_path).resolve() if not str(params_path).startswith("gs://") else params_path
+    # Support both local filesystem paths and remote GCS URIs (gs://...).
+    is_gcs = str(params_path).startswith("gs://")
+    if is_gcs:
+        params_path_str = str(params_path)
+        # Prefer cache path if provided; do not redirect to upstream here. Fallback is handled below.
+    else:
+        params_path_local = pathlib.Path(params_path).resolve()
+        if not params_path_local.exists():
+            raise FileNotFoundError(f"Model params not found at: {params_path_local}")
+        params_path_str = str(params_path_local)
+    # TODO: change to below one
+    # params_path = pathlib.Path(params_path).resolve() if not str(params_path).startswith("gs://") else params_path
 
     if restore_type is jax.Array and sharding is None:
         mesh = jax.sharding.Mesh(jax.devices(), ("x",))
         sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec())
 
-    with ocp.PyTreeCheckpointer() as ckptr:
-        metadata = ckptr.metadata(params_path)
-        item = {"params": metadata["params"]}
+    def _ensure_commit_success(dir_path: str) -> None:
+        # Some mirrored or copied checkpoints may be missing the COMMIT_SUCCESS file.
+        # If _METADATA exists but COMMIT_SUCCESS does not, create it to allow restore.
+        # This is safe because we only do this on read, and we don't modify checkpoint contents.
+        # We try to create both COMMIT_SUCCESS and COMMIT_SUCCESS_FILE.
+        try:
+            fs = ocp.utils.async_utils.async_gfile
+        except Exception:
+            fs = None
+        commit_success = f"{dir_path}/commit_success.txt"
+        metadata_file = f"{dir_path}/_METADATA"
+        try:
+            if fs and fs.exists(metadata_file):
+                if not fs.exists(commit_success):
+                    with fs.GFile(commit_success, "w") as f:
+                        f.write("ok")
+        except Exception:
+            pass
 
-        params = ckptr.restore(
-            params_path,
-            ocp.args.PyTreeRestore(
-                item=item,
-                restore_args=jax.tree.map(
-                    lambda _: ocp.ArrayRestoreArgs(sharding=sharding, restore_type=restore_type, dtype=dtype), item
+    def _try_restore(dir_path: str) -> at.Params:
+        _ensure_commit_success(dir_path)
+        with ocp.PyTreeCheckpointer() as ckptr:
+            metadata = ckptr.metadata(dir_path)
+            item = {"params": metadata["params"]}
+            return ckptr.restore(
+                dir_path,
+                ocp.args.PyTreeRestore(
+                    item=item,
+                    restore_args=jax.tree.map(
+                        lambda _: ocp.ArrayRestoreArgs(sharding=sharding, restore_type=restore_type, dtype=dtype), item
+                    ),
                 ),
-            ),
-        )["params"]
+            )["params"]
+
+    # Try original path first; on known metadata/incomplete errors, try upstream fallback.
+    paths_to_try: list[str] = [params_path_str]
+    if is_gcs and "/cache/" in params_path_str:
+        after_cache = params_path_str.split("/cache/", 1)[1]
+        upstream = after_cache if after_cache.startswith("gs://") else f"gs://{after_cache}"
+        if upstream != params_path_str:
+            paths_to_try.append(upstream)
+
+    last_error: Exception | None = None
+    for candidate in paths_to_try:
+        try:
+            if candidate != params_path_str:
+                logger.info("Falling back to upstream checkpoint at %s", candidate)
+            params = _try_restore(candidate)
+            break
+        except (FileNotFoundError, ValueError) as e:
+            # Orbax may raise FileNotFoundError for missing _METADATA or ValueError for incomplete checkpoints.
+            last_error = e
+            continue
+    else:
+        assert last_error is not None
+        raise last_error
 
     # If the params were saved with `save_state` during openpi training, every key path will end with "value", which is
     # added by `nnx.State`. We remove the "value" suffix here and always return what NNX calls a "pure dict".

@@ -4,12 +4,14 @@ import asyncio
 import concurrent.futures as futures
 import dataclasses
 import logging
+import subprocess
 from typing import Protocol
 
 from etils import epath
 import jax
 import orbax.checkpoint as ocp
 import orbax.checkpoint.future as future
+import tensorflow as tf
 
 from openpi.shared import array_typing as at
 import openpi.shared.normalize as _normalize
@@ -17,16 +19,43 @@ import openpi.training.data_loader as _data_loader
 import openpi.training.utils as training_utils
 
 
+def _delete_gcs_prefix_with_gsutil(uri: str) -> None:
+    """Delete a GCS URI prefix using gsutil recursively.
+
+    Raises a CalledProcessError if deletion fails.
+    """
+    cmd = ["gsutil", "-m", "rm", "-r", uri]
+    result = subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    logging.info("gsutil deletion output for %s:\n%s", uri, result.stdout)
+
+
 def initialize_checkpoint_dir(
     checkpoint_dir: epath.Path | str, *, keep_period: int | None, overwrite: bool, resume: bool
 ) -> tuple[ocp.CheckpointManager, bool]:
-    checkpoint_dir = epath.Path(checkpoint_dir).resolve()
+    logging.info(f"Checkpoint_dir:{checkpoint_dir}")
+    checkpoint_dir = epath.Path(checkpoint_dir)
+    logging.info(f"Checkpoint_dir:{checkpoint_dir}")
     resuming = False
-    if checkpoint_dir.exists():
+    is_gcs = str(checkpoint_dir).startswith("gs://")
+    exists = tf.io.gfile.exists(str(checkpoint_dir)) if is_gcs else checkpoint_dir.exists()
+    if exists:
         if overwrite:
-            checkpoint_dir.rmtree()
-            checkpoint_dir.mkdir(parents=True, exist_ok=True)
-            logging.info(f"Wiped checkpoint directory {checkpoint_dir}")
+            try:
+                if is_gcs:
+                    # Use gsutil to delete the GCS prefix recursively.
+                    _delete_gcs_prefix_with_gsutil(str(checkpoint_dir))
+                    # Recreate the prefix to ensure later writes succeed.
+                    tf.io.gfile.makedirs(str(checkpoint_dir))
+                else:
+                    checkpoint_dir.rmtree()
+                    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+                logging.info(f"Wiped checkpoint directory {checkpoint_dir}")
+            except Exception as e:
+                logging.warning(
+                    "Failed to wipe checkpoint directory %s due to %s. Proceeding without wiping.",
+                    checkpoint_dir,
+                    e,
+                )
         elif resume:
             resuming = True
         else:
@@ -35,7 +64,10 @@ def initialize_checkpoint_dir(
                 "to indicate how to handle it."
             )
 
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    if is_gcs:
+        tf.io.gfile.makedirs(str(checkpoint_dir))
+    else:
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     mngr = ocp.CheckpointManager(
         checkpoint_dir,
@@ -73,7 +105,7 @@ def save_state(
         data_config = data_loader.data_config()
         norm_stats = data_config.norm_stats
         if norm_stats is not None and data_config.asset_id is not None:
-            _normalize.save(directory / data_config.asset_id, norm_stats)
+            _normalize.save(str(directory / data_config.asset_id), norm_stats)
 
     # Split params that can be used for inference into a separate item.
     with at.disable_typechecking():
@@ -92,7 +124,7 @@ def restore_state(
     data_loader: _data_loader.DataLoader,
     step: int | None = None,
 ) -> training_utils.TrainState:
-    del data_loader
+    # del data_loader
 
     with at.disable_typechecking():
         # Split params that can be used for inference into a separate item.
@@ -109,7 +141,7 @@ def restore_state(
 
 def load_norm_stats(assets_dir: epath.Path | str, asset_id: str) -> dict[str, _normalize.NormStats] | None:
     norm_stats_dir = epath.Path(assets_dir) / asset_id
-    norm_stats = _normalize.load(norm_stats_dir)
+    norm_stats = _normalize.load(str(norm_stats_dir))
     logging.info(f"Loaded norm stats from {norm_stats_dir}")
     return norm_stats
 

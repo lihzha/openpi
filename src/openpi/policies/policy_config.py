@@ -1,3 +1,4 @@
+import dataclasses
 import logging
 import os
 import pathlib
@@ -13,7 +14,14 @@ from openpi.training import config as _config
 import openpi.transforms as transforms
 
 
+@dataclasses.dataclass
+class PolicyConfig:
+    policy_type: _policy.PolicyType = _policy.PolicyType.Policy
+    use_norm_stats: bool = True
+
+
 def create_trained_policy(
+    policy_config: PolicyConfig,
     train_config: _config.TrainConfig,
     checkpoint_dir: pathlib.Path | str,
     *,
@@ -71,24 +79,50 @@ def create_trained_policy(
             pytorch_device = "cuda" if torch.cuda.is_available() else "cpu"
         except ImportError:
             pytorch_device = "cpu"
-
-    return _policy.Policy(
-        model,
-        transforms=[
-            *repack_transforms.inputs,
-            transforms.InjectDefaultPrompt(default_prompt),
-            *data_config.data_transforms.inputs,
-            transforms.Normalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
-            *data_config.model_transforms.inputs,
-        ],
-        output_transforms=[
-            *data_config.model_transforms.outputs,
-            transforms.Unnormalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
-            *data_config.data_transforms.outputs,
-            *repack_transforms.outputs,
-        ],
-        sample_kwargs=sample_kwargs,
-        metadata=train_config.policy_metadata,
-        is_pytorch=is_pytorch,
-        pytorch_device=pytorch_device if is_pytorch else None,
-    )
+            
+    match policy_config.policy_type:
+        case _policy.PolicyType.CoTPolicy:
+            if not policy_config.use_norm_stats:
+                norm_stats = None
+            return _policy.CoTPolicy(
+                model,
+                transforms=[
+                    *repack_transforms.inputs,
+                    transforms.InjectDefaultPrompt(default_prompt),
+                    *data_config.data_transforms.inputs,
+                    transforms.Normalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
+                    *data_config.model_transforms.inputs,
+                ],
+                output_transforms=[
+                    *data_config.model_transforms.outputs,
+                    transforms.Unnormalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
+                    *data_config.data_transforms.outputs,
+                    *repack_transforms.outputs,
+                ],
+                sample_kwargs=sample_kwargs,
+                metadata=train_config.policy_metadata,
+                is_pytorch=is_pytorch,
+                pytorch_device=pytorch_device if is_pytorch else None,
+            )
+        case _:
+            assert policy_config.use_norm_stats
+            return _policy.Policy(
+                model,
+                transforms=[
+                    *repack_transforms.inputs,
+                    transforms.InjectDefaultPrompt(default_prompt),
+                    *data_config.data_transforms.inputs,
+                    transforms.Normalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
+                    *data_config.model_transforms.inputs,
+                ],
+                output_transforms=[
+                    *data_config.model_transforms.outputs,
+                    transforms.Unnormalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
+                    *data_config.data_transforms.outputs,
+                    *repack_transforms.outputs,
+                ],
+                sample_kwargs=sample_kwargs,
+                metadata=train_config.policy_metadata,
+                is_pytorch=is_pytorch,
+                pytorch_device=pytorch_device if is_pytorch else None,
+            )
