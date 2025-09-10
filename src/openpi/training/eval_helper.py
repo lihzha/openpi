@@ -297,6 +297,7 @@ def eval_step(
     k_local: int,
 ):
     l2_cm_values: list[float] = []
+    to_log: list[np.ndarray] = []
     # Always run reasoning sampling across all processes; restrict decoding/logging to process 0.
     # Bound to local batch size to avoid indexing errors
     if jax.process_index() == 0:
@@ -343,7 +344,6 @@ def eval_step(
         if cart_np is None or intr_np is None or extr_np is None:
             logging.info("No extrinsics/intrinsics/cartesian position available. Try vis_dataset=True.")
             return None, None
-        to_log = []
         for bi in range(k_decode):
             vis = imgs_u8[bi]
             H, W = vis.shape[:2]

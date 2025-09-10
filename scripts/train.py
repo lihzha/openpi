@@ -426,8 +426,8 @@ def main(config: _config.TrainConfig):
                 dynamic_ncols=True,
                 disable=(jax.process_index() != 0),
             )
-            # img_log_step_idx = np.random.randint(0, num_val_batches)
-            img_log_step_idx = 0
+            img_log_step_idx = np.random.randint(0, num_val_batches)
+            # img_log_step_idx = 0
             num_images_to_log = 64
             with sharding.set_mesh(mesh):
                 val_infos = []
@@ -449,7 +449,8 @@ def main(config: _config.TrainConfig):
                         # Ensure observation for sampling is replicated across devices
                         obs_local = jax.device_put(eval_batch[0], replicated_sharding)
                         id_buf, t_final = psample_reasoning(train_state, obs_local)
-                        l2_cm_values, to_log = _eval_helper.eval_step(gt_batch, id_buf, t_final, tok, k_local)
+                        if jax.process_index() == 0:
+                            l2_cm_values, to_log = _eval_helper.eval_step(gt_batch, id_buf, t_final, tok, k_local)
                         if to_log and jax.process_index() == 0:
                             wandb.log({"val/annotated": to_log}, step=step)
 

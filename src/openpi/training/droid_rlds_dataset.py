@@ -51,10 +51,11 @@ import logging
 import os
 from pathlib import Path
 import time
-import tqdm
+
 import jax
 import numpy as np
 import psutil
+import tqdm
 
 import openpi.shared.download as download
 import openpi.training.config as _config
@@ -73,7 +74,6 @@ def print_memory_usage(label):
     process = psutil.Process(os.getpid())
     mem = process.memory_info().rss / (1024**2)  # in MB
     logging.info(f"[{label}] Memory usage: {mem:.2f} MB")
-
 
 
 class DroidActionSpace(Enum):
@@ -284,7 +284,6 @@ class DroidRldsDataset:
             dataset = dataset.traj_map(_wrap_timed_map(chunk_actions, "chunk_actions"), num_parallel_calls)
         else:
             dataset = dataset.traj_map(chunk_actions, num_parallel_calls)
-
 
         # Flatten: map from trajectory dataset to dataset of individual action chunks
         dataset = dataset.flatten(num_parallel_calls=num_parallel_calls)
