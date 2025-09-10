@@ -28,8 +28,7 @@ def make_mesh(fsdp_devices: int) -> jax.sharding.Mesh:
     try:
         devmesh = mesh_utils.create_device_mesh((P, D))  # shape (P, D)
     except:
-        devmesh = mesh_utils.create_device_mesh((D, P))
-
+        devmesh = mesh_utils.create_device_mesh((8, 8))
     if fsdp_devices <= D:
         # Intra-host FSDP: split each host's devices into [dp_per_host, fsdp_devices]
         if D % fsdp_devices != 0:
