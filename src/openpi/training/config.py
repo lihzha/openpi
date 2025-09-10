@@ -530,7 +530,7 @@ class RLDSDroidCoTDataConfig(DataConfigFactory):
             "observation/gripper_position": "observation/gripper_position",
             "actions": "actions",
             "prompt": "prompt",
-            "language_actions": "language_actions",
+            # "language_actions": "language_actions",
         }
 
         if self.use_history:
