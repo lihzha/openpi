@@ -57,7 +57,7 @@ def resize_with_pad(
 
 
 def resize_with_pad_torch(
-    images: torch.Tensor,
+    images,
     height: int,
     width: int,
     mode: str = "bilinear",
