@@ -2,8 +2,12 @@ import functools
 
 import jax
 import jax.numpy as jnp
-import torch
-import torch.nn.functional as F  # noqa: N812
+
+try:
+    import torch
+    import torch.nn.functional as F  # noqa: N812
+except ImportError:
+    torch = None
 
 import openpi.shared.array_typing as at
 
@@ -57,7 +61,7 @@ def resize_with_pad_torch(
     height: int,
     width: int,
     mode: str = "bilinear",
-) -> torch.Tensor:
+):
     """PyTorch version of resize_with_pad. Resizes an image to a target height and width without distortion
     by padding with black. If the image is float32, it must be in the range [-1, 1].
 

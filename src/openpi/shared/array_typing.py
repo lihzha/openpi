@@ -20,7 +20,14 @@ from jaxtyping import UInt8  # noqa: F401
 from jaxtyping import config
 from jaxtyping import jaxtyped
 import jaxtyping._decorator
-import torch
+
+try:
+    import torch
+
+    Array = jax.Array | torch.Tensor
+except ImportError:
+    torch = None
+    Array = jax.Array
 
 # patch jaxtyping to handle https://github.com/patrick-kidger/jaxtyping/issues/277.
 # the problem is that custom PyTree nodes are sometimes initialized with arbitrary types (e.g., `jax.ShapeDtypeStruct`,
@@ -28,7 +35,6 @@ import torch
 # contains `jax._src.tree_util`, which should only be the case during tree unflattening.
 _original_check_dataclass_annotations = jaxtyping._decorator._check_dataclass_annotations  # noqa: SLF001
 # Redefine Array to include both JAX arrays and PyTorch tensors
-Array = jax.Array | torch.Tensor
 
 
 def _check_dataclass_annotations(self, typechecker):
