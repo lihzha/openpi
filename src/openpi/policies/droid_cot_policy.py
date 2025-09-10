@@ -165,9 +165,6 @@ class DroidCoTInputs(transforms.DataTransformFn):
     # Optional global stats for state; used to produce a compact, binned summary in the prompt.
     # Expect stats for the key "state" from normalization assets.
     state_norm_stats: transforms.NormStats | None = None
-    # Number of uniform bins to discretize each state dimension into when augmenting the prompt.
-    num_state_bins: int = 16
-    use_text_state: bool = True
 
     # Determines which model will be used.
     model_type: _model.ModelType = _model.ModelType.PI0CoT
@@ -223,39 +220,6 @@ class DroidCoTInputs(transforms.DataTransformFn):
                     prompt_item.decode("utf-8") if isinstance(prompt_item, (bytes, np.bytes_)) else str(prompt_item)
                 )
 
-            if self.use_text_state:
-                # Compute per-dimension uniform-bin indices based on global stats (q01/q99 preferred)
-                def _bin_with_bounds(x: np.ndarray, low: np.ndarray, high: np.ndarray, bins: int) -> np.ndarray:
-                    # Avoid degenerate ranges
-                    rng = np.maximum(high - low, 1e-6)
-                    pos = np.clip((x - low) / rng, 0.0, 1.0)
-                    idx = np.floor(pos * bins).astype(int)
-                    return np.clip(idx, 0, bins - 1)
-
-                if self.state_norm_stats is not None and (
-                    getattr(self.state_norm_stats, "q01", None) is not None
-                    and getattr(self.state_norm_stats, "q99", None) is not None
-                ):
-                    lows = np.asarray(self.state_norm_stats.q01)
-                    highs = np.asarray(self.state_norm_stats.q99)
-                elif self.state_norm_stats is not None:
-                    # Fall back to mean ± 3σ if quantiles are unavailable
-                    mean = np.asarray(self.state_norm_stats.mean)
-                    std = np.asarray(self.state_norm_stats.std)
-                    lows = mean - 3.0 * std
-                    highs = mean + 3.0 * std
-                else:
-                    # If no stats available, use per-dimension symmetric bounds around current value (degenerate but safe)
-                    # Choose a small range to avoid division by zero
-                    widths = np.maximum(np.abs(state), 1.0)
-                    lows = state - widths
-                    highs = state + widths
-
-                binned = _bin_with_bounds(state, lows, highs, self.num_state_bins)
-                tail = f" Current robot state: [{','.join(map(str, binned.tolist()))}]"
-                # Optional dropout: randomly drop the text-state tail from the prompt
-                if not (self.text_state_dropout_prob > 0.0 and np.random.rand() < float(self.text_state_dropout_prob)):
-                    prompt_str = f"{prompt_str}{tail}"
             inputs["prompt"] = prompt_str
 
         if "language_actions" in data:

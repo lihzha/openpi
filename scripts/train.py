@@ -440,7 +440,7 @@ def main(config: _config.TrainConfig):
                     val_info = pval_step(train_rng, train_state, val_batch)
                     val_infos.append(val_info)
 
-                    if val_step_idx == img_log_step_idx:
+                    if config.data.vis_dataset and val_step_idx == img_log_step_idx:
                         k_local = int(min(num_images_to_log, val_batch[0].state.shape[0]))
                         eval_batch = _eval_helper.prepare_eval_batch(val_batch)
                         eval_idx = jax.random.choice(rng, eval_batch[0].state.shape[0], shape=(k_local,), replace=False)

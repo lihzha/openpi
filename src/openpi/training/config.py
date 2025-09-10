@@ -14,9 +14,8 @@ from typing_extensions import override
 import tyro
 
 import openpi.models.model as _model
-import openpi.models.pi0 as pi0
-import openpi.models.pi0_cot as pi0_cot
 import openpi.models.pi0_config as pi0_config
+import openpi.models.pi0_cot_config as pi0_cot_config
 import openpi.models.pi0_fast as pi0_fast
 import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
@@ -129,8 +128,6 @@ class DataConfig:
     validation_mode: str = "easy"
     vis_dataset: bool = False
     use_wrist_image: bool = False
-    use_text_state: bool = True
-    num_state_bins: int = 16
     apply_idle_filter: bool = True
     wrist_image_dropout_prob: float = 0.0
     text_state_dropout_prob: float = 0.0
@@ -215,6 +212,7 @@ class CoTModelTransformFactory(GroupFactory):
     def __call__(self, model_config: _model.BaseModelConfig) -> _transforms.Group:
         match model_config.model_type:
             case _model.ModelType.PI0CoT:
+                assert isinstance(model_config, pi0_cot_config.Pi0CoTConfig)
                 return _transforms.Group(
                     inputs=[
                         _transforms.InjectDefaultPrompt(self.default_prompt),
@@ -608,8 +606,6 @@ class RLDSDroidCoTDataConfig(DataConfigFactory):
     validation_mode: str = "easy"
     vis_dataset: bool = False
     use_wrist_image: bool = False
-    use_text_state: bool = False
-    num_state_bins: int = 16
     apply_idle_filter: bool = True
     # Train-time dropout (applied in DroidCoTInputs). Set nonzero only for training.
     wrist_image_dropout_prob: float = 0.0
@@ -620,7 +616,7 @@ class RLDSDroidCoTDataConfig(DataConfigFactory):
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
         # Load base config first to access norm stats (for state binning in prompt augmentation)
-        base_cfg = self.create_base_config(assets_dirs)
+        base_cfg = self.create_base_config(assets_dirs, model_config)
 
         repack_dict = {
             # lihan: always name base image as "exterior_image_1_left", though it should come from the camera which language action is annotated.
@@ -651,8 +647,6 @@ class RLDSDroidCoTDataConfig(DataConfigFactory):
                     model_type=model_config.model_type,
                     sum_decimal=self.sum_decimal,
                     state_norm_stats=state_stats,
-                    use_text_state=self.use_text_state,
-                    num_state_bins=self.num_state_bins,
                     wrist_image_dropout_prob=self.wrist_image_dropout_prob,
                     text_state_dropout_prob=self.text_state_dropout_prob,
                 )
@@ -695,8 +689,6 @@ class RLDSDroidCoTDataConfig(DataConfigFactory):
             val_fraction=self.val_fraction,
             validation_mode=self.validation_mode,
             vis_dataset=self.vis_dataset,
-            use_text_state=self.use_text_state,
-            num_state_bins=self.num_state_bins,
             apply_idle_filter=self.apply_idle_filter,
             drop_gripper_oob=self.drop_gripper_oob,
             wrist_image_dropout_prob=self.wrist_image_dropout_prob,
@@ -811,7 +803,7 @@ _CONFIGS = [
     TrainConfig(
         name="pi0_droid_cot_v4",
         do_val=True,
-        model=pi0_cot.Pi0CoTConfig(
+        model=pi0_cot_config.Pi0CoTConfig(
             action_horizon=10,
             max_token_len=110,
             number_token_weight=1.0,
@@ -838,8 +830,6 @@ _CONFIGS = [
             use_wrist_image=False,
             val_max_samples=60000,
             val_fraction=0.02,
-            use_text_state=False,
-            num_state_bins=16,
             apply_idle_filter=True,
             drop_gripper_oob=False,
         ),
@@ -863,7 +853,7 @@ _CONFIGS = [
     TrainConfig(
         name="pi0_droid_cot_v6",
         do_val=True,
-        model=pi0_cot.Pi0CoTConfig(
+        model=pi0_cot_config.Pi0CoTConfig(
             action_horizon=10,
             max_token_len=110,
             number_token_weight=1.0,
@@ -890,8 +880,6 @@ _CONFIGS = [
             use_wrist_image=False,
             val_max_samples=60000,
             val_fraction=0.02,
-            use_text_state=False,
-            num_state_bins=16,
             apply_idle_filter=True,
         ),
         num_train_steps=100_000,
@@ -915,7 +903,7 @@ _CONFIGS = [
     TrainConfig(
         name="pi0_droid_cot_v5",
         do_val=True,
-        model=pi0_cot.Pi0CoTConfig(
+        model=pi0_cot_config.Pi0CoTConfig(
             action_horizon=10,
             max_token_len=110,
             number_token_weight=1.0,
@@ -942,8 +930,6 @@ _CONFIGS = [
             use_wrist_image=False,
             val_max_samples=60000,
             val_fraction=0.02,
-            use_text_state=False,
-            num_state_bins=16,
             apply_idle_filter=True,
         ),
         num_train_steps=100_000,
@@ -967,7 +953,7 @@ _CONFIGS = [
     TrainConfig(
         name="pi0_droid_cot_local",
         do_val=True,
-        model=pi0_cot.Pi0CoTConfig(
+        model=pi0_cot_config.Pi0CoTConfig(
             action_horizon=10,
             max_token_len=110,
         ),
@@ -1407,7 +1393,7 @@ _CONFIGS = [
         name="debug_restore",
         data=FakeDataConfig(),
         batch_size=2,
-        model=pi0.Pi0Config(paligemma_variant="dummy", action_expert_variant="dummy"),
+        model=pi0_config.Pi0Config(paligemma_variant="dummy", action_expert_variant="dummy"),
         weight_loader=weight_loaders.WeightLoaderChoice(
             kind="checkpoint", params_path="./checkpoints/debug/debug/9/params"
         ),

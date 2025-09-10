@@ -269,6 +269,7 @@ class TokenizePrompt(DataTransformFn):
 @dataclasses.dataclass(frozen=True)
 class TokenizePromptAndReasoning(DataTransformFn):
     tokenizer: _tokenizer.PaligemmaTokenizer
+    discrete_state_input: bool = False
 
     def __call__(self, data: DataDict) -> DataDict:
         if (prompt := data.pop("prompt", None)) is None:
@@ -276,6 +277,12 @@ class TokenizePromptAndReasoning(DataTransformFn):
 
         if not isinstance(prompt, str):
             prompt = prompt.item()
+
+        if self.discrete_state_input:
+            if (state := data.get("state", None)) is None:
+                raise ValueError("State is required.")
+        else:
+            state = None
 
         language_actions = data.pop("language_actions", None)  # if None, inference
         if language_actions is not None and not isinstance(language_actions, str):
@@ -309,7 +316,7 @@ class TokenizePromptAndReasoning(DataTransformFn):
         is_idle = _is_idle_language_action(language_actions)
         example_mask = not is_idle
 
-        tokens, pad_mask, reasoning_mask, numeric_mask = self.tokenizer.tokenize_cot(prompt, language_actions)
+        tokens, pad_mask, reasoning_mask, numeric_mask = self.tokenizer.tokenize_cot(prompt, language_actions, state)
 
         return {
             **data,

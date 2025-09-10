@@ -50,14 +50,21 @@ class PaligemmaTokenizer:
 
         return np.asarray(tokens), np.asarray(mask)
 
-    def tokenize_cot(self, prompt: str, reasoning: str | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        
+    def tokenize_cot(
+        self, prompt: str, reasoning: str | None = None, state: np.ndarray | None = None
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         cleaned_prompt = prompt.strip().replace("_", " ").replace("\n", " ")
+        if state is not None:
+            # This is the Pi05 format, where the state is part of the discrete language input.
+            discretized_state = np.digitize(state, bins=np.linspace(-1, 1, 256 + 1)[:-1]) - 1
+            state_str = " ".join(map(str, discretized_state))
+            cleaned_prompt = f"Task: {cleaned_prompt}, State: {state_str};\nAction: "
         # eos_id = self._tokenizer.eos_id()
         pad_id = self._tokenizer.pad_id()
 
         tokens = self._tokenizer.encode(cleaned_prompt, add_bos=True, add_eos=False)
-        tokens += self._tokenizer.encode("\n")
+        if state is None: # This is the Pi0 format, where the state is part of the continuous action expert input.
+            tokens += self._tokenizer.encode("\n")
 
         reasoning_start = len(tokens)
         if reasoning is not None:
@@ -97,8 +104,10 @@ class PaligemmaTokenizer:
                 pieces = [self._tokenizer.id_to_piece(t) for t in tokens]
             except Exception:
                 pieces = [""] * len(tokens)
+
             def _has_digit(p: str) -> bool:
                 return bool(re.search(r"[0-9]", p))
+
             def _is_decimal_point_index(i: int) -> bool:
                 if not self._include_decimal_point:
                     return False
@@ -108,6 +117,7 @@ class PaligemmaTokenizer:
                 prev_has = i - 1 >= 0 and _has_digit(pieces[i - 1])
                 next_has = i + 1 < len(pieces) and _has_digit(pieces[i + 1])
                 return prev_has or next_has
+
             for i in range(start_idx, end_idx):
                 if i < 0 or i >= len(pieces):
                     continue
@@ -122,8 +132,10 @@ class PaligemmaTokenizer:
                 pieces = [self._tokenizer.id_to_piece(t) for t in tokens[:reasoning_end]]
             except Exception:
                 pieces = [""] * len(tokens[:reasoning_end])
+
             def _has_digit(p: str) -> bool:
                 return bool(re.search(r"[0-9]", p))
+
             def _is_decimal_point_index(i: int) -> bool:
                 if not self._include_decimal_point:
                     return False
@@ -133,11 +145,11 @@ class PaligemmaTokenizer:
                 prev_has = i - 1 >= 0 and _has_digit(pieces[i - 1])
                 next_has = i + 1 < len(pieces) and _has_digit(pieces[i + 1])
                 return prev_has or next_has
+
             for i in range(reasoning_start, reasoning_end):
                 idx = i
                 if idx < len(pieces) and (_has_digit(pieces[idx]) or _is_decimal_point_index(idx)):
                     numeric_mask[i] = True
-
 
         return (
             np.asarray(tokens, dtype=np.int32),

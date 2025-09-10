@@ -214,7 +214,7 @@ def log_batch_sharding(batch):
             # Example addressable shard shape on this host (if available)
             if hasattr(arr, "addressable_shards") and arr.addressable_shards:
                 ex_shape = arr.addressable_shards[0].data.shape
-            shard_str = _format_sharding(arr.sharding)
+            shard_str = format_sharding(arr.sharding)
             line = f"{fmt_path(path)}: global={tuple(arr.shape)} dtype={arr.dtype} | {shard_str}"
             if ex_shape is not None:
                 line += f" | local_shard={tuple(ex_shape)}"
@@ -246,7 +246,7 @@ def log_param_sharding_planned(state_sharding):
                 replicated += 1
         else:
             replicated += 1
-        entries.append(f"{jax.tree_util.keystr(path)}: {_format_sharding(shard)}")
+        entries.append(f"{jax.tree_util.keystr(path)}: {format_sharding(shard)}")
     logging.info(
         "Planned parameter sharding (from fsdp_sharding): sharded=%d replicated=%d\n%s",
         sharded,
@@ -262,7 +262,7 @@ def log_param_sharding_actual(params):
             ex_shape = None
             if hasattr(arr, "addressable_shards") and arr.addressable_shards:
                 ex_shape = arr.addressable_shards[0].data.shape
-            shard_str = _format_sharding(arr.sharding)
+            shard_str = format_sharding(arr.sharding)
             line = f"{jax.tree_util.keystr(path)}: global={tuple(arr.shape)} dtype={arr.dtype} | {shard_str}"
             if ex_shape is not None:
                 line += f" | local_shard={tuple(ex_shape)}"
