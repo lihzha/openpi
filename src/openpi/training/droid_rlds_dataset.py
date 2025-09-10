@@ -351,6 +351,7 @@ class DroidCoTRldsDataset:
         apply_idle_filter = getattr(config, "apply_idle_filter", True)
         drop_gripper_oob = getattr(config, "drop_gripper_oob", False)
         history_steps = getattr(config, "history_steps", 8)
+        use_language_actions = getattr(config, "use_language_actions", False)
 
         logging.info(
             f"validation_mode: {validation_mode}, val_fraction: {val_fraction}, vis_dataset: {vis_dataset}, \
@@ -741,10 +742,6 @@ class DroidCoTRldsDataset:
             # Align lengths across modalities
             traj_len = tf.shape(actions)[0]
             episode_id = _episode_id_from_traj(traj)
-            lang_bytes = lang_table.lookup(episode_id)
-            lang_tensor = tf.io.parse_tensor(lang_bytes, tf.string)
-            # Language actions may include an extra terminal step; crop to match action length
-            lang_tensor = lang_tensor[:traj_len]
             # Sample instruction from merged table or fallback
             instr_bytes = instr_table.lookup(episode_id)
             fallback_index = tf.random.uniform(
@@ -800,9 +797,15 @@ class DroidCoTRldsDataset:
                     "gripper_position": traj["observation"]["gripper_position"],
                 },
                 "prompt": instruction_vec,
-                "language_actions": lang_tensor,
                 "episode_id": episode_id_vec,
             }
+
+            if use_language_actions:
+                lang_bytes = lang_table.lookup(episode_id)
+                lang_tensor = tf.io.parse_tensor(lang_bytes, tf.string)
+                # Language actions may include an extra terminal step; crop to match action length
+                lang_tensor = lang_tensor[:traj_len]
+                _return_dict["language_actions"] = lang_tensor
 
             if apply_idle_filter:
                 step_id = (
@@ -854,7 +857,7 @@ class DroidCoTRldsDataset:
             chunk the language actions; after flattening, each sample will
             have a single language string aligned to its action chunk.
             """
-            traj_len = tf.shape(traj["language_actions"])[0]
+            traj_len = tf.shape(traj["actions"])[0]
 
             # First, create indices for summation (current + future steps)
             summation_indices = tf.broadcast_to(
@@ -868,10 +871,10 @@ class DroidCoTRldsDataset:
             # Cap to length of the sequence (same as chunk_actions)
             summation_indices = tf.minimum(summation_indices, traj_len - 1)
 
-            # Gather the language actions for summation
-            language_actions_to_sum = tf.gather(traj["language_actions"], summation_indices)
-            # Keep unsummed window for debugging: shape [traj_len, summation_steps]
-            traj["language_actions"] = language_actions_to_sum
+            if use_language_actions:
+                # Gather the language actions for summation
+                language_actions_to_sum = tf.gather(traj["language_actions"], summation_indices)
+                traj["language_actions"] = language_actions_to_sum
 
             if vis_dataset:
                 grouped_images = tf.gather(traj["observation"]["image"], summation_indices)
