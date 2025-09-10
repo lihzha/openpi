@@ -565,7 +565,7 @@ class TorchDataLoader:
         *,
         sharding: jax.sharding.Sharding | None = None,
         shuffle: bool = False,
-        sampler: torch.utils.data.Sampler | None = None,
+        sampler=None,
         num_batches: int | None = None,
         num_workers: int = 0,
         seed: int = 0,
@@ -837,7 +837,7 @@ class RLDSDataLoader:
 
 
 class DataLoaderImpl(DataLoader):
-    def __init__(self, data_config: _config.DataConfig, data_loader: TorchDataLoader | RLDSDataLoader):
+    def __init__(self, data_config: _config.DataConfig, data_loader: RLDSDataLoader):
         self._data_config = data_config
         self._data_loader = data_loader
 
