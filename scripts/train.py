@@ -399,7 +399,7 @@ def main(config: _config.TrainConfig):
         initial=start_step,
         total=config.num_train_steps,
         dynamic_ncols=True,
-        disable=(jax.process_index() != 0),
+        # disable=(jax.process_index() != 0),
     )
 
     infos = []
