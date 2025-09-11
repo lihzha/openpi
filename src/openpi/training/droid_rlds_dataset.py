@@ -437,20 +437,29 @@ class DroidCoTRldsDataset:
         if num_parallel_calls == -1:
             num_parallel_calls = tf.data.AUTOTUNE
 
+        want_val = split == "val"
+
         builder = tfds.builder(config.repo_id, data_dir=data_dir)
         dataset = dl.DLataset.from_rlds(
             builder,
             split="train",
-            # shuffle=shuffle,
+            shuffle=bool(want_val),  # shuffle at file/shard level for first-level randomness
             num_parallel_reads=num_parallel_reads,
         )
 
         dataset = dataset.shard(jax.process_count(), jax.process_index())
-
-        # # Enforce deterministic mapping/order for reproducibility
-        # opts = tf.data.Options()
-        # opts.experimental_deterministic = True
-        # dataset = dataset.with_options(opts)
+        # Enforce deterministic order for reproducibility and increase host-side parallelism
+        opts = tf.data.Options()
+        opts.experimental_deterministic = bool(want_val)
+        opts.experimental_optimization.map_parallelization = True
+        opts.experimental_optimization.parallel_batch = True
+        opts.experimental_optimization.map_fusion = True
+        cpu_count = psutil.cpu_count(logical=True) or 16
+        opts.experimental_threading.private_threadpool_size = int(max(16, cpu_count))
+        dataset = dataset.with_options(opts)
+        # Repeat early to increase interleaving across files/episodes
+        if (not want_val) and (max_samples is None):
+            dataset = dataset.repeat()
 
         # ---------------------------------------------------------------------
         # 2. Language-action table (episode_id → serialized tensor)
@@ -720,8 +729,6 @@ class DroidCoTRldsDataset:
         # Filter out any unsuccessful trajectories -- we use the file name to check this
         # Prefer cheap regex path filter first, then id/lang checks
         dataset = dataset.filter(_path_ok).filter(_id_ok)
-
-        want_val = split == "val"
 
         def _split_filter(traj):
             episode_id = _episode_id_from_traj(traj)  # scalar tf.string
@@ -1062,10 +1069,6 @@ class DroidCoTRldsDataset:
         if (not want_val) and shuffle and max_samples is None:
             dataset = dataset.shuffle(shuffle_buffer_size, seed=seed)
 
-        # Apply repeat after shuffle for better mixing, unless using capped+cached subset
-        if (not want_val) and (max_samples is None):
-            dataset = dataset.repeat()
-
         # If requested, cap the number of flattened samples for overfitting tests.
         # We cache the capped set so repeating yields the same fixed subset.
         if max_samples is not None:
@@ -1074,9 +1077,12 @@ class DroidCoTRldsDataset:
         dataset = dataset.frame_map(decode_images, num_parallel_calls)
 
         # Shuffle, batch
-        dataset = dataset.batch(batch_size)
-        # Overlap input pipeline with consumers; lets TF fill a small buffer per host.
-        dataset = dataset.prefetch(2)
+        dataset = dataset.batch(batch_size, drop_remainder=True)
+        # Overlap input pipeline with consumers; let TF fill a buffer per host.
+        try:
+            dataset = dataset.prefetch_to_device(2)
+        except Exception:
+            dataset = dataset.prefetch(2)
         # Note =>> Seems to reduce memory usage without affecting speed?
         dataset = dataset.with_ram_budget(1)
 
