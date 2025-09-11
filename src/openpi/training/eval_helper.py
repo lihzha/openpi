@@ -57,6 +57,8 @@ def _parse_language_delta_cm(text: str) -> np.ndarray | None:
             value = value * 100.0
         totals[direction] = totals.get(direction, 0.0) + value
         any_valid = True
+    if "set gripper to" in text:
+        any_valid = True
     if not any_valid:
         return None
     right = totals["right"] - totals["left"]
@@ -216,10 +218,6 @@ def prepare_eval_batch(batch):
             # Create reasoning mask: all False - ensure consistent dtype
             reasoning_mask = jnp.zeros(original_length, dtype=jnp.bool_)
 
-            # Log the processing for debugging
-            logging.info(
-                f"Batch {i}: Removed reasoning after position {pos_108[0]}, original length: {original_length}, new length: {prompt_without_reasoning.shape[0]}"
-            )
         else:
             # No token 108 found, keep original
             padded_prompt = prompt_tokens
@@ -233,9 +231,6 @@ def prepare_eval_batch(batch):
             reasoning_mask = jnp.zeros(prompt_tokens.shape[0], dtype=jnp.bool_)
 
             logging.info(f"Batch {i}: No token 108 found, keeping original prompt")
-
-        # Log mask types for debugging
-        logging.info(f"Batch {i}: new_mask dtype: {new_mask.dtype}, reasoning_mask dtype: {reasoning_mask.dtype}")
 
         new_tokenized_prompts.append(padded_prompt)
         new_tokenized_prompt_masks.append(new_mask)
@@ -251,11 +246,6 @@ def prepare_eval_batch(batch):
     new_tokenized_prompt = jnp.stack(new_tokenized_prompts)
     new_tokenized_prompt_mask = jnp.stack(new_tokenized_prompt_masks)
     new_tokenized_reasoning_mask = jnp.stack(new_tokenized_reasoning_masks)
-
-    # Log tensor types for debugging
-    logging.info(
-        f"Stacked tensor types - prompt: {new_tokenized_prompt.dtype}, prompt_mask: {new_tokenized_prompt_mask.dtype}, reasoning_mask: {new_tokenized_reasoning_mask.dtype}"
-    )
 
     # Create new observation with modified prompts and masks
     new_obs = _model.Observation(
@@ -302,7 +292,6 @@ def eval_step(
     # Bound to local batch size to avoid indexing errors
     if jax.process_index() == 0:
         gt_texts = _decode_reasoning_strings(gt_batch[0], tok)
-        logging.info(f"GT texts: {gt_texts}")
         # Decode sampled reasoning tokens
         ids = _utils.to_local_array(id_buf)
         # Be robust to bounds: clamp final index
