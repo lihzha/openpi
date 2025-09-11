@@ -457,7 +457,8 @@ def main(config: _config.TrainConfig):
                         if jax.process_index() == 0:
                             l2_cm_values, to_log = _eval_helper.eval_step(gt_batch, id_buf, t_final, tok, k_local)
                         if to_log and jax.process_index() == 0:
-                            wandb.log({"val/annotated": to_log}, step=step)
+                            images_to_log = [wandb.Image(img) for img in to_log]
+                            wandb.log({"val/annotated": images_to_log}, step=step)
 
                 stacked_val = common_utils.stack_forest(val_infos)
                 reduced_val = jax.device_get(jax.tree.map(jnp.mean, stacked_val))
