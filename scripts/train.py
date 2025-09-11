@@ -5,7 +5,6 @@ import math
 import os
 import platform
 import re
-import time
 from typing import Any
 
 import etils.epath as epath
@@ -727,12 +726,7 @@ def main(config: _config.TrainConfig):
     infos = []
     for step in pbar:
         with sharding.set_mesh(mesh):
-            _t_step_start = time.perf_counter()
             train_state, info = ptrain_step(train_rng, train_state, batch)
-            # Ensure timing includes device execution
-            jax.block_until_ready(info["loss"])  # type: ignore[index]
-            step_total_s = time.perf_counter() - _t_step_start
-            logging.info(f"Step {step} train step took {step_total_s:.2f}s")
         infos.append(info)
         if step % config.log_interval == 0:
             # infos.append(info)
@@ -792,10 +786,7 @@ def main(config: _config.TrainConfig):
                 if jax.process_index() == 0:
                     wandb.log(reduced_val, step=step)
 
-        _t_fetch_start = time.perf_counter()
         batch = next(data_iter)
-        get_batch_s_current = time.perf_counter() - _t_fetch_start
-        logging.info(f"Step {step} get batch took {get_batch_s_current:.2f}s")
 
         if (step % config.save_interval == 0 and step > start_step) or step == config.num_train_steps:
             _checkpoints.save_state(checkpoint_manager, train_state, data_loader, step)
