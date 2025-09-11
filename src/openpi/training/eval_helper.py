@@ -195,11 +195,6 @@ def prepare_eval_batch(batch):
         prompt_tokens_int32 = prompt_tokens.astype(jnp.int32)
         pos_108 = jnp.where(prompt_tokens_int32 == 108, size=1, fill_value=-1)[0]
 
-        # Log tensor types for debugging
-        logging.info(
-            f"Batch {i}: prompt_tokens dtype: {prompt_tokens.dtype}, prompt_tokens_int32 dtype: {prompt_tokens_int32.dtype}, pos_108: {pos_108}"
-        )
-
         if pos_108[0] >= 0:
             # Remove everything after token 108 (inclusive)
             prompt_without_reasoning = prompt_tokens[: pos_108[0] + 1]

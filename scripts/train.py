@@ -103,37 +103,6 @@ def _is_tpu_runtime() -> bool:
         return False
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Lightweight host-side profiling helpers for forward/backward/opt breakdown
-# ──────────────────────────────────────────────────────────────────────────────
-
-# Event ids to minimize device->host payload in callbacks
-_PROFILE_EVENT_ID = {"fwd_start": 0, "fwd_end": 1, "bwd_end": 2, "opt_end": 3}
-_PROFILE_EVENT_NAME = {v: k for k, v in _PROFILE_EVENT_ID.items()}
-
-# step -> {event_name: host_time_seconds}
-_PROFILE_EVENTS: dict[int, dict[str, float]] = {}
-
-
-def _host_profile_mark(args):  # called via jax.debug.callback from device
-    name_id, step = args
-    try:
-        # Convert device arrays to Python scalars
-        name_id = int(np.array(name_id))
-        step = int(np.array(step))
-    except Exception:
-        return
-    # Only record on main process
-    if getattr(jax, "process_index", lambda: 0)() != 0:
-        return
-    now = time.time()
-    name = _PROFILE_EVENT_NAME.get(name_id, str(name_id))
-    step_events = _PROFILE_EVENTS.setdefault(step, {})
-    # First writer wins; callbacks may fire on multiple devices
-    if name not in step_events:
-        step_events[name] = now
-
-
 def _load_weights_and_validate(loader: _weight_loaders.WeightLoader, params_shape: at.Params) -> at.Params:
     """Loads and validates the weights. Returns a loaded subset of the weights."""
     loaded_params = loader.load(params_shape)
@@ -211,22 +180,8 @@ def train_step(
     def loss_fn(
         model: _model.BaseModel, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions
     ):
-        # Mark forward start and end
-        jax.debug.callback(
-            _host_profile_mark,
-            (
-                jnp.array(_PROFILE_EVENT_ID["fwd_start"], dtype=jnp.int32),
-                jnp.array(state.step, dtype=jnp.int32),
-            ),
-        )
         chunked_loss = model.compute_loss(rng, observation, actions, train=True)
-        jax.debug.callback(
-            _host_profile_mark,
-            (
-                jnp.array(_PROFILE_EVENT_ID["fwd_end"], dtype=jnp.int32),
-                jnp.array(state.step, dtype=jnp.int32),
-            ),
-        )
+
         return jnp.mean(chunked_loss)
 
     train_rng = jax.random.fold_in(rng, state.step)
@@ -235,14 +190,6 @@ def train_step(
     # Filter out frozen params.
     diff_state = nnx.DiffState(0, config.trainable_filter)
     loss, grads = nnx.value_and_grad(loss_fn, argnums=diff_state)(model, train_rng, observation, actions)
-    # Mark backward end (right after gradients are computed)
-    jax.debug.callback(
-        _host_profile_mark,
-        (
-            jnp.array(_PROFILE_EVENT_ID["bwd_end"], dtype=jnp.int32),
-            jnp.array(state.step, dtype=jnp.int32),
-        ),
-    )
 
     params = state.params.filter(config.trainable_filter)
     updates, new_opt_state = state.tx.update(grads, state.opt_state, params)
@@ -260,15 +207,6 @@ def train_step(
                 lambda old, new: state.ema_decay * old + (1 - state.ema_decay) * new, state.ema_params, new_params
             ),
         )
-
-    # Mark optimizer end (after params are updated and EMA applied)
-    jax.debug.callback(
-        _host_profile_mark,
-        (
-            jnp.array(_PROFILE_EVENT_ID["opt_end"], dtype=jnp.int32),
-            jnp.array(state.step, dtype=jnp.int32),
-        ),
-    )
 
     # Filter out params that aren't kernels.
     kernel_params = nnx.state(
@@ -476,30 +414,17 @@ def main(config: _config.TrainConfig):
             # Ensure timing includes device execution
             jax.block_until_ready(info["loss"])  # type: ignore[index]
             step_total_s = time.perf_counter() - _t_step_start
+            logging.info(f"Step {step} train step took {step_total_s:.2f}s")
         infos.append(info)
         if step % config.log_interval == 0:
             # infos.append(info)
             stacked_infos = common_utils.stack_forest(infos)
             reduced_info = jax.device_get(jax.tree.map(jnp.mean, stacked_infos))
             # Extract forward/backward/opt durations from callbacks
-            events = _PROFILE_EVENTS.pop(step, {})
-            fwd_s = (events.get("fwd_end", None) or 0.0) - (events.get("fwd_start", None) or 0.0)
-            bwd_s = (events.get("bwd_end", None) or 0.0) - (events.get("fwd_end", None) or 0.0)
-            opt_s = (events.get("opt_end", None) or 0.0) - (events.get("bwd_end", None) or 0.0)
-            timing_metrics = {
-                "time/get_batch_s": float(get_batch_s_current),
-                "time/step_total_s": float(step_total_s),
-                "time/forward_s": float(fwd_s) if fwd_s > 0 else float("nan"),
-                "time/backward_s": float(bwd_s) if bwd_s > 0 else float("nan"),
-                "time/opt_s": float(opt_s) if opt_s > 0 else float("nan"),
-            }
             info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_info.items())
-            timing_str = ", ".join(f"{k.split('/')[-1]}={v:.4f}" for k, v in timing_metrics.items())
-            info_str = f"{info_str}, {timing_str}"
             pbar.write(f"Step {step}: {info_str}")
             if jax.process_index() == 0:
                 wandb.log(reduced_info, step=step)
-                wandb.log(timing_metrics, step=step)
             infos = []
         # Periodic validation
         if config.do_val and step % getattr(config, "val_interval", 500) == 0:
@@ -552,6 +477,7 @@ def main(config: _config.TrainConfig):
         _t_fetch_start = time.perf_counter()
         batch = next(data_iter)
         get_batch_s_current = time.perf_counter() - _t_fetch_start
+        logging.info(f"Step {step} get batch took {get_batch_s_current:.2f}s")
 
         if (step % config.save_interval == 0 and step > start_step) or step == config.num_train_steps:
             _checkpoints.save_state(checkpoint_manager, train_state, data_loader, step)
