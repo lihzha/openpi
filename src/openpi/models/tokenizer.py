@@ -63,7 +63,7 @@ class PaligemmaTokenizer:
         pad_id = self._tokenizer.pad_id()
 
         tokens = self._tokenizer.encode(cleaned_prompt, add_bos=True, add_eos=False)
-        if state is None: # This is the Pi0 format, where the state is part of the continuous action expert input.
+        if state is None:  # This is the Pi0 format, where the state is part of the continuous action expert input.
             tokens += self._tokenizer.encode("\n")
 
         reasoning_start = len(tokens)
@@ -151,6 +151,7 @@ class PaligemmaTokenizer:
                 if idx < len(pieces) and (_has_digit(pieces[idx]) or _is_decimal_point_index(idx)):
                     numeric_mask[i] = True
 
+        breakpoint()
         return (
             np.asarray(tokens, dtype=np.int32),
             attn_mask,
@@ -160,7 +161,8 @@ class PaligemmaTokenizer:
 
     def decode(self, tokens: np.ndarray) -> str:
         """Decode tokens back to a string."""
-        tokens = tokens.tolist()
+        if not isinstance(tokens, list):
+            tokens = tokens.tolist()
         return self._tokenizer.decode(tokens)
 
 

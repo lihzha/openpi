@@ -25,6 +25,7 @@ class Pi0CoT(_model.BaseModel):
 
     def __init__(self, config: Pi0CoTConfig, rngs: nnx.Rngs):
         super().__init__(config.action_dim, config.action_horizon, config.max_token_len)
+        self.pi05 = config.pi05
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         action_expert_config = _gemma.get_config(config.action_expert_variant)
         # TODO: rewrite gemma in NNX. For now, use bridge.
@@ -60,6 +61,7 @@ class Pi0CoT(_model.BaseModel):
 
         # Store numeric weighting config
         self.number_token_weight = float(config.number_token_weight)
+        self.deterministic = True
 
         # self.lang_action_only = config.lang_action_only
 
@@ -205,13 +207,16 @@ class Pi0CoT(_model.BaseModel):
             weights = token_mask.astype(jnp.float32) * (
                 1.0 + (self.number_token_weight - 1.0) * numeric_shift.astype(jnp.float32)
             )
-            loss = cross_entropy_loss(shift_logits, shift_labels, mask=weights, axis=-1, train=True)
+            loss = cross_entropy_loss(shift_logits, shift_labels, mask=weights, axis=-1, train=True, per_example=True)
         else:
-            loss = cross_entropy_loss(shift_logits, shift_labels, mask=token_mask, axis=-1, train=True)
+            loss = cross_entropy_loss(
+                shift_logits, shift_labels, mask=token_mask, axis=-1, train=True, per_example=True
+            )
 
         if not self.lang_action_only:
             v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
-            loss += jnp.mean(jnp.square(v_t - u_t))
+            # Per-example action MSE reduced over (horizon, action_dim)
+            loss = loss + jnp.mean(jnp.square(v_t - u_t), axis=(-1, -2))
 
         return loss
 

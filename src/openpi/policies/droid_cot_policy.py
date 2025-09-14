@@ -157,7 +157,7 @@ def _sum_language_actions(actions_list, sum_decimal):
 class DroidCoTInputs(transforms.DataTransformFn):
     # The action dimension of the model. Will be used to pad state and actions.
     action_dim: int
-    sum_decimal: str = "1f"
+    sum_decimal: str = "0f"
     # Train-time dropout probs (set to 0.0 for val/inference)
     wrist_image_dropout_prob: float = 0.0
     text_state_dropout_prob: float = 0.0
@@ -170,8 +170,11 @@ class DroidCoTInputs(transforms.DataTransformFn):
     model_type: _model.ModelType = _model.ModelType.PI0CoT
 
     def __call__(self, data: dict) -> dict:
-        state = np.concatenate([data["observation/cartesian_position"], data["observation/gripper_position"]])
-        state = transforms.pad_to_dim(state, self.action_dim)
+        gripper_pos = np.asarray(data["observation/gripper_position"])
+        if gripper_pos.ndim == 0:
+            # Ensure gripper position is a 1D array, not a scalar, so we can concatenate with joint positions
+            gripper_pos = gripper_pos[np.newaxis]
+        state = np.concatenate([data["observation/cartesian_position"], gripper_pos])
 
         # Possibly need to parse images to uint8 (H,W,C) since LeRobot automatically
         # stores as float32 (C,H,W), gets skipped for policy inference
@@ -190,12 +193,16 @@ class DroidCoTInputs(transforms.DataTransformFn):
             if np.random.rand() < float(self.wrist_image_dropout_prob):
                 wrist_image_mask = np.False_
 
-        if self.model_type == _model.ModelType.PI0CoT:
-            names = ("base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb")
-            images = (base_image, wrist_image, np.zeros_like(base_image))
-            image_masks = (np.True_, wrist_image_mask, np.False_)
-        else:
-            raise ValueError(f"Unsupported model type: {self.model_type}")
+        assert self.model_type == _model.ModelType.PI0CoT
+        names = ("base_0_rgb", "left_wrist_0_rgb")
+        images = (
+            base_image,
+            wrist_image,
+        )
+        image_masks = (
+            np.True_,
+            wrist_image_mask,
+        )
 
         inputs = {
             "state": state,

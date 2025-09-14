@@ -146,6 +146,8 @@ class ModelTransformFactory(GroupFactory):
 
     # If provided, will determine the default prompt that be used by the model.
     default_prompt: str | None = None
+    left_pad: bool = True
+    include_decimal_point: bool = True
 
     def __call__(self, model_config: _model.BaseModelConfig) -> _transforms.Group:
         match model_config.model_type:
@@ -198,19 +200,6 @@ class ModelTransformFactory(GroupFactory):
                         )
                     ],
                 )
-
-
-@dataclasses.dataclass(frozen=True)
-class CoTModelTransformFactory(GroupFactory):
-    """Creates model transforms for standard pi0 models."""
-
-    # If provided, will determine the default prompt that be used by the model.
-    default_prompt: str | None = None
-    left_pad: bool = True
-    include_decimal_point: bool = True
-
-    def __call__(self, model_config: _model.BaseModelConfig) -> _transforms.Group:
-        match model_config.model_type:
             case _model.ModelType.PI0CoT:
                 assert isinstance(model_config, pi0_cot_config.Pi0CoTConfig)
                 return _transforms.Group(
@@ -222,8 +211,10 @@ class CoTModelTransformFactory(GroupFactory):
                                 model_config.max_token_len,
                                 left_pad=self.left_pad,
                                 include_decimal_point=self.include_decimal_point,
-                            )
+                            ),
+                            discrete_state_input=model_config.discrete_state_input,
                         ),
+                        _transforms.PadStatesAndActions(model_config.action_dim),
                     ],
                     outputs=[
                         _transforms.DetokenizeReasoning(
@@ -235,8 +226,6 @@ class CoTModelTransformFactory(GroupFactory):
                         )
                     ],
                 )
-            case _:
-                raise ValueError(f"Unsupported model type: {model_config.model_type}")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -532,56 +521,6 @@ class LeRobotDROIDDataConfig(DataConfigFactory):
 
 
 @dataclasses.dataclass(frozen=True)
-class DroidCoTTestDataConfig(DataConfigFactory):
-    @override
-    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
-        repack_transform = _transforms.Group(
-            inputs=[
-                _transforms.RepackTransform(
-                    {
-                        "observation/image": "image",
-                        "observation/state": "state",
-                        "actions": "actions",
-                        "language_actions": "language_actions",
-                        "prompt": "prompt",
-                    }
-                )
-            ]
-        )
-
-        data_transforms = _transforms.Group(
-            inputs=[
-                droid_cot_policy.DroidCoTTestInputs(
-                    action_dim=model_config.action_dim, model_type=model_config.model_type
-                )
-            ],
-            outputs=[droid_cot_policy.DroidCoTTestOutputs()],
-        )
-
-        # if self.action_space == droid_rlds_dataset.DroidActionSpace.JOINT_POSITION:
-        #     # Data loader returns absolute joint position actions -- convert to delta actions for training.
-        #     delta_action_mask = _transforms.make_bool_mask(7, -1)
-        #     data_transforms = data_transforms.push(
-        #         inputs=[_transforms.DeltaActions(delta_action_mask)],
-        #         outputs=[_transforms.AbsoluteActions(delta_action_mask)],
-        #     )
-
-        model_transforms = CoTModelTransformFactory()(model_config)
-
-        # assert self.rlds_data_dir is not None, "Need to set rlds data dir for RLDS data loader."
-
-        return dataclasses.replace(
-            self.create_base_config(assets_dirs),
-            repack_transforms=repack_transform,
-            data_transforms=data_transforms,
-            model_transforms=model_transforms,
-            use_quantile_norm=model_config.model_type == ModelType.PI0_FAST,
-            # rlds_data_dir=self.rlds_data_dir,
-            # action_space=self.action_space,
-        )
-
-
-@dataclasses.dataclass(frozen=True)
 class RLDSDroidCoTDataConfig(DataConfigFactory):
     """
     Config for training on DROID, using RLDS data format (for efficient training on larger datasets).
@@ -662,7 +601,7 @@ class RLDSDroidCoTDataConfig(DataConfigFactory):
             outputs=[_transforms.AbsoluteActions(delta_action_mask)],
         )
 
-        model_transforms = CoTModelTransformFactory(
+        model_transforms = ModelTransformFactory(
             left_pad=self.left_pad, include_decimal_point=self.include_decimal_point
         )(model_config)
 
@@ -803,10 +742,13 @@ _CONFIGS = [
     TrainConfig(
         name="pi0_droid_cot_v4",
         do_val=True,
+        discrete_state_input=True,
         model=pi0_cot_config.Pi0CoTConfig(
             action_horizon=10,
             max_token_len=110,
             number_token_weight=1.0,
+            pi05=True,
+            discrete_state_input=True,
         ),
         data=RLDSDroidCoTDataConfig(
             repo_id="droid",
@@ -857,6 +799,8 @@ _CONFIGS = [
             action_horizon=10,
             max_token_len=110,
             number_token_weight=1.0,
+            pi05=True,
+            discrete_state_input=True,
         ),
         data=RLDSDroidCoTDataConfig(
             repo_id="droid",
@@ -907,6 +851,8 @@ _CONFIGS = [
             action_horizon=10,
             max_token_len=110,
             number_token_weight=1.0,
+            pi05=True,
+            discrete_state_input=True,
         ),
         data=RLDSDroidCoTDataConfig(
             repo_id="droid",
@@ -956,6 +902,8 @@ _CONFIGS = [
         model=pi0_cot_config.Pi0CoTConfig(
             action_horizon=10,
             max_token_len=110,
+            pi05=True,
+            discrete_state_input=True,
         ),
         data=RLDSDroidCoTDataConfig(
             repo_id="droid",
@@ -970,6 +918,16 @@ _CONFIGS = [
                 assets_dir="/n/fs/robot-data/pi0-cot/assets/pi0_droid_cot_v4",
                 asset_id="droid",
             ),
+            summation_steps=15,
+            sum_decimal="0f",
+            left_pad=True,
+            include_decimal_point=False,
+            validation_mode="easy",
+            vis_dataset=False,
+            use_wrist_image=False,
+            val_max_samples=60000,
+            val_fraction=0.02,
+            apply_idle_filter=True,
         ),
         num_train_steps=100_000,
         fsdp_devices=8,

@@ -4,7 +4,6 @@ import logging
 import math
 import os
 import platform
-import time
 from typing import Any
 
 import etils.epath as epath
@@ -180,16 +179,20 @@ def train_step(
     def loss_fn(
         model: _model.BaseModel, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions
     ):
-        chunked_loss = model.compute_loss(rng, observation, actions, train=True)
-
-        return jnp.mean(chunked_loss)
+        per_sample_loss = model.compute_loss(rng, observation, actions, train=True)
+        # If model returns time/horizon dims, reduce to per-example
+        while per_sample_loss.ndim > 1:
+            per_sample_loss = jnp.mean(per_sample_loss, axis=-1)
+        return jnp.mean(per_sample_loss), per_sample_loss
 
     train_rng = jax.random.fold_in(rng, state.step)
     observation, actions = batch
 
     # Filter out frozen params.
     diff_state = nnx.DiffState(0, config.trainable_filter)
-    loss, grads = nnx.value_and_grad(loss_fn, argnums=diff_state)(model, train_rng, observation, actions)
+    (loss, per_sample_loss), grads = nnx.value_and_grad(loss_fn, argnums=diff_state, has_aux=True)(
+        model, train_rng, observation, actions
+    )
 
     params = state.params.filter(config.trainable_filter)
     updates, new_opt_state = state.tx.update(grads, state.opt_state, params)
@@ -219,6 +222,7 @@ def train_step(
     )
     info = {
         "loss": loss,
+        "per_sample_loss": per_sample_loss,
         "grad_norm": optax.global_norm(grads),
         "param_norm": optax.global_norm(kernel_params),
     }
@@ -327,9 +331,7 @@ def main(config: _config.TrainConfig):
     #     # Fast-forward the iterator so that step `start_step` uses batch index `start_step`.
     #     for _ in range(start_step):
     #         _ = next(data_iter)
-    _t_fetch_start = time.perf_counter()
     batch = next(data_iter)
-    get_batch_s_current = time.perf_counter() - _t_fetch_start
     # images_to_log = [
     #     wandb.Image(
     #         np.concatenate([np.array(_utils.to_local_array(img[i])) for img in batch[0].images.values()], axis=1)
@@ -420,6 +422,59 @@ def main(config: _config.TrainConfig):
             pbar.write(f"Step {step}: {info_str}")
             if jax.process_index() == 0:
                 wandb.log(reduced_info, step=step)
+                # After warmup, log a few hardest samples with image and language action
+                warmup_steps = getattr(config.lr_schedule, "warmup_steps", 0)
+                if step >= warmup_steps and "per_sample_loss" in reduced_info:
+                    try:
+                        # Use the most recent info (non-averaged across the window) for ranking
+                        per_ex = info.get("per_sample_loss", None)
+                        if per_ex is not None:
+                            per_ex_np = np.asarray(training_utils.to_local_array(per_ex))
+                            # Threshold: only consider samples > 2x the step's average loss
+                            try:
+                                step_mean = float(np.asarray(training_utils.to_local_array(info.get("loss", None))))
+                            except Exception:
+                                step_mean = float(per_ex_np.mean())
+                            threshold = 2.0 * step_mean
+                            # Prepare images and decoded reasoning
+                            first_cam_key = next(iter(batch[0].images))
+                            imgs = training_utils.to_local_array(batch[0].images[first_cam_key])
+                            imgs_u8 = ((np.asarray(imgs) + 1.0) * 0.5 * 255.0).clip(0, 255).astype(np.uint8)
+                            # Decode reasoning if available
+                            lang_texts = []
+                            try:
+                                if (
+                                    getattr(batch[0], "tokenized_prompt", None) is not None
+                                    and getattr(batch[0], "tokenized_reasoning_mask", None) is not None
+                                ):
+                                    lang_texts = _eval_helper._decode_reasoning_strings(batch[0], tok)
+                            except Exception:
+                                lang_texts = []
+
+                            k = int(min(8, per_ex_np.shape[0], imgs_u8.shape[0]))
+                            if k > 0:
+                                candidates = np.where(per_ex_np > threshold)[0]
+                                if candidates.size > 0:
+                                    if candidates.size > k:
+                                        cand_vals = per_ex_np[candidates]
+                                        sel = np.argpartition(-cand_vals, kth=k - 1)[:k]
+                                        top_idx = candidates[sel]
+                                        order = np.argsort(-per_ex_np[top_idx])
+                                        top_idx = top_idx[order]
+                                    else:
+                                        top_idx = candidates[np.argsort(-per_ex_np[candidates])]
+                                else:
+                                    top_idx = np.array([], dtype=int)
+                                images_to_log = []
+                                for i in top_idx:
+                                    cap = f"loss={float(per_ex_np[i]):.4f}"
+                                    if lang_texts and i < len(lang_texts):
+                                        cap = cap + "\n" + str(lang_texts[i])
+                                    images_to_log.append(wandb.Image(imgs_u8[i], caption=cap))
+                                if images_to_log:
+                                    wandb.log({"train/hard_examples": images_to_log}, step=step)
+                    except Exception:
+                        pass
             infos = []
         # Periodic validation
         if config.do_val and step % getattr(config, "val_interval", 500) == 0:

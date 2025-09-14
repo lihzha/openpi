@@ -24,9 +24,7 @@ class Pi0CoTConfig(_model.BaseModelConfig):
     # Set the model specific defaults.
     action_dim: int = 32
     action_horizon: int = 50
-    max_token_len: int = (
-        300  # TODO: Maximum length of the tokenized prompt, including reasoning tokens. Was 48 for prompt-only.
-    )
+    max_token_len: int = None
 
     pi05: bool = False
     discrete_state_input: bool = None
@@ -106,12 +104,13 @@ class Pi0CoTConfig(_model.BaseModelConfig):
                 nnx.Not(nnx_utils.PathRegex(".*lora.*")),
             )
         # Always freeze the Gemma input embedding table (embedder/input_embedding).
-        input_embedding_filter = nnx_utils.PathRegex(".*input_embedding.*")
+        # input_embedding_filter = nnx_utils.PathRegex(".*input_embedding.*")
 
         if not filters:
             # If no other freeze rules, just freeze the input embedding.
-            return input_embedding_filter
+            return nnx.Nothing
 
         # Union existing freeze rules with input embedding freeze.
         combined = nnx.All(*filters)
-        return nnx.Any(combined, input_embedding_filter)
+        # return nnx.Any(combined, input_embedding_filter)
+        return combined

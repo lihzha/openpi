@@ -1,6 +1,7 @@
+import flax.nnx as nnx
 import jax
 import jax.numpy as jnp
-import flax.nnx as nnx
+
 from openpi.shared import array_typing as at
 
 
@@ -31,6 +32,7 @@ def make_attn_mask(input_mask, mask_ar):
     valid_mask = input_mask[:, None, :] * input_mask[:, :, None]
     return jnp.logical_and(attn_mask, valid_mask)
 
+
 @at.typecheck
 def posemb_sincos(
     pos: at.Real[at.Array, " b"], embedding_dim: int, min_period: float, max_period: float
@@ -51,7 +53,13 @@ def posemb_sincos(
 
 
 def cross_entropy_loss(
-    logits: jnp.ndarray, labels: jnp.ndarray, mask: jnp.ndarray | None = None, axis: int = -1, train: bool = True
+    logits: jnp.ndarray,
+    labels: jnp.ndarray,
+    mask: jnp.ndarray | None = None,
+    axis: int = -1,
+    train: bool = True,
+    *,
+    per_example: bool = False,
 ) -> jnp.ndarray:
     """
     Args
@@ -64,7 +72,8 @@ def cross_entropy_loss(
 
     Returns
     -------
-      scalar mean (train=True) or scalar sum (train=False).
+      If per_example=False (default): scalar mean (train=True) or scalar sum (train=False).
+      If per_example=True: per-example mean over non-batch dims (shape [B]).
     """
     # log‑probs
     log_probs = nnx.log_softmax(logits, axis=axis)  # (..., V)
@@ -75,12 +84,21 @@ def cross_entropy_loss(
     loss = -gold_logp.squeeze(axis)  # (...)
 
     # optional masking
+    if per_example:
+        # Reduce over all non-batch dims (assume batch is leading dimension)
+        reduce_axes = tuple(range(1, loss.ndim))
+        if mask is not None:
+            loss = loss * mask
+            denom = jnp.maximum(mask.sum(axis=reduce_axes), 1)  # [B]
+        else:
+            # Mean over all trailing dims
+            denom = jnp.prod(jnp.array(loss.shape[1:]))
+        total = loss.sum(axis=reduce_axes)
+        return total / denom
     if mask is not None:
         loss = loss * mask
         denom = jnp.maximum(mask.sum(), 1)  # avoid ÷0 for empty mask
     else:
         denom = loss.size
-
     total = loss.sum()
     return total / denom if train else total
-
