@@ -742,7 +742,6 @@ _CONFIGS = [
     TrainConfig(
         name="pi0_droid_cot_v4",
         do_val=True,
-        discrete_state_input=True,
         model=pi0_cot_config.Pi0CoTConfig(
             action_horizon=10,
             max_token_len=110,
@@ -902,8 +901,8 @@ _CONFIGS = [
         model=pi0_cot_config.Pi0CoTConfig(
             action_horizon=10,
             max_token_len=110,
-            pi05=True,
-            discrete_state_input=True,
+            pi05=False,
+            discrete_state_input=False,
         ),
         data=RLDSDroidCoTDataConfig(
             repo_id="droid",

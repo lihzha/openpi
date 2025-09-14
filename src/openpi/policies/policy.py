@@ -11,7 +11,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from openpi_client import base_policy as _base_policy
-import torch
+# import torch
 from typing_extensions import override
 
 from openpi import transforms as _transforms

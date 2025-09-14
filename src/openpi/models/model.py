@@ -43,7 +43,7 @@ class ModelType(enum.Enum):
 IMAGE_KEYS = (
     "base_0_rgb",
     "left_wrist_0_rgb",
-    "right_wrist_0_rgb",
+    # "right_wrist_0_rgb",
 )
 
 
@@ -183,8 +183,8 @@ def preprocess_observation(
     filling in a default image mask (if necessary).
     """
 
-    if not set(image_keys).issubset(observation.images):
-        raise ValueError(f"images dict missing keys: expected {image_keys}, got {list(observation.images)}")
+    # if not set(image_keys).issubset(observation.images):
+    #     raise ValueError(f"images dict missing keys: expected {image_keys}, got {list(observation.images)}")
 
     batch_shape = observation.state.shape[:-1]
 

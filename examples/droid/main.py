@@ -26,12 +26,12 @@ DROID_CONTROL_FREQUENCY = 15
 @dataclasses.dataclass
 class Args:
     # Hardware parameters
-    left_camera_id: str = "<your_camera_id>"  # e.g., "24259877"
-    right_camera_id: str = "<your_camera_id>"  # e.g., "24514023"
-    wrist_camera_id: str = "<your_camera_id>"  # e.g., "13062452"
+    left_camera_id: str = "31177322"  # e.g., "24259877"
+    right_camera_id: str = "38872458"  # e.g., "24514023"
+    wrist_camera_id: str = "10501775"  # e.g., "13062452"
 
     # Policy parameters
-    external_camera: str | None = (
+    external_camera: str = (
         None  # which external camera should be fed to the policy, choose from ["left", "right"]
     )
 

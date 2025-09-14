@@ -101,8 +101,6 @@ def create_trained_policy(
                 ],
                 sample_kwargs=sample_kwargs,
                 metadata=train_config.policy_metadata,
-                is_pytorch=is_pytorch,
-                pytorch_device=pytorch_device if is_pytorch else None,
             )
         case _:
             assert policy_config.use_norm_stats

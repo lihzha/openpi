@@ -151,7 +151,6 @@ class PaligemmaTokenizer:
                 if idx < len(pieces) and (_has_digit(pieces[idx]) or _is_decimal_point_index(idx)):
                     numeric_mask[i] = True
 
-        breakpoint()
         return (
             np.asarray(tokens, dtype=np.int32),
             attn_mask,
