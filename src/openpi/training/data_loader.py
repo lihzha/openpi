@@ -93,12 +93,7 @@ class IterableTransformedDataset(IterableDataset[T_co]):
 
     def __iter__(self):
         upstream_iter = iter(self._dataset)
-        while True:
-            # Fetch from upstream iterable (e.g., RLDS/TF pipeline)
-            try:
-                sample = next(upstream_iter)
-            except StopIteration:
-                return
+        for sample in upstream_iter:
 
             if self._is_batched:
                 # Transforms are designed to be applied to individual samples. So we need to split the batch into

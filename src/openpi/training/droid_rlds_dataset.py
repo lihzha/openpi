@@ -234,30 +234,8 @@ class DroidRldsDataset:
                 "passes_filter": passes_filter,
             }
 
-        if DEBUG_TIMING:
-
-            def _wrap_timed_map(fn, name):
-                def _inner(x):
-                    t0 = tf.timestamp()
-                    y = fn(x)
-                    t1 = tf.timestamp()
-                    ms = (t1 - t0) * 1000.0
-
-                    def _log(ms_np):
-                        try:
-                            logging.info(f"[tf.data] {name} ms={float(ms_np):.1f}")
-                        except Exception:
-                            pass
-                        return np.int64(0)
-
-                    _ = tf.py_function(_log, [ms], Tout=tf.int64)
-                    return y
-
-                return _inner
-
-            dataset = dataset.traj_map(_wrap_timed_map(restructure, "restructure"), num_parallel_calls)
-        else:
-            dataset = dataset.traj_map(restructure, num_parallel_calls)
+      
+        dataset = dataset.traj_map(restructure, num_parallel_calls)
 
         def chunk_actions(traj):
             """Splits episode into action chunks."""
@@ -280,10 +258,7 @@ class DroidRldsDataset:
             traj["actions"] = tf.gather(traj["actions"], action_chunk_indices)
             return traj
 
-        if DEBUG_TIMING:
-            dataset = dataset.traj_map(_wrap_timed_map(chunk_actions, "chunk_actions"), num_parallel_calls)
-        else:
-            dataset = dataset.traj_map(chunk_actions, num_parallel_calls)
+        dataset = dataset.traj_map(chunk_actions, num_parallel_calls)
 
         # Flatten: map from trajectory dataset to dataset of individual action chunks
         dataset = dataset.flatten(num_parallel_calls=num_parallel_calls)
@@ -311,14 +286,10 @@ class DroidRldsDataset:
             )
             return traj
 
-        if DEBUG_TIMING:
-            dataset = dataset.frame_map(_wrap_timed_map(decode_images, "decode_images"), num_parallel_calls)
-        else:
-            dataset = dataset.frame_map(decode_images, num_parallel_calls)
+        dataset = dataset.frame_map(decode_images, num_parallel_calls)
 
         # Shuffle, batch
-        if shuffle:
-            dataset = dataset.shuffle(shuffle_buffer_size)
+        dataset = dataset.shuffle(shuffle_buffer_size)
         dataset = dataset.batch(batch_size)
         # Overlap input pipeline with consumers; lets TF fill a small buffer per host.
         dataset = dataset.prefetch(2)
@@ -332,14 +303,11 @@ class DroidRldsDataset:
     def __iter__(self):
         it = self.dataset.as_numpy_iterator()
         while True:
-            t0 = time.perf_counter() if DEBUG_TIMING else 0.0
             try:
                 batch = next(it)
             except StopIteration:
+                logging.info("StopIteration")
                 return
-            if DEBUG_TIMING:
-                dt = (time.perf_counter() - t0) * 1000.0
-                logging.info("DroidRldsDataset as_numpy_iterator.next: %.1f ms", dt)
             yield batch
 
     def __len__(self):
