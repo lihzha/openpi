@@ -154,8 +154,7 @@ class DroidRldsDataset:
         # }
         # means keep frames 0-99 and 200-299).
         if filter_dict_path is not None:
-            cached_filter_dict_path = download.maybe_download(filter_dict_path)
-            with Path(cached_filter_dict_path).open("r") as f:
+            with tf.io.gfile.GFile(f"gs://pi0-cot/metadata/keep_ranges_1_0_1.json", "r") as f:
                 filter_dict = json.load(f)
 
             logging.info(f"Using filter dictionary with {len(filter_dict)} episodes")
