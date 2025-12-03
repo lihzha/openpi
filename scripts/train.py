@@ -224,12 +224,12 @@ def train_step(
 
 
 def main(config: _config.TrainConfig):
-    if (
-        ("v6" in config.name and config.fsdp_devices > 8)
-        or ("v4" in config.name and config.fsdp_devices > 4)
-        or ("v5" in config.name and config.fsdp_devices > 8)
-    ):
-        jax.distributed.initialize()
+    # if (
+    #     ("v6" in config.name and config.fsdp_devices > 8)
+    #     or ("v4" in config.name and config.fsdp_devices > 4)
+    #     or ("v5" in config.name and config.fsdp_devices > 8)
+    # ):
+    jax.distributed.initialize()
     data_dir = save_dir = config.data.rlds_data_dir
     cache_dir = os.environ.get("OPENPI_DATA_HOME", None)
     if _is_tpu_runtime() and (str(data_dir).startswith("gs://") or str(save_dir).startswith("gs://")):
