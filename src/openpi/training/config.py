@@ -1240,7 +1240,7 @@ _CONFIGS = [
             repo_id="droid",
             # Set this to the path to your DROID RLDS dataset (the parent directory of the `droid` directory).
             rlds_data_dir="<path_to_droid_rlds_dataset>",
-            action_space=droid_rlds_dataset.DroidActionSpace.JOINT_POSITION,
+            action_space=droid_rlds_dataset.DroidActionSpace.JOINT_VELOCITY,
         ),
         weight_loader=weight_loaders.WeightLoaderChoice(
             kind="checkpoint", params_path="gs://openpi-assets/checkpoints/pi0_fast_base/params"
