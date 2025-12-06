@@ -260,9 +260,9 @@ class DroidRldsDataset:
             # and each step's time step index. This will index into the filter hash table, and if it returns true,
             # then the frame passes the filter.
             step_id = (
-                traj["traj_metadata"]["episode_metadata"]["recording_folderpath"]
+                traj["traj_metadata"]["episode_metadata"]["recording_folderpath"][:traj_len]
                 + "--"
-                + traj["traj_metadata"]["episode_metadata"]["file_path"]
+                + traj["traj_metadata"]["episode_metadata"]["file_path"][:traj_len]
                 + "--"
                 + indices
             )
