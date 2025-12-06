@@ -177,14 +177,51 @@ class DroidRldsDataset:
 
         def restructure(traj):
             """Reformat observation and action keys, sample language instruction."""
-            # Important: we use joint *position* action space -- easier to simulate!
+            # Build action tensor (delta EEF pose for Cartesian space, absolute joints otherwise)
+            def _euler_xyz_extrinsic_to_matrix(euler):
+                """Convert XYZ extrinsic Euler angles to rotation matrices."""
+                rx, ry, rz = tf.unstack(euler, axis=-1)
+                cx, sx = tf.cos(rx), tf.sin(rx)
+                cy, sy = tf.cos(ry), tf.sin(ry)
+                cz, sz = tf.cos(rz), tf.sin(rz)
+                R = tf.stack(
+                    [
+                        cz * cy,
+                        cz * sy * sx - sz * cx,
+                        cz * sy * cx + sz * sx,
+                        sz * cy,
+                        sz * sy * sx + cz * cx,
+                        sz * sy * cx - cz * sx,
+                        -sy,
+                        cy * sx,
+                        cy * cx,
+                    ],
+                    axis=-1,
+                )
+                return tf.reshape(R, tf.concat([tf.shape(rx), [3, 3]], axis=0))
+
+            def _matrix_to_euler_xyz_extrinsic(R):
+                """Recover XYZ extrinsic Euler angles from rotation matrices."""
+                rx = tf.atan2(R[..., 2, 1], R[..., 2, 2])
+                ry = tf.atan2(-R[..., 2, 0], tf.sqrt(tf.square(R[..., 2, 1]) + tf.square(R[..., 2, 2])))
+                rz = tf.atan2(R[..., 1, 0], R[..., 0, 0])
+                return tf.stack((rx, ry, rz), axis=-1)
+
             if action_space == DroidActionSpace.CARTESIAN_POSITION:
-                # TODO: calculate delta cartesian pose from traj["observation"]["cartesian_position"], which makes
-                # the trajectory shorter by 1 step, and then map all other keys to the same length.
+                cartesian_pose = traj["observation"]["cartesian_position"]
+                # Cartesian pose: [x, y, z, rx, ry, rz] where rotation is XYZ extrinsic Euler.
+                pos = cartesian_pose[:, :3]
+                euler = cartesian_pose[:, 3:6]
+                rot_mats = _euler_xyz_extrinsic_to_matrix(euler)
+                rel_rot = tf.matmul(rot_mats[1:], tf.transpose(rot_mats[:-1], perm=[0, 2, 1]))
+                delta_rot = _matrix_to_euler_xyz_extrinsic(rel_rot)
+                delta_pos = pos[1:] - pos[:-1]
+                delta_cartesian_pose = tf.concat((delta_pos, delta_rot), axis=-1)
+                gripper_pos = traj["action_dict"]["gripper_position"][: tf.shape(delta_cartesian_pose)[0]]
                 actions = tf.concat(
                     (
                         delta_cartesian_pose,
-                        traj["action_dict"]["gripper_position"],
+                        gripper_pos,
                     ),
                     axis=-1,
                 )
@@ -200,6 +237,7 @@ class DroidRldsDataset:
                     ),
                     axis=-1,
                 )
+            traj_len = tf.shape(actions)[0]
             # Randomly samples one of the two exterior images in DROID during training (we only train with one at a time).
             # Note: the "left" refers to the left camera in the stereo pair, we only train on the left camera.
             exterior_img = tf.cond(
@@ -207,13 +245,13 @@ class DroidRldsDataset:
                 lambda: traj["observation"]["exterior_image_1_left"],
                 lambda: traj["observation"]["exterior_image_2_left"],
             )
-            wrist_img = traj["observation"]["wrist_image_left"]
+            exterior_img = exterior_img[:traj_len]
+            wrist_img = traj["observation"]["wrist_image_left"][:traj_len]
             # Randomly sample one of the three language instructions
             instruction = tf.random.shuffle(
                 [traj["language_instruction"], traj["language_instruction_2"], traj["language_instruction_3"]]
             )[0]
 
-            traj_len = tf.shape(traj["action"])[0]
             indices = tf.as_string(tf.range(traj_len))
 
             # Data filtering:
@@ -234,9 +272,9 @@ class DroidRldsDataset:
                 "observation": {
                     "image": exterior_img,
                     "wrist_image": wrist_img,
-                    "joint_position": traj["observation"]["joint_position"],
-                    "gripper_position": traj["observation"]["gripper_position"],
-                    "cartesian_position": traj["observation"]["cartesian_position"],
+                    "joint_position": traj["observation"]["joint_position"][:traj_len],
+                    "gripper_position": traj["observation"]["gripper_position"][:traj_len],
+                    "cartesian_position": traj["observation"]["cartesian_position"][:traj_len],
                 },
                 "prompt": instruction,
                 "step_id": step_id,

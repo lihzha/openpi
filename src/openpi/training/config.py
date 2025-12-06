@@ -445,6 +445,7 @@ class RLDSDroidDataConfig(DataConfigFactory):
                         "observation/exterior_image_1_left": "observation/image",
                         "observation/wrist_image_left": "observation/wrist_image",
                         "observation/joint_position": "observation/joint_position",
+                        "observation/cartesian_position": "observation/cartesian_position",
                         "observation/gripper_position": "observation/gripper_position",
                         "actions": "actions",
                         "prompt": "prompt",
@@ -454,7 +455,7 @@ class RLDSDroidDataConfig(DataConfigFactory):
         )
 
         data_transforms = _transforms.Group(
-            inputs=[droid_policy.DroidInputs(model_type=model_config.model_type)],
+            inputs=[droid_policy.DroidInputs(model_type=model_config.model_type, action_space=self.action_space)],
             outputs=[droid_policy.DroidOutputs()],
         )
 
