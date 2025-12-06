@@ -278,8 +278,8 @@ class DroidRldsDataset:
                     "cartesian_position": traj["observation"]["cartesian_position"][:traj_len],
                 },
                 "prompt": instruction[:traj_len],
-                "step_id": step_id,
-                "passes_filter": passes_filter,
+                "step_id": step_id[:traj_len],
+                "passes_filter": passes_filter[:traj_len],
             }
 
         dataset = dataset.traj_map(restructure, num_parallel_calls)
