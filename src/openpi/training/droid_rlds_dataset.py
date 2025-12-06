@@ -50,14 +50,12 @@ import json
 import logging
 import os
 from pathlib import Path
-import time
 
 import jax
 import numpy as np
 import psutil
 import tqdm
 
-import openpi.shared.download as download
 import openpi.training.config as _config
 
 METADATA_PATH = "/n/fs/robot-data/vlm-syn/droid"
@@ -154,7 +152,7 @@ class DroidRldsDataset:
         # }
         # means keep frames 0-99 and 200-299).
         if filter_dict_path is not None:
-            with tf.io.gfile.GFile(f"gs://pi0-cot/metadata/keep_ranges_1_0_1.json", "r") as f:
+            with tf.io.gfile.GFile("gs://pi0-cot/metadata/keep_ranges_1_0_1.json", "r") as f:
                 filter_dict = json.load(f)
 
             logging.info(f"Using filter dictionary with {len(filter_dict)} episodes")
@@ -180,17 +178,28 @@ class DroidRldsDataset:
         def restructure(traj):
             """Reformat observation and action keys, sample language instruction."""
             # Important: we use joint *position* action space -- easier to simulate!
-            actions = tf.concat(
-                (
+            if action_space == DroidActionSpace.CARTESIAN_POSITION:
+                # TODO: calculate delta cartesian pose from traj["observation"]["cartesian_position"], which makes
+                # the trajectory shorter by 1 step, and then map all other keys to the same length.
+                actions = tf.concat(
                     (
-                        traj["action_dict"]["joint_position"]
-                        if action_space == DroidActionSpace.JOINT_POSITION
-                        else traj["action_dict"]["joint_velocity"]
+                        delta_cartesian_pose,
+                        traj["action_dict"]["gripper_position"],
                     ),
-                    traj["action_dict"]["gripper_position"],
-                ),
-                axis=-1,
-            )
+                    axis=-1,
+                )
+            else:
+                actions = tf.concat(
+                    (
+                        (
+                            traj["action_dict"]["joint_position"]
+                            if action_space == DroidActionSpace.JOINT_POSITION
+                            else traj["action_dict"]["joint_velocity"]
+                        ),
+                        traj["action_dict"]["gripper_position"],
+                    ),
+                    axis=-1,
+                )
             # Randomly samples one of the two exterior images in DROID during training (we only train with one at a time).
             # Note: the "left" refers to the left camera in the stereo pair, we only train on the left camera.
             exterior_img = tf.cond(
@@ -227,13 +236,13 @@ class DroidRldsDataset:
                     "wrist_image": wrist_img,
                     "joint_position": traj["observation"]["joint_position"],
                     "gripper_position": traj["observation"]["gripper_position"],
+                    "cartesian_position": traj["observation"]["cartesian_position"],
                 },
                 "prompt": instruction,
                 "step_id": step_id,
                 "passes_filter": passes_filter,
             }
 
-      
         dataset = dataset.traj_map(restructure, num_parallel_calls)
 
         def chunk_actions(traj):
