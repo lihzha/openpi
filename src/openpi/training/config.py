@@ -1285,11 +1285,11 @@ _CONFIGS = [
             decay_steps=1_000_000,
             decay_lr=5e-5,
         ),
-        num_train_steps=100_000,
+        num_train_steps=150_000,
         batch_size=256,
         log_interval=100,
-        save_interval=5000,
-        keep_period=10_000,
+        save_interval=50_000,
+        keep_period=50_000,
         num_workers=0,  # Important: RLDS DataLoader requires num_workers=0, handles multi-processing internally
     ),
     TrainConfig(

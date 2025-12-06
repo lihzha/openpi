@@ -1,7 +1,6 @@
 import dataclasses
 import functools
 import logging
-import math
 import os
 import platform
 from typing import Any
@@ -12,7 +11,6 @@ from flax.training import common_utils
 import flax.traverse_util as traverse_util
 import jax
 import jax.numpy as jnp
-import numpy as np
 import optax
 from rail_tpu_utils import prevent_cross_region
 import tqdm_loggable.auto as tqdm
@@ -21,7 +19,6 @@ import wandb
 import openpi.models.model as _model
 import openpi.shared.array_typing as at
 import openpi.shared.nnx_utils as nnx_utils
-from openpi.training import eval_helper as _eval_helper
 import openpi.training.checkpoints as _checkpoints
 import openpi.training.config as _config
 import openpi.training.data_loader as _data_loader
@@ -325,6 +322,8 @@ def main(config: _config.TrainConfig):
         dynamic_ncols=True,
         disable=(jax.process_index() != 0),
     )
+
+    _checkpoints.save_state(checkpoint_manager, train_state, data_loader, start_step)
 
     infos = []
     for step in pbar:
