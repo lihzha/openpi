@@ -174,13 +174,4 @@ slurm/
 visualizations/
 dataset_vis/
 
-all_commands.sh
-watch_and_run_v4.sh
-watch_and_run_v5.sh
-watch_and_run.sh
-train.sh
-temp.sh
-request_v4.sh
-test_v4.py
-plot_lr.py
-note.txt
+tpu_scripts/

@@ -77,7 +77,7 @@ libtpu-nightly = { index = "libtpu" }   # pin the single package
 
 
 [tool.uv.workspace]
-members = ["packages/*"]
+members = ["packages/*", "packages/openpi-tpu"]
 
 [tool.ruff]
 line-length = 120
