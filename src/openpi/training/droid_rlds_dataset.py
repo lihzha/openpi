@@ -177,6 +177,7 @@ class DroidRldsDataset:
 
         def restructure(traj):
             """Reformat observation and action keys, sample language instruction."""
+
             # Build action tensor (delta EEF pose for Cartesian space, absolute joints otherwise)
             def _euler_xyz_extrinsic_to_matrix(euler):
                 """Convert XYZ extrinsic Euler angles to rotation matrices."""
@@ -253,15 +254,17 @@ class DroidRldsDataset:
             )[0]
 
             indices = tf.as_string(tf.range(traj_len))
-            recording_folderpath = traj["traj_metadata"]["episode_metadata"]["recording_folderpath"][:traj_len]
-            file_path = traj["traj_metadata"]["episode_metadata"]["file_path"][:traj_len]
 
             # Data filtering:
             # Compute a uniquely-identifying step ID by concatenating the recording folderpath, file path,
             # and each step's time step index. This will index into the filter hash table, and if it returns true,
             # then the frame passes the filter.
             step_id = (
-                recording_folderpath + "--" + file_path + "--" + indices
+                traj["traj_metadata"]["episode_metadata"]["recording_folderpath"]
+                + "--"
+                + traj["traj_metadata"]["episode_metadata"]["file_path"]
+                + "--"
+                + indices
             )
             passes_filter = self.filter_table.lookup(step_id)
 
@@ -274,7 +277,7 @@ class DroidRldsDataset:
                     "gripper_position": traj["observation"]["gripper_position"][:traj_len],
                     "cartesian_position": traj["observation"]["cartesian_position"][:traj_len],
                 },
-                "prompt": instruction,
+                "prompt": instruction[:traj_len],
                 "step_id": step_id,
                 "passes_filter": passes_filter,
             }
