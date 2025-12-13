@@ -348,16 +348,16 @@ class DroidRldsDataset:
             """Splits episode into action chunks."""
             traj_len = tf.shape(traj["actions"])[0]
 
-            if action_space == DroidActionSpace.CARTESIAN_POSITION:
-                action_chunk_size += 1  # Need one extra step for delta computation
+            # Need one extra step for delta computation with cartesian actions
+            chunk_size = action_chunk_size + 1 if action_space == DroidActionSpace.CARTESIAN_POSITION else action_chunk_size
 
             # For each step in the trajectory, construct indices for the next n actions
             action_chunk_indices = tf.broadcast_to(
-                tf.range(action_chunk_size)[None],
-                [traj_len, action_chunk_size],
+                tf.range(chunk_size)[None],
+                [traj_len, chunk_size],
             ) + tf.broadcast_to(
                 tf.range(traj_len)[:, None],
-                [traj_len, action_chunk_size],
+                [traj_len, chunk_size],
             )
 
             # Cap to length of the sequence --> final chunks will repeat the last action
