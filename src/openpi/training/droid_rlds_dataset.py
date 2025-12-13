@@ -111,6 +111,106 @@ class DroidRldsDataset:
         except Exception:
             pass
 
+        def _tf_pi(dtype):
+            return tf.constant(3.141592653589793, dtype=dtype)
+
+        def _R_from_euler_xyz(rpy: tf.Tensor) -> tf.Tensor:
+            """Convert extrinsic XYZ Euler angles to a rotation matrix (R = Rz @ Ry @ Rx)."""
+            roll, pitch, yaw = tf.unstack(rpy, axis=-1)
+
+            cr, sr = tf.cos(roll), tf.sin(roll)
+            cp, sp = tf.cos(pitch), tf.sin(pitch)
+            cy, sy = tf.cos(yaw), tf.sin(yaw)
+
+            # Extrinsic XYZ is equivalent to intrinsic ZYX, so R = Rz * Ry * Rx
+            r00 = cy * cp
+            r01 = cy * sp * sr - sy * cr
+            r02 = cy * sp * cr + sy * sr
+
+            r10 = sy * cp
+            r11 = sy * sp * sr + cy * cr
+            r12 = sy * sp * cr - cy * sr
+
+            r20 = -sp
+            r21 = cp * sr
+            r22 = cp * cr
+
+            return tf.stack(
+                [
+                    tf.stack([r00, r01, r02], axis=-1),
+                    tf.stack([r10, r11, r12], axis=-1),
+                    tf.stack([r20, r21, r22], axis=-1),
+                ],
+                axis=-2,
+            )
+
+        @tf.function
+        def _euler_xyz_from_R(R, eps=1e-6):
+            """
+            Extract extrinsic XYZ (roll, pitch, yaw) from rotation matrix R (R = Rz @ Ry @ Rx).
+
+            Handles gimbal lock via elementwise tf.where.
+            """
+            R = tf.convert_to_tensor(R)
+            dtype = R.dtype
+            eps_t = tf.cast(eps, dtype)
+
+            r00 = R[..., 0, 0]
+            r01 = R[..., 0, 1]
+            r02 = R[..., 0, 2]
+            r10 = R[..., 1, 0]
+            r11 = R[..., 1, 1]
+            r12 = R[..., 1, 2]
+            r20 = R[..., 2, 0]
+            r21 = R[..., 2, 1]
+            r22 = R[..., 2, 2]
+
+            sy = tf.sqrt(tf.maximum(r00 * r00 + r10 * r10, eps_t))
+            singular = sy < eps_t
+
+            roll_regular = tf.atan2(r21, r22)
+            roll_singular = tf.atan2(-r12, r11)
+            roll = tf.where(singular, roll_singular, roll_regular)
+
+            pitch = tf.atan2(-r20, sy)
+
+            yaw_regular = tf.atan2(r10, r00)
+            yaw_singular = tf.zeros_like(yaw_regular)
+            yaw = tf.where(singular, yaw_singular, yaw_regular)
+
+            return tf.stack([roll, pitch, yaw], axis=-1)
+
+        @tf.function
+        def euler_diff(angles1, angles2, order="xyz", degrees=False):
+            """
+            Compute relative Euler angle difference: angles_rel such that
+                R(angles2) * R(angles_rel) = R(angles1)
+
+            Args:
+                angles1: (..., 3) tensor of Euler angles [roll, pitch, yaw] (extrinsic XYZ)
+                angles2: (..., 3) tensor of Euler angles [roll, pitch, yaw] (extrinsic XYZ)
+                order:   rotation order string (currently only "xyz" extrinsic is supported)
+                degrees: whether input/output are in degrees
+            Returns:
+                (..., 3) tensor of relative Euler angles [roll, pitch, yaw] (extrinsic XYZ)
+            """
+            if degrees:
+                angles1 = tf.math.multiply(angles1, _tf_pi(tf.float32) / 180.0)
+                angles2 = tf.math.multiply(angles2, _tf_pi(tf.float32) / 180.0)
+
+            # Build rotation matrices using extrinsic XYZ convention
+            R1 = _R_from_euler_xyz(angles1)
+            R2 = _R_from_euler_xyz(angles2)
+
+            # Compute relative rotation: Rrel = R2^T * R1
+            Rrel = tf.linalg.matmul(R2, R1, transpose_a=True)
+
+            # Extract Euler angles from Rrel using robust method with gimbal lock handling
+            out = _euler_xyz_from_R(Rrel)
+            if degrees:
+                out = tf.math.multiply(out, 180.0 / _tf_pi(tf.float32))
+            return out
+
         # Resolve autotune sentinels now that TF is imported
         if num_parallel_reads == -1:
             num_parallel_reads = tf.data.AUTOTUNE
@@ -178,51 +278,11 @@ class DroidRldsDataset:
         def restructure(traj):
             """Reformat observation and action keys, sample language instruction."""
 
-            # Build action tensor (delta EEF pose for Cartesian space, absolute joints otherwise)
-            def _euler_xyz_extrinsic_to_matrix(euler):
-                """Convert XYZ extrinsic Euler angles to rotation matrices."""
-                rx, ry, rz = tf.unstack(euler, axis=-1)
-                cx, sx = tf.cos(rx), tf.sin(rx)
-                cy, sy = tf.cos(ry), tf.sin(ry)
-                cz, sz = tf.cos(rz), tf.sin(rz)
-                R = tf.stack(
-                    [
-                        cz * cy,
-                        cz * sy * sx - sz * cx,
-                        cz * sy * cx + sz * sx,
-                        sz * cy,
-                        sz * sy * sx + cz * cx,
-                        sz * sy * cx - cz * sx,
-                        -sy,
-                        cy * sx,
-                        cy * cx,
-                    ],
-                    axis=-1,
-                )
-                return tf.reshape(R, tf.concat([tf.shape(rx), [3, 3]], axis=0))
-
-            def _matrix_to_euler_xyz_extrinsic(R):
-                """Recover XYZ extrinsic Euler angles from rotation matrices."""
-                rx = tf.atan2(R[..., 2, 1], R[..., 2, 2])
-                ry = tf.atan2(-R[..., 2, 0], tf.sqrt(tf.square(R[..., 2, 1]) + tf.square(R[..., 2, 2])))
-                rz = tf.atan2(R[..., 1, 0], R[..., 0, 0])
-                return tf.stack((rx, ry, rz), axis=-1)
-
             if action_space == DroidActionSpace.CARTESIAN_POSITION:
-                cartesian_pose = traj["observation"]["cartesian_position"]
-                # Cartesian pose: [x, y, z, rx, ry, rz] where rotation is XYZ extrinsic Euler.
-                pos = cartesian_pose[:, :3]
-                euler = cartesian_pose[:, 3:6]
-                rot_mats = _euler_xyz_extrinsic_to_matrix(euler)
-                rel_rot = tf.matmul(rot_mats[1:], tf.transpose(rot_mats[:-1], perm=[0, 2, 1]))
-                delta_rot = _matrix_to_euler_xyz_extrinsic(rel_rot)
-                delta_pos = pos[1:] - pos[:-1]
-                delta_cartesian_pose = tf.concat((delta_pos, delta_rot), axis=-1)
-                gripper_pos = traj["action_dict"]["gripper_position"][: tf.shape(delta_cartesian_pose)[0]]
                 actions = tf.concat(
                     (
-                        delta_cartesian_pose,
-                        gripper_pos,
+                        traj["observation"]["cartesian_position"],
+                        traj["action_dict"]["gripper_position"],
                     ),
                     axis=-1,
                 )
@@ -288,6 +348,9 @@ class DroidRldsDataset:
             """Splits episode into action chunks."""
             traj_len = tf.shape(traj["actions"])[0]
 
+            if action_space == DroidActionSpace.CARTESIAN_POSITION:
+                action_chunk_size += 1  # Need one extra step for delta computation
+
             # For each step in the trajectory, construct indices for the next n actions
             action_chunk_indices = tf.broadcast_to(
                 tf.range(action_chunk_size)[None],
@@ -303,6 +366,20 @@ class DroidRldsDataset:
 
             # Gather the actions for each chunk
             traj["actions"] = tf.gather(traj["actions"], action_chunk_indices)
+
+            if action_space == DroidActionSpace.CARTESIAN_POSITION:
+                traj["actions"] = tf.concat(
+                    (
+                        traj["actions"][:, 1:, :3] - traj["actions"][:, 0:1, :3],
+                        euler_diff(
+                            traj["actions"][:, 1:, 3:6],
+                            traj["actions"][:, 0:1, 3:6],
+                        ),
+                        traj["actions"][:, :-1, 6:7],
+                    ),
+                    axis=-1,
+                )
+
             return traj
 
         dataset = dataset.traj_map(chunk_actions, num_parallel_calls)
