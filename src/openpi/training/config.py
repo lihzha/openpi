@@ -1392,6 +1392,37 @@ _CONFIGS = [
         num_workers=0,  # Important: RLDS DataLoader requires num_workers=0, handles multi-processing internally
     ),
     TrainConfig(
+        name="pi05_full_droid_finetune_deltaeef",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=16,
+        ),
+        data=RLDSDroidDataConfig(
+            repo_id="droid",
+            # Set this to the path to your DROID RLDS dataset (the parent directory of the `droid` directory).
+            rlds_data_dir="/mnt/pi-data/kevin",
+            action_space=droid_rlds_dataset.DroidActionSpace.DELTA_CARTESIAN_POSITION,
+            assets=AssetsConfig(
+                assets_dir="gs://pi0-cot/raw_assets/",
+                asset_id="droid",
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=5e-5,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
+        ),
+        num_train_steps=250_000,
+        batch_size=256,
+        log_interval=100,
+        save_interval=50_000,
+        keep_period=50_000,
+        num_workers=0,  # Important: RLDS DataLoader requires num_workers=0, handles multi-processing internally
+    ),
+    TrainConfig(
         name="pi05_full_droid_finetune_eef",
         model=pi0_config.Pi0Config(
             pi05=True,
@@ -1403,6 +1434,37 @@ _CONFIGS = [
             # Set this to the path to your DROID RLDS dataset (the parent directory of the `droid` directory).
             rlds_data_dir="/mnt/pi-data/kevin",
             action_space=droid_rlds_dataset.DroidActionSpace.CARTESIAN_POSITION,
+            assets=AssetsConfig(
+                assets_dir="gs://pi0-cot/raw_assets/",
+                asset_id="droid",
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=5e-5,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
+        ),
+        num_train_steps=250_000,
+        batch_size=256,
+        log_interval=100,
+        save_interval=50_000,
+        keep_period=50_000,
+        num_workers=0,  # Important: RLDS DataLoader requires num_workers=0, handles multi-processing internally
+    ),
+    TrainConfig(
+        name="pi05_full_droid_finetune_eefvel",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=16,
+        ),
+        data=RLDSDroidDataConfig(
+            repo_id="droid",
+            # Set this to the path to your DROID RLDS dataset (the parent directory of the `droid` directory).
+            rlds_data_dir="/mnt/pi-data/kevin",
+            action_space=droid_rlds_dataset.DroidActionSpace.CARTESIAN_VELOCITY,
             assets=AssetsConfig(
                 assets_dir="gs://pi0-cot/raw_assets/",
                 asset_id="droid",

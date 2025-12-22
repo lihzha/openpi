@@ -80,6 +80,8 @@ class DroidActionSpace(Enum):
     JOINT_POSITION = auto()
     JOINT_VELOCITY = auto()
     CARTESIAN_POSITION = auto()
+    DELTA_CARTESIAN_POSITION = auto()
+    CARTESIAN_VELOCITY = auto()
 
 
 class DroidRldsDataset:
@@ -278,10 +280,26 @@ class DroidRldsDataset:
         def restructure(traj):
             """Reformat observation and action keys, sample language instruction."""
 
-            if action_space == DroidActionSpace.CARTESIAN_POSITION:
+            if action_space == DroidActionSpace.DELTA_CARTESIAN_POSITION:
                 actions = tf.concat(
                     (
                         traj["observation"]["cartesian_position"],
+                        traj["action_dict"]["gripper_position"],
+                    ),
+                    axis=-1,
+                )
+            elif action_space == DroidActionSpace.CARTESIAN_VELOCITY:
+                actions = tf.concat(
+                    (
+                        traj["action_dict"]["cartesian_velocity"],
+                        traj["action_dict"]["gripper_position"],
+                    ),
+                    axis=-1,
+                )
+            elif action_space == DroidActionSpace.CARTESIAN_POSITION:
+                actions = tf.concat(
+                    (
+                        traj["action_dict"]["cartesian_position"],
                         traj["action_dict"]["gripper_position"],
                     ),
                     axis=-1,
@@ -349,7 +367,9 @@ class DroidRldsDataset:
             traj_len = tf.shape(traj["actions"])[0]
 
             # Need one extra step for delta computation with cartesian actions
-            chunk_size = action_chunk_size + 1 if action_space == DroidActionSpace.CARTESIAN_POSITION else action_chunk_size
+            chunk_size = (
+                action_chunk_size + 1 if action_space == DroidActionSpace.CARTESIAN_POSITION else action_chunk_size
+            )
 
             # For each step in the trajectory, construct indices for the next n actions
             action_chunk_indices = tf.broadcast_to(
@@ -367,7 +387,7 @@ class DroidRldsDataset:
             # Gather the actions for each chunk
             traj["actions"] = tf.gather(traj["actions"], action_chunk_indices)
 
-            if action_space == DroidActionSpace.CARTESIAN_POSITION:
+            if action_space == DroidActionSpace.DELTA_CARTESIAN_POSITION:
                 traj["actions"] = tf.concat(
                     (
                         traj["actions"][:, 1:, :3] - traj["actions"][:, 0:1, :3],
