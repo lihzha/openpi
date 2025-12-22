@@ -1263,7 +1263,7 @@ _CONFIGS = [
         # This config is for fine-tuning pi0-FAST-base on the *full* DROID dataset.
         # We use RLDS data loading to make training on this large dataset tractable.
         # For fine-tuning on your own DROID dataset, see below.
-        name="paligemma_fast_full_droid_finetune",
+        name="paligemma_fast_full_droid_finetune_eefvel",
         model=pi0_fast.Pi0FASTConfig(
             action_dim=8,
             action_horizon=16,
@@ -1273,7 +1273,7 @@ _CONFIGS = [
             repo_id="droid",
             # Set this to the path to your DROID RLDS dataset (the parent directory of the `droid` directory).
             rlds_data_dir="<path_to_droid_rlds_dataset>",
-            action_space=droid_rlds_dataset.DroidActionSpace.JOINT_VELOCITY,
+            action_space=droid_rlds_dataset.DroidActionSpace.CARTESIAN_VELOCITY,
         ),
         weight_loader=weight_loaders.WeightLoaderChoice(kind="paligemma"),
         lr_schedule=_optimizer.CosineDecaySchedule(
