@@ -1277,7 +1277,7 @@ _CONFIGS = [
         ),
         weight_loader=weight_loaders.WeightLoaderChoice(kind="paligemma"),
         lr_schedule=_optimizer.CosineDecaySchedule(
-            warmup_steps=1_000,
+            warmup_steps=5_000,
             peak_lr=1e-4,
             decay_steps=1_000_000,
             decay_lr=5e-5,
