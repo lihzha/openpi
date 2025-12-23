@@ -81,6 +81,10 @@ class DroidInputs(transforms.DataTransformFn):
 
 @dataclasses.dataclass(frozen=True)
 class DroidOutputs(transforms.DataTransformFn):
+    action_space: droid_rlds_dataset.DroidActionSpace = droid_rlds_dataset.DroidActionSpace.JOINT_POSITION
+
     def __call__(self, data: dict) -> dict:
         # Only return the first 8 dims.
+        if self.action_space == droid_rlds_dataset.DroidActionSpace.CARTESIAN_POSITION:
+            return {"actions": np.asarray(data["actions"][:, :7])}
         return {"actions": np.asarray(data["actions"][:, :8])}

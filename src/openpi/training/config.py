@@ -258,6 +258,8 @@ class DataConfigFactory(abc.ABC):
         try:
             data_assets_dir = str(assets_dir / asset_id)
             # norm_stats = _normalize.load(_download.maybe_download(data_assets_dir))
+            # breakpoint()
+            data_assets_dir = "/home/tennyyin/openpi-lihan/checkpoints/pi05_full_droid_finetune_eef/droid_pi05_eef/100000/assets/droid"
             norm_stats = _normalize.load(data_assets_dir)
             logging.info(f"Loaded norm stats from {data_assets_dir}")
             return norm_stats
@@ -456,7 +458,7 @@ class RLDSDroidDataConfig(DataConfigFactory):
 
         data_transforms = _transforms.Group(
             inputs=[droid_policy.DroidInputs(model_type=model_config.model_type, action_space=self.action_space)],
-            outputs=[droid_policy.DroidOutputs()],
+            outputs=[droid_policy.DroidOutputs(action_space=self.action_space)],
         )
 
         if self.action_space == droid_rlds_dataset.DroidActionSpace.JOINT_POSITION:

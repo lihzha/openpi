@@ -101,8 +101,8 @@ def create_policy(args: Args, policy_config: _policy_config.PolicyConfig) -> _po
 
 def main(args: Args) -> None:
     policy_config = _policy_config.PolicyConfig(
-        policy_type=_policy.PolicyType.CoTPolicy,
-        use_norm_stats=False,  # We don't use norm stats in this script.
+        policy_type=_policy.PolicyType.Policy,
+        use_norm_stats=True,  # We don't use norm stats in this script.
     )
     policy = create_policy(args, policy_config)
 

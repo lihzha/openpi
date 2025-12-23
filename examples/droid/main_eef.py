@@ -21,7 +21,29 @@ faulthandler.enable()
 
 # DROID data collection frequency -- we slow down execution to match this frequency
 DROID_CONTROL_FREQUENCY = 15
+from scipy.spatial.transform import Rotation as R
 
+def add_euler(curr_rpy, delta_rpy):
+    """
+    Add two extrinsic XYZ Euler rotations.
+
+    Args:
+        curr_rpy: (3,) array-like, current euler angles (rx, ry, rz) in radians.
+        delta_rpy: (3,) array-like, euler angles to apply in extrinsic XYZ.
+
+    Returns:
+        new_rpy: (3,) ndarray of resulting Euler angles in extrinsic XYZ.
+    """
+    # Convert to Rotation objects using extrinsic XYZ
+    R_curr = R.from_euler("xyz", curr_rpy, degrees=False)
+    R_delta = R.from_euler("xyz", delta_rpy, degrees=False)
+
+    # Extrinsic composition → multiply in this order: R_curr * R_delta
+    R_new = R_delta * R_curr
+
+    # Convert back to euler XYZ
+    new_rpy = R_new.as_euler("xyz", degrees=False)
+    return new_rpy
 
 @dataclasses.dataclass
 class Args:
@@ -77,7 +99,7 @@ def main(args: Args):
     )
 
     # Initialize the Panda environment. Using joint velocity action space and gripper position action space is very important.
-    env = RobotEnv(action_space="joint_velocity", gripper_action_space="position")
+    env = RobotEnv(action_space="cartesian_position", gripper_action_space="position")
     print("Created the droid env!")
 
     # Connect to the policy server
@@ -123,6 +145,7 @@ def main(args: Args):
                         "observation/wrist_image_left": image_tools.resize_with_pad(curr_obs["wrist_image"], 224, 224),
                         "observation/joint_position": curr_obs["joint_position"],
                         "observation/gripper_position": curr_obs["gripper_position"],
+                        "observation/cartesian_position": curr_obs["cartesian_position"],
                         "prompt": instruction,
                     }
 
@@ -132,9 +155,16 @@ def main(args: Args):
                         # this returns action chunk [10, 8] of 10 joint velocity actions (7) + gripper position (1)
                         pred_action_chunk = policy_client.infer(request_data)["actions"]
                     # assert pred_action_chunk.shape == (10, 8)
+                    pred_action_chunk = np.asarray(pred_action_chunk, dtype=float).copy()
+                    # curr_pos = np.asarray(curr_obs["cartesian_position"][:3], dtype=float)
+                    # curr_rpy = np.asarray(curr_obs["cartesian_position"][3:6], dtype=float)
+                    # pred_action_chunk[:, :3] = curr_pos + pred_action_chunk[:, :3]
+                    # pred_action_chunk[:, 3:6]= add_euler(pred_action_chunk[:, 3:6], curr_rpy)
+
 
                 # Select current action to execute from chunk
                 action = pred_action_chunk[actions_from_chunk_completed]
+                print(action)
                 actions_from_chunk_completed += 1
 
                 # Binarize gripper action
@@ -146,7 +176,11 @@ def main(args: Args):
                     action = np.concatenate([action[:-1], np.zeros((1,))])
 
                 # clip all dimensions of action to [-1, 1]
-                action = np.clip(action, -1, 1)
+                # action = np.clip(action, -1, 1)
+                curr_pos = np.asarray(curr_obs["cartesian_position"][:3], dtype=float)
+                curr_rpy = np.asarray(curr_obs["cartesian_position"][3:6], dtype=float)
+                action[:3] = curr_pos + action[:3]
+                action[3:6]= add_euler(curr_rpy, action[3:6])
 
                 env.step(action)
 
