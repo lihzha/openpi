@@ -368,7 +368,9 @@ class DroidRldsDataset:
 
             # Need one extra step for delta computation with cartesian actions
             chunk_size = (
-                action_chunk_size + 1 if action_space == DroidActionSpace.CARTESIAN_POSITION else action_chunk_size
+                action_chunk_size + 1
+                if action_space == DroidActionSpace.DELTA_CARTESIAN_POSITION
+                else action_chunk_size
             )
 
             # For each step in the trajectory, construct indices for the next n actions
