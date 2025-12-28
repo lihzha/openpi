@@ -63,6 +63,7 @@ tpu = [
     "dlimp",
     "tensorflow-cpu==2.15.0",
     "tensorflow-datasets==4.9.9",
+    "jax[tpu]==0.5.3 ; python_version < '3.13'"
 ]
 
 [tool.uv]
