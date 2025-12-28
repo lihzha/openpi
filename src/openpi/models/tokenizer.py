@@ -205,8 +205,6 @@ class FASTTokenizer:
         else:
             postfix_tokens = []
 
-        breakpoint()
-
         # Create output token sequence & masks
         # AR mask is 0 on prefix (bidirectional attention) and 1 on postfix (causal attention to all previous tokens)
         tokens = prefix_tokens + postfix_tokens
