@@ -438,6 +438,7 @@ class RLDSDroidDataConfig(DataConfigFactory):
     # f"{recording_folderpath}--{file_path}", both of which are present in the RLDS episode metadata.
     # Path to the filter dictionary file.
     filter_dict_path: str | None = "gs://openpi-assets/droid/droid_sample_ranges_v1_0_1.json"
+    shuffle_buffer_size: int = 250_000
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
@@ -482,6 +483,7 @@ class RLDSDroidDataConfig(DataConfigFactory):
             rlds_data_dir=self.rlds_data_dir,
             action_space=self.action_space,
             filter_dict_path=self.filter_dict_path,
+            shuffle_buffer_size=self.shuffle_buffer_size,
         )
 
 
