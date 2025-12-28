@@ -22,6 +22,7 @@ import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_cot_policy as droid_cot_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
+import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
 import openpi.training.droid_rlds_dataset as droid_rlds_dataset
 import openpi.training.misc.roboarena_config as roboarena_config
@@ -257,10 +258,10 @@ class DataConfigFactory(abc.ABC):
             return None
         try:
             data_assets_dir = str(assets_dir / asset_id)
-            # norm_stats = _normalize.load(_download.maybe_download(data_assets_dir))
+            norm_stats = _normalize.load(_download.maybe_download(data_assets_dir))
             # breakpoint()
-            data_assets_dir = "/home/tennyyin/openpi-lihan/checkpoints/pi05_full_droid_finetune_eef/droid_pi05_eef/100000/assets/droid"
-            norm_stats = _normalize.load(data_assets_dir)
+            # data_assets_dir = "/home/tennyyin/openpi-lihan/checkpoints/pi05_full_droid_finetune_eef/droid_pi05_eef/100000/assets/droid"
+            # norm_stats = _normalize.load(data_assets_dir)
             logging.info(f"Loaded norm stats from {data_assets_dir}")
             return norm_stats
         except FileNotFoundError:
