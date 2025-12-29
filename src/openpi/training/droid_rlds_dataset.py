@@ -297,10 +297,25 @@ class DroidRldsDataset:
                     axis=-1,
                 )
             elif action_space == DroidActionSpace.CARTESIAN_POSITION:
+                # actions = tf.concat(
+                #     (
+                #         traj["action_dict"]["cartesian_position"],
+                #         traj["action_dict"]["gripper_position"],
+                #     ),
+                #     axis=-1,
+                # )
+                cartesian_pose = traj["observation"]["cartesian_position"]
+                # Cartesian pose: [x, y, z, rx, ry, rz] where rotation is XYZ extrinsic Euler.
+                pos = cartesian_pose[:, :3]
+                euler = cartesian_pose[:, 3:6]
+                delta_rot = euler_diff(euler[1:], euler[:-1])
+                delta_pos = pos[1:] - pos[:-1]
+                delta_cartesian_pose = tf.concat((delta_pos, delta_rot), axis=-1)
+                gripper_pos = traj["action_dict"]["gripper_position"][: tf.shape(delta_cartesian_pose)[0]]
                 actions = tf.concat(
                     (
-                        traj["action_dict"]["cartesian_position"],
-                        traj["action_dict"]["gripper_position"],
+                        delta_cartesian_pose,
+                        gripper_pos,
                     ),
                     axis=-1,
                 )
@@ -389,18 +404,18 @@ class DroidRldsDataset:
             # Gather the actions for each chunk
             traj["actions"] = tf.gather(traj["actions"], action_chunk_indices)
 
-            if action_space == DroidActionSpace.DELTA_CARTESIAN_POSITION:
-                traj["actions"] = tf.concat(
-                    (
-                        traj["actions"][:, 1:, :3] - traj["actions"][:, 0:1, :3],
-                        euler_diff(
-                            traj["actions"][:, 1:, 3:6],
-                            traj["actions"][:, 0:1, 3:6],
-                        ),
-                        traj["actions"][:, :-1, 6:7],
-                    ),
-                    axis=-1,
-                )
+            # if action_space == DroidActionSpace.DELTA_CARTESIAN_POSITION:
+            # traj["actions"] = tf.concat(
+            #     (
+            #         traj["actions"][:, 1:, :3] - traj["actions"][:, 0:1, :3],
+            #         euler_diff(
+            #             traj["actions"][:, 1:, 3:6],
+            #             traj["actions"][:, 0:1, 3:6],
+            #         ),
+            #         traj["actions"][:, :-1, 6:7],
+            #     ),
+            #     axis=-1,
+            # )
 
             return traj
 
