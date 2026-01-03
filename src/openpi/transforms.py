@@ -350,6 +350,7 @@ class TokenizeFASTInputs(DataTransformFn):
             prompt = prompt.item()
 
         state, actions = data["state"], data.get("actions")
+        breakpoint()
         tokens, token_mask, ar_mask, loss_mask = self.tokenizer.tokenize(prompt, state, actions)
         return {
             **data,
