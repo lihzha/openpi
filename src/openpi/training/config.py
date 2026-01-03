@@ -1304,7 +1304,7 @@ _CONFIGS = [
         # This config is for fine-tuning pi0-FAST-base on the *full* DROID dataset.
         # We use RLDS data loading to make training on this large dataset tractable.
         # For fine-tuning on your own DROID dataset, see below.
-        name="paligemma_fast_full_droid_finetune_deltaeef_v5",
+        name="paligemma_fast_full_droid_finetune_deltaeef_v4",
         model=pi0_fast.Pi0FASTConfig(
             action_dim=7,
             action_horizon=16,
@@ -1313,15 +1313,15 @@ _CONFIGS = [
         data=RLDSDroidDataConfig(
             repo_id="droid",
             # Set this to the path to your DROID RLDS dataset (the parent directory of the `droid` directory).
-            rlds_data_dir="gs://v5_central1_a/OXE",
+            rlds_data_dir="gs://pi0-cot/OXE",
             action_space=droid_rlds_dataset.DroidActionSpace.DELTA_CARTESIAN_POSITION,
             assets=AssetsConfig(
-                assets_dir="gs://v5_central1_a/raw_assets/",
+                assets_dir="gs://pi0-cot/raw_assets/",
                 asset_id="droid",
             ),
         ),
-        checkpoint_base_dir="gs://v5_central1_a/checkpoints",
-        assets_base_dir="gs://v5_central1_a/assets",
+        checkpoint_base_dir="gs://pi0-cot/checkpoints",
+        assets_base_dir="gs://pi0-cot/assets",
         weight_loader=weight_loaders.WeightLoaderChoice(kind="paligemma"),
         lr_schedule=_optimizer.CosineDecaySchedule(
             warmup_steps=5_000,
