@@ -53,15 +53,15 @@ class DroidInputs(transforms.DataTransformFn):
         wrist_image = _parse_image(data["observation/wrist_image_left"])
 
         match self.model_type:
-            case _model.ModelType.PI0 | _model.ModelType.PI05:
+            case _model.ModelType.PI0 | _model.ModelType.PI05 | _model.ModelType.PI0_FAST:
                 names = ("base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb")
                 images = (base_image, wrist_image, np.zeros_like(base_image))
                 image_masks = (np.True_, np.True_, np.False_)
-            case _model.ModelType.PI0_FAST:
-                names = ("base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb")
-                # We don't mask out padding images for FAST models.
-                images = (base_image, np.zeros_like(base_image), wrist_image)
-                image_masks = (np.True_, np.True_, np.True_)
+            # case _model.ModelType.PI0_FAST:
+            #     names = ("base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb")
+            #     # We don't mask out padding images for FAST models.
+            #     images = (base_image, np.zeros_like(base_image), wrist_image)
+            #     image_masks = (np.True_, np.True_, np.True_)
             case _:
                 raise ValueError(f"Unsupported model type: {self.model_type}")
 

@@ -297,8 +297,6 @@ def main(config: _config.TrainConfig):
     # Sharding details for the first batch
     sharding.log_batch_sharding(batch)
 
-    breakpoint()
-
     train_state, train_state_sharding = init_train_state(config, init_rng, mesh, resume=resuming)
     jax.block_until_ready(train_state)
     logging.info(f"Initialized train state (param shapes):\n{training_utils.array_tree_to_info(train_state.params)}")
