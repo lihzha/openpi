@@ -66,13 +66,24 @@ class Policy(BasePolicy):
 
     @override
     def infer(self, obs: dict, *, noise: np.ndarray | None = None) -> dict:  # type: ignore[misc]
+        # An `rng_seed` in the request makes flow sampling a function of that seed alone.
+        # Without it the server splits one stream across every call it has ever served, so
+        # a rollout's noise depends on how many inferences preceded it -- which makes an
+        # eval unreproducible, and makes concurrent clients perturb each other.
+        request_seed = None
+        if isinstance(obs, dict) and "rng_seed" in obs:
+            obs = dict(obs)
+            request_seed = obs.pop("rng_seed")
         # Make a copy since transformations may modify the inputs in place.
         inputs = jax.tree.map(lambda x: x, obs)
         inputs = self._input_transform(inputs)
         if not self._is_pytorch_model:
             # Make a batch and convert to jax.Array.
             inputs = jax.tree.map(lambda x: jnp.asarray(x)[np.newaxis, ...], inputs)
-            self._rng, sample_rng_or_pytorch_device = jax.random.split(self._rng)
+            if request_seed is not None:
+                sample_rng_or_pytorch_device = jax.random.key(int(request_seed))
+            else:
+                self._rng, sample_rng_or_pytorch_device = jax.random.split(self._rng)
         else:
             # Convert inputs to PyTorch tensors and move to correct device
             inputs = jax.tree.map(lambda x: torch.from_numpy(np.array(x)).to(self._pytorch_device)[None, ...], inputs)

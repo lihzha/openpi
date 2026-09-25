@@ -42,6 +42,14 @@ class WebsocketPolicyServer:
             compression=None,
             max_size=None,
             process_request=_health_check,
+            # Disable websocket keepalive: inference runs synchronously in the async
+            # handler, so a slow call (e.g. first-inference cuDNN conv autotuning,
+            # which can stack to >20s) blocks the event loop and misses keepalive
+            # pings, tripping the default ping_timeout=20s and dropping the client
+            # mid-rollout. That was skipping ~90% of MolmoSpaces eval houses
+            # ("keepalive ping timeout" -> rollout error -> house skipped). No pings.
+            ping_interval=None,
+            ping_timeout=None,
         ) as server:
             await server.serve_forever()
 

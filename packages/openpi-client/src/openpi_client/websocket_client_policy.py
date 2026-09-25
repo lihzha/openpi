@@ -34,8 +34,14 @@ class WebsocketClientPolicy(_base_policy.BasePolicy):
         while True:
             try:
                 headers = {"Authorization": f"Api-Key {self._api_key}"} if self._api_key else None
+                # Disable keepalive (ping_interval/ping_timeout=None): the server runs
+                # inference synchronously in its async handler, so a slow call (first-
+                # inference cuDNN autotuning, >20s) blocks it from ponging, tripping the
+                # default 20s ping_timeout and dropping the connection mid-rollout. That
+                # skipped ~90% of MolmoSpaces eval houses. Must match the server-side fix.
                 conn = websockets.sync.client.connect(
-                    self._uri, compression=None, max_size=None, additional_headers=headers
+                    self._uri, compression=None, max_size=None, additional_headers=headers,
+                    ping_interval=None, ping_timeout=None,
                 )
                 metadata = msgpack_numpy.unpackb(conn.recv())
                 return conn, metadata
